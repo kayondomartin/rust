@@ -408,6 +408,10 @@ pub use unique::Unique;
 mod const_ptr;
 mod mut_ptr;
 
+/// metadata_update trait
+#[unstable(feature = "metadata_update", issue = "none")]
+pub mod metadata_update;
+
 /// Executes the destructor (if any) of the pointed-to value.
 ///
 /// This is semantically equivalent to calling [`ptr::read`] and discarding
