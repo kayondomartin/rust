@@ -9,7 +9,7 @@ use core::ops::{Drop, Deref};
 /// pointers implement the Deref and Drop trait.
 #[unstable(feature = "metadata_update", issue = "none")]
 #[allow(drop_bounds)]
-pub trait MetaUpdate<T: Drop + Deref>{
+pub trait MetaUpdate: Drop + Deref{
     /// synchronize the update metadata with the allocator.
     fn synchronize(&self, new: usize) -> bool;
     

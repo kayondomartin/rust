@@ -156,6 +156,8 @@
 #![feature(unsize)]
 #![feature(utf8_chunks)]
 #![feature(std_internals)]
+/*SOR-MetaUpdate@kayondomartin*/
+#![feature(metadata_update)]
 //
 // Language features:
 #![feature(allocator_internals)]

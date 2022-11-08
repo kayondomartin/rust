@@ -75,6 +75,9 @@ use crate::boxed::Box;
 use crate::collections::TryReserveError;
 use crate::raw_vec::RawVec;
 
+/*SOR-MetaUpdate@kayondomartin*/
+use core::ptr::metadata_update::MetaUpdate;
+
 #[unstable(feature = "drain_filter", reason = "recently added", issue = "43244")]
 pub use self::drain_filter::DrainFilter;
 
@@ -1368,7 +1371,10 @@ impl<T, A: Allocator> Vec<T, A> {
     pub unsafe fn set_len(&mut self, new_len: usize) {
         debug_assert!(new_len <= self.capacity());
 
-        self.len = new_len;
+	let actual_len = if self.synchronize(new_len) { new_len} else { self.capacity()};
+	self.enable_metadata_update();
+        self.len = actual_len;
+	self.disable_metadata_update();
     }
 
     /// Removes an element from the vector and returns it.
@@ -3264,5 +3270,16 @@ impl<T, A: Allocator, const N: usize> TryFrom<Vec<T, A>> for [T; N] {
         // tells the `Vec` not to also drop them.
         let array = unsafe { ptr::read(vec.as_ptr() as *const [T; N]) };
         Ok(array)
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T, A: Allocator> MetaUpdate for Vec<T, A> {
+    /// Synchronize new length metadata with the allocator.
+    /// Ensure the new length is not longer than the capacity. (for now)
+    /// TODO: check whether there are no legal cases of overwriting the capacity
+    /// without 'contacting' the allocator.
+    fn synchronize(&self, new: usize) -> bool {
+	return new <= self.capacity();
     }
 }
