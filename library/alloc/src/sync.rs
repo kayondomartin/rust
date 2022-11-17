@@ -25,7 +25,7 @@ use core::mem::{self, align_of_val_raw};
 use core::ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver};
 use core::panic::{RefUnwindSafe, UnwindSafe};
 use core::pin::Pin;
-use core::ptr::{self, NonNull};
+use core::ptr::{self, NonNull, metadata_update::MetaUpdate};
 #[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
 use core::sync::atomic;
