@@ -45,7 +45,7 @@ changelog-seen = 2
 #
 # Note that many of the LLVM options are not currently supported for
 # downloading. Currently only the "assertions" option can be toggled.
-download-ci-llvm = true
+download-ci-llvm = false
 
 # Indicates whether LLVM rebuild should be skipped when running bootstrap. If
 # this is `false` then the compiler's LLVM will be rebuilt whenever the built
