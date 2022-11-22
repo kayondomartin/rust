@@ -280,6 +280,9 @@ use crate::string::String;
 #[cfg(not(no_global_oom_handling))]
 use crate::vec::Vec;
 
+/*SOR-MetaUpdate@kayondomartin */
+use core::ptr::metadata_update::MetaUpdate;
+
 #[cfg(test)]
 mod tests;
 
@@ -1518,6 +1521,20 @@ impl<T: ?Sized> Deref for Rc<T> {
     #[inline(always)]
     fn deref(&self) -> &T {
         &self.inner().value
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T> MetaUpdate for Rc<T> {
+
+    /// Synchronize metadata changes for Rc. In Rc, the only metadata available is
+    /// the reference counter. changing it doesn't seem to require synchronization:
+    /// Rather, we will ensure no double free/drop is reaches the allocator side to 
+    /// ensure temporal safety. This will be done through the analysis stage of
+    /// the MetaUpdate project. 
+    /// TODO: ensure analysis is done to prevent double free/drop
+    fn synchronize(&self, new: usize) -> bool {
+        true
     }
 }
 

@@ -1,0 +1,35 @@
+Notes on MetaUpdate
+Smart pointers:
+    There's need to clarify what each smart pointer does,
+why it exists, its metadata, what the metadata does and the corresponding
+vulnerabilities & reported CVEs.
+
+Box:
+    Box is the basic pointer in Rust. It has no metadata, and its creation is
+similar to C++'s new. The difference is that Box conforms to Rust's ownership
+rules. It is still a smart pointer, it suffers from the repacking vulnerability,
+which may result in double free/drop or even UAF.
+
+Vec:
+    This is the basic heap array in Rust. It can be seen as similar to C++'s vector,
+but it does more to prevent memory corruption. It's inherits the RawVec type which in
+turn stores the heap pointer to which data is store, and the capacity of the allocated
+pointer. Vec then adds an additional metadata - len, to keep track of the number of 
+elements stored in the container, hence preventing buffer overflows. Corrupting the 
+capacity or len of this pointer opens the door for buffer overflow attacks, while overwriting
+the pointer may result in CFI problems at worst. This pointer also suffers from the repacking problem as do many
+of the rest of the pointers explored here. Reported CVEs on problems with Vec include:
+CVE-2021-28875 resulting from String type using Vec, CVE-2018-1000657, CVE-2019-1010299, 
+CVE-2019-16138, CVE-2020-35890, CVE-2020-35891 etc.
+Sadly, even preventing illegal metadata modifications on Vec is insufficient as 
+programmers may legally write incorrect metadata through the unsafe provided methods.
+
+Rc:
+    This pointer attempts to counter UAF attacks through reference counting. It maintains two reference counters, Weak and Strong as metadata. Why Weak and Strong? Consider a case in which two pointers own each other: say a DLL. A node in a DLL head prev and next, where 
+    prev points to next and next points to prev, hence under Rust ownership, the two own each other, and therefore each has a reference count of 2. If, say, next is dropped, then its counter becomes 1 because prev still owns it. Now, suppose prev is also dropped, then also its counter becomes 1, yet no handle exists for either pointer. The result is two pointers to memory with no handle, and in turn memory leakage at best. In worse cases, this miscount may result in security issues.
+    Tamparing with the reference counters is catastropic as observed, and so they must be protected in any way, to prevent UAF problems especially, but also memory leaks.
+    Related CVEs: 
+
+
+Cell/RefCell:
+    
