@@ -32,4 +32,18 @@ Rc:
 
 
 Cell/RefCell:
+    ... more on smart pointers later
     
+    
+    
+
+Type IDs:
+    Currently, RustMeta assumes all types will have unique Identifies, which we will in tern use to allocate on the TDI basis. There are several challenges with this:
+        ** Generic types have unique IDs, where, say, Type1<i32> is different from Type1<f32>. By our assumption so far, these two kinds, although both of the same descent - Type1, will be allocated in different Heaps. Whereas this seems good for our idea of countering temporal safety problems in the repacking problem, our worry is memory usage. Recall that mimalloc - our current allocator of focus allocated 4MiB. If this is done for each type, we risk fragmentation, hence high memory overhead.
+        ** Smart pointers as member fields. Our basic plan is to allocate smart pointers in a separate secure compartment. If, however, a custom struct encloses a smart pointer as a member field, then we are left with two options:
+            *** consider the whole struct as belonging to the smart pointers, hence save it to the safe region:
+            this of course brings issues. We don't want to be allowing any type, this will contaminate the safe region. 
+            *** wrap the enclosed smart pointer in a Box<T>. This seems like a good idea, but then we will have to load the smart pointer each time we need to access it. 
+            Ultimately, we need to discuss whether it's better to load from a Box<T> to access such member fields or to have the whole struct considered as deserving special protection. 
+            Of course, based on the method of protection, one is better than the other. Currently, we are considering Guard Pages vs MPK. With Guard Pages, we will consider simply having a guard page protecting the regions. As such, considering the whole type as a special doesn't seem to incur more performance overhead. If we use MPK on the other hand, writing the any object field (be it the smart pointer or not) will require enabling write access for the whole smart pointer region. This will flood the binary with so many MPK access instructions making it risky.
+            WE WILL NEED TO TRADE CAREFULLY!!
