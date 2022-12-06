@@ -14,8 +14,14 @@ pub trait MetaUpdate: Drop + Deref{
     fn synchronize(&self, new: usize) -> bool;
     
     /// enable write access on the metadata memory region
-    fn enable_metadata_update(&self){}
+    /// is static because we will be setting access rights for the whole region
+    /// this actually depending on the method we choose for protection.
+    /// it makes more sense if we opt for MPK protection for example.
+    /// other methods like guard pages don't require this message.
+    fn enable_metadata_update(){}
     
     /// disable metadata write access
-    fn disable_metadata_update(&self){}
+    /// implementation condition is same as that of enable_metadata_update
+    /// only makes sense depending on the method chosen for protection
+    fn disable_metadata_update(){}
 }

@@ -1371,10 +1371,10 @@ impl<T, A: Allocator> Vec<T, A> {
     pub unsafe fn set_len(&mut self, new_len: usize) {
         debug_assert!(new_len <= self.capacity());
 
-	let actual_len = if self.synchronize(new_len) { new_len} else { self.capacity()};
-	self.enable_metadata_update();
+	    let actual_len = if self.synchronize(new_len) { new_len} else { self.capacity()};
+	    MetaUpdate::enable_metadata_update();
         self.len = actual_len;
-	self.disable_metadata_update();
+	    MetaUpdate::disable_metadata_update();
     }
 
     /// Removes an element from the vector and returns it.
@@ -3280,6 +3280,6 @@ impl<T, A: Allocator> MetaUpdate for Vec<T, A> {
     /// TODO: check whether there are no legal cases of overwriting the capacity
     /// without 'contacting' the allocator.
     fn synchronize(&self, new: usize) -> bool {
-	return new <= self.capacity();
+	    return new <= self.capacity();
     }
 }
