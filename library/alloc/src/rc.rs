@@ -2604,7 +2604,9 @@ trait RcInnerPtr {
         }
 
         let strong = strong.wrapping_add(1);
+        MetaUpdate::enable_metadata_update();
         self.strong_ref().set(strong);
+        MetaUpdate::disable_metadata_update();
 
         // We want to abort on overflow instead of dropping the value.
         // Checking for overflow after the store instead of before
