@@ -2980,6 +2980,7 @@ pub enum ProcMacroExecutionStrategy {
     CrossThread,
 }
 
+/// How rust-meta should handle structs that contain smart pointers
 pub enum MetaUpdateStructKind {
     // default rust-meta impl => smart pointers in struct result in whole struct being smart pointer
     Default,
@@ -2989,6 +2990,7 @@ pub enum MetaUpdateStructKind {
     Implicit,
 }
 
+/// How rust-meta should protect the smart pointer region
 pub enum MetaUpdateProtKind {
     // default rust-meta protection => smart pointers are stored in heaps separated by guard pages
     Default,
@@ -3000,6 +3002,7 @@ pub enum MetaUpdateProtKind {
     ARMMTE
 }
 
+/// The top option for rust-meta
 pub struct MetaUpdateProtection {
     // whether rust-meta is enabled
     enabled: bool,
@@ -3007,4 +3010,40 @@ pub struct MetaUpdateProtection {
     struct_kind: MetaUpdateStructKind,
     //meta-update protection method
     prot_method: MetaUpdateProtKind
+}
+
+
+impl MetaUpdateProtection {
+    // the default rust-meta scheme, if enabled
+    pub fn default_enabled() -> Self {
+        Self {
+            enabled: true,
+            struct_kind: Default,
+            prot_method: Default
+        }
+    }
+    
+    // the default rust-meta scheme, if disabled
+    pub fn default_disabled() -> Self {
+        Self {
+            enabled: false,
+            struct_kind: Default,
+            prot_method: Default
+        }
+    }
+    
+    // create new rust-meta scheme
+    pub fn new(struct_kind: MetaUpdateStructKind, prot_method: MetaUpdateProtection) -> Self{
+        Self{
+            enabled: true,
+            struct_kind,
+            prot_method
+        }
+    }
+    
+    // check whether rust-meta is enabled
+    pub fn enabled(&self) -> bool{
+        self.enabled
+    }
+    
 }
