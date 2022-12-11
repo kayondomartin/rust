@@ -2979,3 +2979,32 @@ pub enum ProcMacroExecutionStrategy {
     /// Run the proc-macro code on a different thread.
     CrossThread,
 }
+
+pub enum MetaUpdateStructKind {
+    // default rust-meta impl => smart pointers in struct result in whole struct being smart pointer
+    Default,
+    // smart pointers in struct are stored separately
+    Explicit,
+    // similar to default
+    Implicit,
+}
+
+pub enum MetaUpdateProtKind {
+    // default rust-meta protection => smart pointers are stored in heaps separated by guard pages
+    Default,
+    //similar to default
+    GaurdPage,
+    //intel-mpk => guard pages aren't enough => add intel MPK where smart pointers' region is protected
+    IntelMPK,
+    //ARM MTE => use ARM MTE? we need to check this, what about AMD processors?
+    ARMMTE
+}
+
+pub struct MetaUpdateProtection {
+    // whether rust-meta is enabled
+    enabled: bool,
+    //struct-kind: how structs with inherent smart pointers should be handled
+    struct_kind: MetaUpdateStructKind,
+    //meta-update protection method
+    prot_method: MetaUpdateProtKind
+}
