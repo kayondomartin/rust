@@ -2759,7 +2759,7 @@ pub(crate) mod dep_tracking {
         BranchProtection, CFGuard, CFProtection, CrateType, DebugInfo, ErrorOutputType,
         InstrumentCoverage, LdImpl, LinkerPluginLto, LocationDetail, LtoCli, OomStrategy, OptLevel,
         OutputType, OutputTypes, Passes, SourceFileHashAlgorithm, SplitDwarfKind,
-        SwitchWithOptPath, SymbolManglingVersion, TrimmedDefPaths,
+        SwitchWithOptPath, SymbolManglingVersion, TrimmedDefPaths, MetaUpdateProtKind, MetaUpdateStructKind,
     };
     use crate::lint;
     use crate::options::WasiExecModel;
@@ -2859,6 +2859,8 @@ pub(crate) mod dep_tracking {
         BranchProtection,
         OomStrategy,
         LanguageIdentifier,
+        MetaUpdateProtKind, //@kayondomartin
+        MetaUpdateStructKind, //@kayondomartin
     );
 
     impl<T1, T2> DepTrackingHash for (T1, T2)
@@ -2981,6 +2983,7 @@ pub enum ProcMacroExecutionStrategy {
 }
 
 /// How rust-meta should handle structs that contain smart pointers
+#[derive(Clone, Copy, Hash, Debug, PartialEq)]
 pub enum MetaUpdateStructKind {
     // default rust-meta impl => smart pointers in struct result in whole struct being smart pointer
     // smart pointers in struct are stored separately
@@ -2990,6 +2993,7 @@ pub enum MetaUpdateStructKind {
 }
 
 /// How rust-meta should protect the smart pointer region
+#[derive(Clone, Copy, Hash, Debug, PartialEq)]
 pub enum MetaUpdateProtKind {
     // default rust-meta protection => smart pointers are stored in heaps separated by guard pages
     //similar to default

@@ -715,7 +715,7 @@ mod parse {
         }
     }
     
-    pub(crate) fn parse_meta_update_prot_kind(slot: &mut Option<MetaUpdateStructKind>, v: Option<&str>) -> bool {
+    pub(crate) fn parse_meta_update_struct_kind(slot: &mut Option<MetaUpdateStructKind>, v: Option<&str>) -> bool {
         match v {
             Some("explicit") => {
                 * slot = Some(MetaUpdateStructKind::Explicit);
@@ -1701,7 +1701,7 @@ options! {
     meta_update_prot_kind: Option<MetaUpdateProtKind> = (None, parse_meta_update_prot_kind, [TRACKED],
                                                          "how to protect the smart pointer region. \
                                                          Requires `-meta-update[=[on,yes]]`"),
-
+    // TODO: add tests for the above three @kayondomartin
     // If you add a new option, please update:
     // - compiler/rustc_interface/src/tests.rs
 }
