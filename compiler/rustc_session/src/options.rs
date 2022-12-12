@@ -697,40 +697,35 @@ mod parse {
         match v {
             Some("mpk") => {
                 *slot = Some(MetaUpdateProtKind::IntelMPK);
-                true
             },
             Some("mte") => {
                 *slot = Some(MetaUpdateProtKind::ARMMTE);
-                true
             },
             Some("guard-page") => {
                 *slot = Some(MetaUpdateProtKind::GaurdPage);
-                true
             },
             
             _ => {
-                *slot = None;
-                false
+                *slot = Some(MetaUpdateProtKind::GaurdPage);
             }
-        }
+        };
+        true
     }
     
     pub(crate) fn parse_meta_update_struct_kind(slot: &mut Option<MetaUpdateStructKind>, v: Option<&str>) -> bool {
         match v {
             Some("explicit") => {
                 * slot = Some(MetaUpdateStructKind::Explicit);
-                true
             },
             Some("implicit") => {
                 *slot = Some(MetaUpdateStructKind::Implicit);
-                true
             },
             
             _ => {
-                *slot  = None;
-                false
+                *slot  = Some(MetaUpdateStructKind::Implicit);
             }
-        }
+        };
+        true
     }
 
     pub(crate) fn parse_sanitizer_memory_track_origins(slot: &mut usize, v: Option<&str>) -> bool {
@@ -1695,10 +1690,10 @@ options! {
     //rust-meta by SORLAB@kayondomartin
     meta_update: bool = (false, parse_bool, [TRACKED],
                          "enables rust-metadata update protection by SORLAB"),
-    meta_update_struct_kind: Option<MetaUpdateStructKind> = (None, parse_meta_update_struct_kind, [TRACKED], 
+    meta_update_struct_kind: Option<MetaUpdateStructKind> = (Some(MetaUpdateStructKind::Implicit), parse_meta_update_struct_kind, [TRACKED], 
                                                              "how to handle structs housing smart pointers. \
                                                              Requires `-meta-update[=[on,yes]]`"),
-    meta_update_prot_kind: Option<MetaUpdateProtKind> = (None, parse_meta_update_prot_kind, [TRACKED],
+    meta_update_prot_kind: Option<MetaUpdateProtKind> = (Some(MetaUpdateProtKind::GaurdPage), parse_meta_update_prot_kind, [TRACKED],
                                                          "how to protect the smart pointer region. \
                                                          Requires `-meta-update[=[on,yes]]`"),
     // TODO: add tests for the above three @kayondomartin
