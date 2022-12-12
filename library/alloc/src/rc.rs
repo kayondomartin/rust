@@ -281,7 +281,7 @@ use crate::string::String;
 use crate::vec::Vec;
 
 /*SOR-MetaUpdate@kayondomartin */
-use core::ptr::metadata_update::MetaUpdate;
+use core::ptr::metadata_update::{MetaUpdate, enable_metadata_update, disable_metadata_update};
 
 #[cfg(test)]
 mod tests;
@@ -1533,7 +1533,7 @@ impl<T> MetaUpdate for Rc<T> {
     /// ensure temporal safety. This will be done through the analysis stage of
     /// the MetaUpdate project. 
     /// TODO: ensure analysis is done to prevent double free/drop
-    fn synchronize(&self, new: usize) -> bool {
+    fn synchronize(&self, _new: usize) -> bool {
         true
     }
 }
@@ -2604,9 +2604,9 @@ trait RcInnerPtr {
         }
 
         let strong = strong.wrapping_add(1);
-        MetaUpdate::enable_metadata_update();
+        enable_metadata_update();
         self.strong_ref().set(strong);
-        MetaUpdate::disable_metadata_update();
+        disable_metadata_update();
 
         // We want to abort on overflow instead of dropping the value.
         // Checking for overflow after the store instead of before

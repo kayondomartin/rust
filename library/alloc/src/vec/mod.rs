@@ -76,7 +76,7 @@ use crate::collections::TryReserveError;
 use crate::raw_vec::RawVec;
 
 /*SOR-MetaUpdate@kayondomartin*/
-use core::ptr::metadata_update::MetaUpdate;
+use core::ptr::metadata_update::{MetaUpdate, enable_metadata_update, disable_metadata_update};
 
 #[unstable(feature = "drain_filter", reason = "recently added", issue = "43244")]
 pub use self::drain_filter::DrainFilter;
@@ -1372,9 +1372,9 @@ impl<T, A: Allocator> Vec<T, A> {
         debug_assert!(new_len <= self.capacity());
 
 	    let actual_len = if self.synchronize(new_len) { new_len} else { self.capacity()};
-	    MetaUpdate::enable_metadata_update();
+	    enable_metadata_update();
         self.len = actual_len;
-	    MetaUpdate::disable_metadata_update();
+	    disable_metadata_update();
     }
 
     /// Removes an element from the vector and returns it.
