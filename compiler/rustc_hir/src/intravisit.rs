@@ -522,6 +522,7 @@ pub fn walk_item<'v, V: Visitor<'v>>(visitor: &mut V, item: &'v Item<'v>) {
             visitor.visit_ty(self_ty);
             walk_list!(visitor, visit_impl_item_ref, *items);
         }
+        // TODO: @kayondomartin interested!!
         ItemKind::Struct(ref struct_definition, ref generics)
         | ItemKind::Union(ref struct_definition, ref generics) => {
             visitor.visit_generics(generics);

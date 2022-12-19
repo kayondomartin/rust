@@ -241,7 +241,7 @@ fn get_path_containing_arg_in_pat<'hir>(
     arg_path
 }
 
-pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
+pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { // TODO: @kayondomartin, what does this do? Seems to be querying the type of a given DefId, but where is it used?
     let def_id = def_id.expect_local();
     use rustc_hir::*;
 

@@ -568,7 +568,7 @@ fn get_new_lifetime_name<'tcx>(
     (1..).flat_map(a_to_z_repeat_n).find(|lt| !existing_lifetimes.contains(lt.as_str())).unwrap()
 }
 
-fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) {
+fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) { // TODO: @kayondomartin interested!! what are converting to & from?
     let it = tcx.hir().item(item_id);
     debug!("convert: item {} with id {}", it.ident, it.hir_id());
     let def_id = item_id.owner_id.def_id;
@@ -627,6 +627,7 @@ fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) {
             tcx.at(it.span).super_predicates_of(def_id);
             tcx.ensure().predicates_of(def_id);
         }
+        // TODO: @kayondomartin interested!!!
         hir::ItemKind::Struct(ref struct_def, _) | hir::ItemKind::Union(ref struct_def, _) => {
             tcx.ensure().generics_of(def_id);
             tcx.ensure().type_of(def_id);
@@ -851,7 +852,7 @@ fn convert_variant(
     )
 }
 
-fn adt_def<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> ty::AdtDef<'tcx> {
+fn adt_def<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> ty::AdtDef<'tcx> {// TODO: @kayondomartin interested!!! how is this different from convert type?
     use rustc_hir::*;
 
     let def_id = def_id.expect_local();

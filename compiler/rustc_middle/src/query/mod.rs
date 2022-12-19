@@ -609,6 +609,7 @@ rustc_queries! {
         cache_on_disk_if { key.is_local() }
         separate_provide_extern
     }
+    // TODO: @kayondomartin interested!! what's going on here? Do we need a query too?
     query adt_def(key: DefId) -> ty::AdtDef<'tcx> {
         desc { |tcx| "computing ADT definition for `{}`", tcx.def_path_str(key) }
         cache_on_disk_if { key.is_local() }
