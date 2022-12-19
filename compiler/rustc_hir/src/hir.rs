@@ -3057,7 +3057,7 @@ pub enum ItemKind<'hir> {
     /// A trait alias.
     TraitAlias(&'hir Generics<'hir>, GenericBounds<'hir>),
 
-    /// An implementation, e.g., `impl<A> Trait for Foo { .. }`.
+    /// An implementation, e.g., `impl<A> Trait for Foo { .. }`. // TODO: @kayondomartin interested!! I believe we need this for smart pointer recognition!
     Impl(&'hir Impl<'hir>),
 }
 
