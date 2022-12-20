@@ -1,4 +1,3 @@
-use hir::ItemKind;
 use rustc_errors::{Applicability, StashKey};
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
@@ -550,16 +549,20 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
         //let metaupdate_name = Symbol::intern("MetaUpdate");
         for trait_id in tcx.all_traits() {
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
-                for &impl_def_id in tcx.hir().trait_impls(trait_id){
+                if tcx.inherent_impls(def_id).contains(&trait_id) {
+                    warn!("Found special type: {}", tcx.item_name(def_id).as_str());
+                    return true;
+                }
+                /*for &impl_def_id in tcx.hir().trait_impls(trait_id){
                     if let Node::Item(item) = tcx.hir().get_by_def_id(impl_def_id){
+                        tcx.inherent_impls(def_id).con
                         if let ItemKind::Impl(i) = item.kind {
                             if tcx.hir().local_def_id(i.self_ty.hir_id) == def_id.expect_local() {
-                                warn!("Found special type: {}", tcx.item_name(def_id).as_str());
-                                return true;
+                                
                             }
                         }
                     }
-                }
+                }*/
             }
         }
     }
