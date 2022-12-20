@@ -3062,7 +3062,7 @@ pub enum ItemKind<'hir> {
 }
 
 #[derive(Debug, HashStable_Generic)]
-pub struct Impl<'hir> {
+pub struct Impl<'hir> { // TODO: @kayondomartin interested!! I believe we need this for smart pointer recognition!
     pub unsafety: Unsafety,
     pub polarity: ImplPolarity,
     pub defaultness: Defaultness,
@@ -3073,7 +3073,7 @@ pub struct Impl<'hir> {
     pub generics: &'hir Generics<'hir>,
 
     /// The trait being implemented, if any.
-    pub of_trait: Option<TraitRef<'hir>>,
+    pub of_trait: Option<TraitRef<'hir>>, 
 
     pub self_ty: &'hir Ty<'hir>,
     pub items: &'hir [ImplItemRef],

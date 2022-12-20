@@ -1,3 +1,4 @@
+use hir::ItemKind;
 use rustc_errors::{Applicability, StashKey};
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
@@ -542,15 +543,27 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { // TODO: @kayo
 /// Given a type ID, this function checks whether it's a smart pointer or it houses a smart pointer.
 /// A complex ADT whose all fields are smart pointers is simply a smart pointer.
 /// TODO: add this to notes && to the paper. perhaps to implementation & design
-pub(super) fn is_special_ty(tcx: TyCtxt<'_>, _def_id: DefId) -> bool {
+/// TODO: define an enum to differentiate the kind of special type if is: ie. is it entirely special or is it inherently special(specify which field)
+pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     //get MetaUpdate trait ID
     if tcx.sess.opts.unstable_opts.meta_update {
         //let metaupdate_name = Symbol::intern("MetaUpdate");
-        for trait_ in tcx.all_traits() {
-            tcx.sess.warn(format!("Found a trait! {}", tcx.item_name(trait_).as_str())) ;
+        for trait_id in tcx.all_traits() {
+            if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
+                for &impl_def_id in tcx.hir().trait_impls(trait_id){
+                    if let Node::Item(item) = tcx.hir().get_by_def_id(impl_def_id){
+                        if let ItemKind::Impl(i) = item.kind {
+                            if tcx.hir().local_def_id(i.self_ty.hir_id) == def_id.expect_local() {
+                                warn!("Found special type: {}", tcx.item_name(def_id).as_str());
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-    true
+    return false;
 }
 
 #[instrument(skip(tcx), level = "debug")]
