@@ -62,6 +62,7 @@ pub fn provide(providers: &mut Providers) {
     *providers = Providers {
         opt_const_param_of: type_of::opt_const_param_of,
         type_of: type_of::type_of,
+        is_special_ty: type_of::is_special_ty,
         item_bounds: item_bounds::item_bounds,
         explicit_item_bounds: item_bounds::explicit_item_bounds,
         generics_of: generics_of::generics_of,
@@ -632,6 +633,7 @@ fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) { // TODO: @kayondomartin
             tcx.ensure().generics_of(def_id);
             tcx.ensure().type_of(def_id);
             tcx.ensure().predicates_of(def_id);
+            tcx.ensure().is_special_ty(def_id);
 
             for f in struct_def.fields() {
                 let def_id = tcx.hir().local_def_id(f.hir_id);

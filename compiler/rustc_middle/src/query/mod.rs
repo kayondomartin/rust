@@ -163,6 +163,14 @@ rustc_queries! {
         cache_on_disk_if { key.is_local() }
         separate_provide_extern
     }
+    
+    /// Whether a given type is special or not
+    /// A type will be special if it is a smart pointer or it encloses a smart pointer
+    query is_special_ty(key: DefId) -> bool {
+        desc {"check whether a given type is special or not"}
+        cache_on_disk_if {key.is_local()}
+        separate_provide_extern
+    }
 
     query collect_trait_impl_trait_tys(key: DefId)
         -> Result<&'tcx FxHashMap<DefId, Ty<'tcx>>, ErrorGuaranteed>

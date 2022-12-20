@@ -538,6 +538,21 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { // TODO: @kayo
     }
 }
 
+
+/// Given a type ID, this function checks whether it's a smart pointer or it houses a smart pointer.
+/// A complex ADT whose all fields are smart pointers is simply a smart pointer.
+/// TODO: add this to notes && to the paper. perhaps to implementation & design
+pub(super) fn is_special_ty(tcx: TyCtxt<'_>, _def_id: DefId) -> bool {
+    //get MetaUpdate trait ID
+    if tcx.sess.opts.unstable_opts.meta_update {
+        //let metaupdate_name = Symbol::intern("MetaUpdate");
+        for trait_ in tcx.all_traits() {
+            tcx.sess.warn(format!("Found a trait! {}", tcx.item_name(trait_).as_str())) ;
+        }
+    }
+    true
+}
+
 #[instrument(skip(tcx), level = "debug")]
 /// Checks "defining uses" of opaque `impl Trait` types to ensure that they meet the restrictions
 /// laid for "higher-order pattern unification".
