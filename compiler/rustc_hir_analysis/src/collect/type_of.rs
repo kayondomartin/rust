@@ -550,7 +550,7 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
         for trait_id in tcx.all_traits() {
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
                 tcx.all_impls(def_id).for_each(| impl_id| {
-                    warn!("Found impl: {}", tcx.item_name(def_id).as_str());
+                    warn!("Found impl: {}", tcx.item_name(impl_id).as_str());
                 });
                 /*if tcx.all_impls(def_id).contains(&trait_id) {
                     warn!("Found special type: {}", tcx.item_name(def_id).as_str());
