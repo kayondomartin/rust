@@ -549,11 +549,14 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
         //let metaupdate_name = Symbol::intern("MetaUpdate");
         for trait_id in tcx.all_traits() {
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
-                if tcx.inherent_impls(def_id).contains(&trait_id) {
+                tcx.all_impls(def_id).for_each(| impl_id| {
+                    warn!("Found impl: {}", tcx.item_name(def_id).as_str());
+                });
+                /*if tcx.all_impls(def_id).contains(&trait_id) {
                     warn!("Found special type: {}", tcx.item_name(def_id).as_str());
                     return true;
                 }
-                /*for &impl_def_id in tcx.hir().trait_impls(trait_id){
+                for &impl_def_id in tcx.hir().trait_impls(trait_id){
                     if let Node::Item(item) = tcx.hir().get_by_def_id(impl_def_id){
                         tcx.inherent_impls(def_id).con
                         if let ItemKind::Impl(i) = item.kind {
