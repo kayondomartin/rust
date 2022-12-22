@@ -544,22 +544,22 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { // TODO: @kayo
 /// TODO: add this to notes && to the paper. perhaps to implementation & design
 /// TODO: define an enum to differentiate the kind of special type if is: ie. is it entirely special or is it inherently special(specify which field)
 pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
-    //get MetaUpdate trait ID
+    // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
+    let mut is_special = false;
     if tcx.sess.opts.unstable_opts.meta_update {
-        //let metaupdate_name = Symbol::intern("MetaUpdate");
         for trait_id in tcx.all_traits() {
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
-                tcx.all_impls(def_id).for_each(| impl_id| {
+                tcx.all_impls(trait_id).for_each(| impl_id| {
                     if let Some(trait_ref) = tcx.impl_trait_ref(impl_id) {
-                        if trait_id == trait_ref.def_id {
-                            warn!("Found special impl: {}", tcx.item_name(def_id));
+                        if tcx.type_of(def_id) == trait_ref.self_ty() {
+                            is_special = true;
                         }
                     }
                 });
             }
         }
     }
-    return false;
+    return is_special;
 }
 
 #[instrument(skip(tcx), level = "debug")]
