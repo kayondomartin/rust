@@ -547,16 +547,15 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
     let mut is_special = false;
     if tcx.sess.opts.unstable_opts.meta_update {
-        for trait_id in tcx.all_traits() {
-            if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
-                tcx.all_impls(trait_id).for_each(| impl_id| {
-                    if let Some(trait_ref) = tcx.impl_trait_ref(impl_id) {
-                        if tcx.type_of(def_id) == trait_ref.self_ty() {
-                            is_special = true;
-                        }
+        if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
+            tcx.all_impls(trait_id).for_each(| impl_id| {
+                if let Some(trait_ref) = tcx.impl_trait_ref(impl_id) {
+                    if tcx.type_of(def_id) == trait_ref.self_ty() {
+                        is_special = true;
+                        warn!("Found special type: {}", tcx.item_name(def_id));
                     }
-                });
-            }
+                }
+            });
         }
     }
     return is_special;

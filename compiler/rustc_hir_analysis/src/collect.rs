@@ -62,6 +62,7 @@ pub fn provide(providers: &mut Providers) {
     *providers = Providers {
         opt_const_param_of: type_of::opt_const_param_of,
         type_of: type_of::type_of,
+        rust_metaupdate_trait_id,
         is_special_ty: type_of::is_special_ty,
         item_bounds: item_bounds::item_bounds,
         explicit_item_bounds: item_bounds::explicit_item_bounds,
@@ -1405,6 +1406,18 @@ fn predicates_defined_on(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericPredicate
 
     debug!("predicates_defined_on({:?}) = {:?}", def_id, result);
     result
+}
+
+fn rust_metaupdate_trait_id(tcx: TyCtxt<'_>, ():()) -> Option<DefId> {
+    if tcx.sess.opts.unstable_opts.meta_update {
+        for trait_id in tcx.all_traits() {
+            if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
+                warn!("MetaUpdate path: {}",tcx.def_path_str(trait_id));
+                return Some(trait_id);
+            }
+        }
+    }
+    None
 }
 
 fn compute_sig_of_foreign_fn_decl<'tcx>(

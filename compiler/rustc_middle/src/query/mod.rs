@@ -171,6 +171,10 @@ rustc_queries! {
         cache_on_disk_if {key.is_local()}
         separate_provide_extern
     }
+    
+    query rust_metaupdate_trait_id(_:()) -> Option<DefId> {
+        desc {"collect ll special types according to rust_meta"}    
+    }
 
     query collect_trait_impl_trait_tys(key: DefId)
         -> Result<&'tcx FxHashMap<DefId, Ty<'tcx>>, ErrorGuaranteed>
