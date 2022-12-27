@@ -1648,6 +1648,7 @@ symbols! {
         yeet_expr,
         ymm_reg,
         zmm_reg,
+        metadata_update
     }
 }
 

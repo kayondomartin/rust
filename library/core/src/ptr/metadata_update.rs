@@ -7,6 +7,7 @@ use core::ops::{Drop, Deref};
 /// MetaUpdate trait. The trait to be implemented by smartpointers.
 /// We are using Drop + Deref with the assumption that all smart
 /// pointers implement the Deref and Drop trait.
+#[lang = "metadata_update"]
 #[unstable(feature = "metadata_update", issue = "none")]
 #[allow(drop_bounds)]
 pub trait MetaUpdate: Drop + Deref{
