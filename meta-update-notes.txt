@@ -47,3 +47,8 @@ Type IDs:
             Ultimately, we need to discuss whether it's better to load from a Box<T> to access such member fields or to have the whole struct considered as deserving special protection. 
             Of course, based on the method of protection, one is better than the other. Currently, we are considering Guard Pages vs MPK. With Guard Pages, we will consider simply having a guard page protecting the regions. As such, considering the whole type as a special doesn't seem to incur more performance overhead. If we use MPK on the other hand, writing the any object field (be it the smart pointer or not) will require enabling write access for the whole smart pointer region. This will flood the binary with so many MPK access instructions making it risky.
             WE WILL NEED TO TRADE CAREFULLY!!
+            
+            
+HIR Editing:
+    Because the HIR has no MutVisitor, it appears to be hard to modify HIR using a pass. 
+    The current idea is to implement our own MutVisitor for HIR and find a place to fix it. I believe it should be before typechecking.
