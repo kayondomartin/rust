@@ -1,3 +1,4 @@
+use hir::TyKind;
 use rustc_errors::{Applicability, StashKey};
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
@@ -548,7 +549,20 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     let mut is_special = false;
     if tcx.sess.opts.unstable_opts.meta_update {
         let def_ty = tcx.type_of(def_id);
-        match def_ty.kind() {
+        if let ty::Adt(adt_def, _) = def_ty.kind(){
+            if let Some(trait_id) = tcx.rust_metaupdate_trait(()){
+                for impl_id in tcx.all_impls(trait_id){
+                    if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
+                        if let ty::Adt(adt_def2, _) = trait_ref.self_ty().kind(){
+                            if adt_def2 == adt_def {
+                                is_special = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        /*match def_ty.kind() {
             ty::TyKind::Adt(adt_def, _) => {
                                         
                 if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
@@ -569,7 +583,7 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
             },
             _ => return false            
         }
-        /*if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
+        if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
             tcx.all_impls(trait_id).for_each(| impl_id| {
                 if let Some(trait_ref) = tcx.impl_trait_ref(impl_id) {
                     if tcx.type_of(def_id) == trait_ref.self_ty() {
