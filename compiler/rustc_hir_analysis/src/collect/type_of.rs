@@ -7,7 +7,7 @@ use rustc_hir::{HirId, Node};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::subst::InternalSubsts;
 use rustc_middle::ty::util::IntTypeExt;
-use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFolder, TypeSuperFoldable, TypeVisitable};
+use rustc_middle::ty::{self, DefIdTree, Ty, TyKind, TyCtxt, TypeFolder, TypeSuperFoldable, TypeVisitable};
 use rustc_span::symbol::Ident;
 use rustc_span::{Span, DUMMY_SP};
 
@@ -547,16 +547,41 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
     let mut is_special = false;
     if tcx.sess.opts.unstable_opts.meta_update {
-        if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
+        let def_ty = tcx.type_of(def_id);
+        match def_ty.kind() {
+            ty::TyKind::Adt(adt_def, _) => {
+                                        
+                if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
+                    tcx.all_impls(trait_id).for_each(| impl_id| {
+                        if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
+                            match trait_ref.self_ty().kind() {
+                                ty::TyKind::Adt(adt_def2, _) => if adt_def == adt_def2 {
+                                            is_special = true;
+                                            warn!("TraitRef Ty: {}", trait_ref.self_ty());
+                                },
+                            
+                                _ => {}                     
+                            }
+                        }
+                    });
+                }
+
+            },
+            _ => return false            
+        }
+        /*if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
             tcx.all_impls(trait_id).for_each(| impl_id| {
                 if let Some(trait_ref) = tcx.impl_trait_ref(impl_id) {
                     if tcx.type_of(def_id) == trait_ref.self_ty() {
                         is_special = true;
                         warn!("Found special type: {}", tcx.item_name(def_id));
                     }
+                    warn!("TraitRef Ty: {}", trait_ref.self_ty());
                 }
             });
-        }
+        }*/
+
+        warn!("Checked Type: {}: {}, type: {}", tcx.item_name(def_id), is_special, tcx.type_of(def_id));
     }
     return is_special;
 }
