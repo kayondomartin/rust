@@ -634,12 +634,11 @@ fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) { // TODO: @kayondomartin
             tcx.ensure().generics_of(def_id);
             tcx.ensure().type_of(def_id);
             tcx.ensure().predicates_of(def_id);
-            tcx.ensure().is_special_ty(def_id);
 
             for f in struct_def.fields() {
                 let def_id = tcx.hir().local_def_id(f.hir_id);
                 tcx.ensure().generics_of(def_id);
-                tcx.ensure().type_of(def_id);tcx.ensure().is_special_ty(def_id); // TODO: testing inner fields
+                tcx.ensure().type_of(def_id);
                 tcx.ensure().predicates_of(def_id);
             }
 

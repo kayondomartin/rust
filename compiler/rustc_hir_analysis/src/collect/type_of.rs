@@ -241,7 +241,7 @@ fn get_path_containing_arg_in_pat<'hir>(
     arg_path
 }
 
-pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { // TODO: @kayondomartin, what does this do? Seems to be querying the type of a given DefId, but where is it used?
+pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { 
     let def_id = def_id.expect_local();
     use rustc_hir::*;
 
@@ -388,7 +388,14 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { // TODO: @kayo
             }
         },
 
-        Node::Field(field) => icx.to_ty(field.ty),
+        Node::Field(field) => {
+            let ty_ = icx.to_ty(field.ty);
+            if tcx.is_special_ty(ty_) {
+                tcx.mk_box(ty_)
+            }else{
+                ty_
+            }
+        },
 
         Node::Expr(&Expr { kind: ExprKind::Closure { .. }, .. }) => {
             tcx.typeck(def_id).node_type(hir_id)
@@ -543,11 +550,10 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { // TODO: @kayo
 /// A complex ADT whose all fields are smart pointers is simply a smart pointer.
 /// TODO: add this to notes && to the paper. perhaps to implementation & design
 /// TODO: define an enum to differentiate the kind of special type if is: ie. is it entirely special or is it inherently special(specify which field)
-pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
     let mut is_special = false;
     if tcx.sess.opts.unstable_opts.meta_update {
-        let def_ty = tcx.type_of(def_id);
         match def_ty.kind() {
             ty::Adt(adt_def, _) => {
                                         
@@ -580,8 +586,6 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
                 }
             });
         }*/
-
-        warn!("Checked Type: {}: {}, type: {}", tcx.item_name(def_id), is_special, tcx.type_of(def_id));
     }
     return is_special;
 }

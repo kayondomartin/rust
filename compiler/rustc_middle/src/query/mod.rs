@@ -166,9 +166,8 @@ rustc_queries! {
     
     /// Whether a given type is special or not
     /// A type will be special if it is a smart pointer or it encloses a smart pointer
-    query is_special_ty(key: DefId) -> bool {
+    query is_special_ty(key: Ty<'tcx>) -> bool {
         desc {"check whether a given type is special or not"}
-        cache_on_disk_if {key.is_local()}
         separate_provide_extern
     }
     
