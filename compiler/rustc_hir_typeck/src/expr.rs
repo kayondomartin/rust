@@ -1514,6 +1514,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 .sess
                 .emit_err(StructExprNonExhaustive { span: expr.span, what: adt.variant_descr() });
         }
+        
+        if self.tcx().sess.opts.unstable_opts.meta_update {
+            warn!("checking struct expr: {:?}, ID: {:?}", adt, expr.hir_id);
+        }
 
         self.check_expr_struct_fields(
             adt_ty,
@@ -1640,6 +1644,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return;
         }
 
+        //TODO: figure out how to handle this, @kayondomartin
         if let Some(base_expr) = base_expr {
             // FIXME: We are currently creating two branches here in order to maintain
             // consistency. But they should be merged as much as possible.
