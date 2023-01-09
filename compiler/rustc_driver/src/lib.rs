@@ -18,6 +18,7 @@ pub extern crate rustc_plugin_impl as plugin;
 
 use rustc_ast as ast;
 use rustc_codegen_ssa::{traits::CodegenBackend, CodegenErrors, CodegenResults};
+use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::profiling::{get_resident_set_size, print_time_passes_entry};
 use rustc_data_structures::sync::SeqCst;
 use rustc_errors::registry::{InvalidErrorCode, Registry};
@@ -40,10 +41,15 @@ use rustc_session::{early_error, early_error_no_abort, early_warn};
 use rustc_span::source_map::{FileLoader, FileName};
 use rustc_span::symbol::sym;
 use rustc_target::json::ToJson;
+use rustc_middle::ty::{List, ParamEnv, TyCtxt};
+use rustc_hir as hir;
+use rustc_infer::infer::TyCtxtInferExt;
+use rustc_trait_selection::infer::InferCtxtExt;
+
 
 use std::borrow::Cow;
 use std::cmp::max;
-use std::default::Default;
+use std::default::{Default};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -190,6 +196,48 @@ impl<'a, 'b> RunCompiler<'a, 'b> {
         run_compiler(self.at_args, self.callbacks, self.file_loader, self.make_codegen_backend)
     }
 }
+
+
+fn collect_special_types<'tcx>(tcx: TyCtxt<'tcx>) -> (FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) {
+    let mut special_types: (FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) = (FxHashSet::default(), FxHashSet::default());
+    if tcx.sess.opts.unstable_opts.meta_update {
+        if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()){
+            let hir = tcx.hir();
+            let resolver = tcx.resolver_for_lowering(()).steal(); // not sure whether this actually works
+            let ictxt = tcx.infer_ctxt().build();
+            for item in hir.items(){
+                let item = hir.item(item);
+                match item.kind {
+                    hir::ItemKind::Struct(ref struct_definition, _) => {
+                        let item_def_id = hir.local_def_id(item.hir_id()).to_def_id();
+                        let ty = tcx.type_of(item_def_id);
+                        if ictxt.type_implements_trait(trait_id, ty, List::empty(), ParamEnv::empty()).must_apply_considering_regions(){
+                            let node_id = resolver.def_id_to_node_id.get(item_def_id.expect_local()).unwrap();
+                            special_types.0.insert(*node_id);
+                        }else{
+                            let num_fields = struct_definition.fields().len();
+                            for field in struct_definition.fields(){
+                                let field_def_id = hir.local_def_id(field.hir_id).to_def_id();
+                                let field_ty = tcx.type_of(field_def_id);
+                                if ictxt.type_implements_trait(trait_id, field_ty, List::empty(), ParamEnv::empty()).must_apply_considering_regions(){
+                                    let node_id = resolver.def_id_to_node_id.get(field_def_id.expect_local()).unwrap();
+                                    if num_fields == 1 {
+                                        special_types.0.insert(*node_id);
+                                    }else{
+                                        special_types.1.insert(*node_id);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    _=> {}
+                }
+            }
+        }
+    }
+    special_types
+}
+
 
 fn run_compiler(
     at_args: &[String],
@@ -372,8 +420,10 @@ fn run_compiler(
                 return early_exit();
             }
 
+            let mut special_types:(FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) = (FxHashSet::default(), FxHashSet::default());
             queries.global_ctxt()?.peek_mut().enter(|tcx| {
                 let result = tcx.analysis(());
+                special_types = collect_special_types(tcx);
                 if sess.opts.unstable_opts.save_analysis {
                     let crate_name = queries.crate_name()?.peek().clone();
                     sess.time("save_analysis", || {
