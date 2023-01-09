@@ -359,7 +359,7 @@ fn run_compiler(
             if let Some(ppm) = &sess.opts.pretty {
                 if ppm.needs_ast_map() {
                     let expanded_crate = queries.expansion()?.peek().0.clone();
-                    queries.global_ctxt()?.peek_mut().enter(|tcx| {
+                    queries.global_ctxt(None)?.peek_mut().enter(|tcx| {
                         pretty::print_after_hir_lowering(
                             tcx,
                             compiler.input(),
@@ -414,14 +414,14 @@ fn run_compiler(
                 return early_exit();
             }
 
-            queries.global_ctxt()?;
+            queries.global_ctxt(None)?;
 
             if sess.opts.unstable_opts.no_analysis {
                 return early_exit();
             }
 
             let mut special_types:(FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) = (FxHashSet::default(), FxHashSet::default());
-            queries.global_ctxt()?.peek_mut().enter(|tcx| {
+            queries.global_ctxt(None)?.peek_mut().enter(|tcx| {
                 let result = tcx.analysis(());
                 special_types = collect_special_types(tcx);
                 if sess.opts.unstable_opts.save_analysis {
@@ -446,7 +446,7 @@ fn run_compiler(
                 return early_exit();
             }
 
-            queries.ongoing_codegen()?;
+            queries.ongoing_codegen(Some(special_types))?;
 
             if sess.opts.unstable_opts.print_type_sizes {
                 sess.code_stats.print_type_sizes();
