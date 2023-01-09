@@ -1233,6 +1233,7 @@ impl<'tcx> TyCtxt<'tcx> {
         query_kinds: &'tcx [DepKindStruct<'tcx>],
         crate_name: &str,
         output_filenames: OutputFilenames,
+        special_types: Option<(FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>)>
     ) -> GlobalCtxt<'tcx> {
         let ResolverOutputs {
             definitions,
@@ -1281,7 +1282,7 @@ impl<'tcx> TyCtxt<'tcx> {
             data_layout,
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames),
-            special_types: (FxHashSet::default(), FxHashSet::default()),
+            special_types: if special_types.is_none() { (FxHashSet::default(), FxHashSet::default())} else {special_types.unwrap()},
         }
     }
 
