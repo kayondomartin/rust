@@ -11,6 +11,7 @@ use ast::CRATE_NODE_ID;
 use rustc_ast::{self as ast, visit};
 use rustc_borrowck as mir_borrowck;
 use rustc_codegen_ssa::traits::CodegenBackend;
+use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::parallel;
 use rustc_data_structures::sync::{Lrc, OnceCell, WorkerLocal};
 use rustc_errors::{ErrorGuaranteed, PResult};
@@ -778,6 +779,7 @@ pub fn create_global_ctxt<'tcx>(
     global_ctxt: &'tcx OnceCell<GlobalCtxt<'tcx>>,
     arena: &'tcx WorkerLocal<Arena<'tcx>>,
     hir_arena: &'tcx WorkerLocal<rustc_hir::Arena<'tcx>>,
+    special_types: Option<(FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>)>
 ) -> QueryContext<'tcx> {
     // We're constructing the HIR here; we don't care what we will
     // read, since we haven't even constructed the *input* to
@@ -819,6 +821,7 @@ pub fn create_global_ctxt<'tcx>(
                 rustc_query_impl::query_callbacks(arena),
                 crate_name,
                 outputs,
+                special_types
             )
         })
     });

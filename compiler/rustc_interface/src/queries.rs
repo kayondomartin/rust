@@ -5,6 +5,7 @@ use crate::passes::{self, BoxedResolver, QueryContext};
 use rustc_ast as ast;
 use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_codegen_ssa::CodegenResults;
+use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::svh::Svh;
 use rustc_data_structures::sync::{Lrc, OnceCell, WorkerLocal};
 use rustc_hir::def_id::LOCAL_CRATE;
@@ -215,7 +216,7 @@ impl<'tcx> Queries<'tcx> {
         })
     }
 
-    pub fn global_ctxt(&'tcx self) -> Result<&Query<QueryContext<'tcx>>> {
+    pub fn global_ctxt(&'tcx self, special_types: Option<(FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>)>) -> Result<&Query<QueryContext<'tcx>>> {
         self.global_ctxt.compute(|| {
             let crate_name = self.crate_name()?.peek().clone();
             let outputs = self.prepare_outputs()?.peek().clone();
@@ -233,14 +234,15 @@ impl<'tcx> Queries<'tcx> {
                 &self.gcx,
                 &self.arena,
                 &self.hir_arena,
+                special_types,
             ))
         })
     }
 
-    pub fn ongoing_codegen(&'tcx self) -> Result<&Query<Box<dyn Any>>> {
+    pub fn ongoing_codegen(&'tcx self, special_types: Option<(FxHashSet<ast::NodeId>,FxHashSet<ast::NodeId>)>) -> Result<&Query<Box<dyn Any>>> {
         self.ongoing_codegen.compute(|| {
             let outputs = self.prepare_outputs()?;
-            self.global_ctxt()?.peek_mut().enter(|tcx| {
+            self.global_ctxt(special_types)?.peek_mut().enter(|tcx| {
                 tcx.analysis(()).ok();
 
                 // Don't do code generation if there were any errors
@@ -298,8 +300,8 @@ impl<'tcx> Queries<'tcx> {
 
         let dep_graph = self.dep_graph()?.peek().clone();
         let prepare_outputs = self.prepare_outputs()?.take();
-        let crate_hash = self.global_ctxt()?.peek_mut().enter(|tcx| tcx.crate_hash(LOCAL_CRATE));
-        let ongoing_codegen = self.ongoing_codegen()?.take();
+        let crate_hash = self.global_ctxt(None)?.peek_mut().enter(|tcx| tcx.crate_hash(LOCAL_CRATE));
+        let ongoing_codegen = self.ongoing_codegen(None)?.take();
 
         Ok(Linker {
             sess,
