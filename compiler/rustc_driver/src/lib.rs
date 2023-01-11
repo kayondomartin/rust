@@ -41,11 +41,6 @@ use rustc_session::{early_error, early_error_no_abort, early_warn};
 use rustc_span::source_map::{FileLoader, FileName};
 use rustc_span::symbol::sym;
 use rustc_target::json::ToJson;
-use rustc_middle::ty::{List, ParamEnv, TyCtxt};
-use rustc_hir as hir;
-use rustc_infer::infer::TyCtxtInferExt;
-use rustc_trait_selection::infer::InferCtxtExt;
-
 
 use std::borrow::Cow;
 use std::cmp::max;
@@ -144,6 +139,41 @@ impl Callbacks for TimePassesCallbacks {
     }
 }
 
+pub struct MetaUpdateCallbacks {
+    special_types: (FxHashSet<hir::HirId>, FxHashSet<hir::HirId>)
+}
+
+impl Callbacks for MetaUpdateCallbacks {
+    // JUSTIFICATION: the session doesn't exist at this point.
+    #[allow(rustc::bad_opt_access)]
+    fn config(&mut self, config: &mut interface::Config) {
+        // If a --print=... option has been given, we don't print the "total"
+        // time because it will mess up the --print output. See #64339.
+        //
+        self.time_passes = config.opts.prints.is_empty() && config.opts.unstable_opts.time_passes;
+        config.opts.trimmed_def_paths = TrimmedDefPaths::GoodPath;
+    }
+    
+    fn after_parsing<'tcx>(
+            &mut self,
+            compiler: &interface::Compiler,
+            queries: &'tcx Queries<'tcx>,
+        ) -> Compilation {
+        if !compiler.session().opts.unstable_opts.meta_update {
+            Compilation::Stop
+        }else{
+            Compilation::Continue
+        }
+    }
+    
+    fn after_analysis<'tcx>(
+            &mut self,
+            compiler: &interface::Compiler,
+            queries: &'tcx Queries<'tcx>,
+        ) -> Compilation {
+        Compilation::Stop
+    }
+}
 pub fn diagnostics_registry() -> Registry {
     Registry::new(rustc_error_codes::DIAGNOSTICS)
 }
@@ -197,7 +227,7 @@ impl<'a, 'b> RunCompiler<'a, 'b> {
     }
 }
 
-
+/* 
 fn collect_special_types<'tcx>(tcx: TyCtxt<'tcx>) -> (FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) {
     let mut special_types: (FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) = (FxHashSet::default(), FxHashSet::default());
     if tcx.sess.opts.unstable_opts.meta_update {
@@ -237,7 +267,7 @@ fn collect_special_types<'tcx>(tcx: TyCtxt<'tcx>) -> (FxHashSet<ast::NodeId>, Fx
     }
     special_types
 }
-
+*/
 
 fn run_compiler(
     at_args: &[String],
@@ -420,10 +450,8 @@ fn run_compiler(
                 return early_exit();
             }
 
-            let mut special_types:(FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) = (FxHashSet::default(), FxHashSet::default());
             queries.global_ctxt()?.peek_mut().enter(|tcx| {
                 let result = tcx.analysis(());
-                special_types = collect_special_types(tcx);
                 if sess.opts.unstable_opts.save_analysis {
                     let crate_name = queries.crate_name()?.peek().clone();
                     sess.time("save_analysis", || {
@@ -1388,6 +1416,7 @@ pub fn main() -> ! {
     init_rustc_env_logger();
     signal_handler::install();
     let mut callbacks = TimePassesCallbacks::default();
+    let mut meta_update_callbacks = MetaUpdateCallbacks::default();
     install_ice_hook();
     let exit_code = catch_with_exit_code(|| {
         let args = env::args_os()
@@ -1401,6 +1430,7 @@ pub fn main() -> ! {
                 })
             })
             .collect::<Vec<_>>();
+        RunCompiler::new(&args, &mut meta_update_callbacks).run();
         RunCompiler::new(&args, &mut callbacks).run()
     });
 

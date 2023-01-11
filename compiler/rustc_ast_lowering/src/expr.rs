@@ -1389,10 +1389,11 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_expr_field(&mut self, f: &ExprField) -> hir::ExprField<'hir> {
         let hir_id = self.lower_node_id(f.id);
         self.lower_attrs(hir_id, &f.attrs);
+        let expr = self.lower_expr(&f.expr);
         hir::ExprField {
             hir_id,
             ident: self.lower_ident(f.ident),
-            expr: self.lower_expr(&f.expr),
+            expr: if self.tcx.sess.opts.unstable_opts.meta_update { self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()))} else {expr},
             span: self.lower_span(f.span),
             is_shorthand: f.is_shorthand,
         }
