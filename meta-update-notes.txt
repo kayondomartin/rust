@@ -59,6 +59,7 @@ HIR Editing:
     
  Installation:
  cd ~/project-home
+ git checkout ch-monomorphize-rust-meta
  ./x.py build && ./x.py install
  rustup toolchain link meta-rust ~/project-home/build/x86_64-unknown-linux-gnu/stage2/
  rustup default meta-rust
