@@ -4,6 +4,8 @@ use rls_data::{
     Ref, RefKind, Relation,
 };
 use rls_span::{Column, Row};
+use rustc_data_structures::fx::FxHashSet;
+use rustc_hir::HirId;
 
 #[derive(Debug)]
 pub struct Access {
@@ -18,7 +20,7 @@ pub struct Dumper {
 
 impl Dumper {
     pub fn new(config: Config) -> Dumper {
-        Dumper { config: config.clone(), result: Analysis::new(config) }
+        Dumper { config: config.clone(), result: Analysis::new(config)}
     }
 
     pub fn analysis(&self) -> &Analysis {
@@ -88,4 +90,10 @@ impl Dumper {
     pub fn dump_impl(&mut self, data: Impl) {
         self.result.impls.push(data);
     }
+}
+
+#[derive(Default)]
+struct MetaUpdateDumper{
+    pub special_types: FxHashSet<HirId>,
+    pub special_exprs: FxHashSet<HirId>
 }

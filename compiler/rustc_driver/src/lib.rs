@@ -139,6 +139,7 @@ impl Callbacks for TimePassesCallbacks {
     }
 }
 
+#[derive(Default)]
 pub struct MetaUpdateCallbacks {
     special_types: (FxHashSet<hir::HirId>, FxHashSet<hir::HirId>)
 }

@@ -13,6 +13,7 @@
 //! DumpVisitor walks the AST and processes it, and Dumper is used for
 //! recording the output.
 
+use hir::Expr;
 use rustc_ast as ast;
 use rustc_ast::walk_list;
 use rustc_data_structures::fx::FxHashSet;
@@ -23,15 +24,17 @@ use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir_pretty::{bounds_to_string, fn_to_string, generic_params_to_string, ty_to_string};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::span_bug;
-use rustc_middle::ty::{self, DefIdTree, TyCtxt};
+use rustc_middle::ty::{self, DefIdTree, TyCtxt, ParamEnv, List};
 use rustc_session::config::Input;
 use rustc_span::symbol::Ident;
 use rustc_span::*;
+use rustc_infer::infer::TyCtxtInferExt;
+use rustc_trait_selection::infer::InferCtxtExt;
 
 use std::env;
 use std::path::Path;
 
-use crate::dumper::{Access, Dumper};
+use crate::dumper::{Access, Dumper, MetaUpdateDumper};
 use crate::sig;
 use crate::span_utils::SpanUtils;
 use crate::{
@@ -1465,5 +1468,57 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx> {
                 }
             }
         }
+    }
+}
+
+
+struct MetaUpdateDumpVisitor<'tcx>{
+    tcx: TyCtxt<'tcx>,
+    ictxt: TyCtxtInferExt,
+    dumper: MetaUpdateDumper,
+    metaupdate_trait_id: Option<DefId>
+}
+
+impl<'tcx> MetaUpdateDumpVisitor<'tcx> {
+    fn new(tcx: TyCtxt<'tcx>) -> Self{
+        let mut metaupdate_trait_id = None;
+        for trait_id in tcx.all_traits() {
+            if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
+                metaupdate_trait_id = Some(trait_id);
+                break;
+            }
+        }
+        Self { tcx, ictxt: tcx.infer_ctxt().build(), dumper: MetaUpdateDumper::default(), metaupdate_trait_id }    
+    }
+    
+    fn special_types(&self) -> &FxHashSet<HirId> {
+        &self.dumper.special_types
+    }
+    
+    fn special_exprs(&self) -> &FxHashSet<HirId> {
+        &self.dumper.special_exprs
+    }
+}
+
+impl<'tcx> Visitor<'tcx> for MetaUpdateDumpVisitor<'tcx> {
+    type NestedFilter = nested_filter::All;
+    
+    fn nested_visit_map(&mut self) -> Self::Map {
+        self.tcx.hir()
+    }
+    
+    fn visit_expr(&mut self, expr: &'tcx hir::Expr) {
+        let ck = self.tcx.typeck(expr.hir_id.owner.def_id);
+        match expr.kind {
+            ExprKind::Struc(..) => {
+                if let Some(ty) = ck.node_type_opt(expr.hir_id){
+                    if self.ictxt.type_implements_trait(self.metaupdate_trait_id, ty, List::empty(), ParamEnv::empty()).may_apply(){
+                        self.dumper.special_exprs.insert(expr.hir_id);
+                    }
+                }
+            },
+            _ => {}
+        }
+        intravisit::walk_expr(self, expr);
     }
 }
