@@ -432,7 +432,7 @@ pub struct TypeckResults<'tcx> {
     /// of this node. This only applies to nodes that refer to entities
     /// parameterized by type parameters, such as generic fns, types, or
     /// other items.
-    node_substs: ItemLocalMap<SubstsRef<'tcx>>, // TODO: @kayondomartin: check!!!
+    node_substs: ItemLocalMap<SubstsRef<'tcx>>,
 
     /// This will either store the canonicalized types provided by the user
     /// or the substitutions that the user explicitly gave (if any) attached
