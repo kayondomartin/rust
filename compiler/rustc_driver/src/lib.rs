@@ -18,7 +18,6 @@ pub extern crate rustc_plugin_impl as plugin;
 
 use rustc_ast as ast;
 use rustc_codegen_ssa::{traits::CodegenBackend, CodegenErrors, CodegenResults};
-use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::profiling::{get_resident_set_size, print_time_passes_entry};
 use rustc_data_structures::sync::SeqCst;
 use rustc_errors::registry::{InvalidErrorCode, Registry};
@@ -30,7 +29,7 @@ use rustc_lint::LintStore;
 use rustc_log::stdout_isatty;
 use rustc_metadata::locator;
 use rustc_save_analysis as save;
-use rustc_save_analysis::DumpHandler;
+use rustc_save_analysis::{DumpHandler, metaupdate};
 use rustc_session::config::{nightly_options, CG_OPTIONS, Z_OPTIONS};
 use rustc_session::config::{ErrorOutputType, Input, OutputType, PrintRequest, TrimmedDefPaths};
 use rustc_session::cstore::MetadataLoader;
@@ -41,10 +40,10 @@ use rustc_session::{early_error, early_error_no_abort, early_warn};
 use rustc_span::source_map::{FileLoader, FileName};
 use rustc_span::symbol::sym;
 use rustc_target::json::ToJson;
-use rustc_middle::ty::{List, ParamEnv, TyCtxt};
-use rustc_hir as hir;
-use rustc_infer::infer::TyCtxtInferExt;
-use rustc_trait_selection::infer::InferCtxtExt;
+//use rustc_middle::ty::{List, ParamEnv, TyCtxt};
+//use rustc_hir as hir;
+//use rustc_infer::infer::TyCtxtInferExt;
+//use rustc_trait_selection::infer::InferCtxtExt;
 
 
 use std::borrow::Cow;
@@ -197,48 +196,6 @@ impl<'a, 'b> RunCompiler<'a, 'b> {
     }
 }
 
-
-fn collect_special_types<'tcx>(tcx: TyCtxt<'tcx>) -> (FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) {
-    let mut special_types: (FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) = (FxHashSet::default(), FxHashSet::default());
-    if tcx.sess.opts.unstable_opts.meta_update {
-        if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()){
-            let hir = tcx.hir();
-            let resolver = tcx.resolver_for_lowering(()).steal(); // not sure whether this actually works
-            let ictxt = tcx.infer_ctxt().build();
-            for item in hir.items(){
-                let item = hir.item(item);
-                match item.kind {
-                    hir::ItemKind::Struct(ref struct_definition, _) => {
-                        let item_def_id = hir.local_def_id(item.hir_id()).to_def_id();
-                        let ty = tcx.type_of(item_def_id);
-                        if ictxt.type_implements_trait(trait_id, ty, List::empty(), ParamEnv::empty()).must_apply_considering_regions(){
-                            let node_id = resolver.def_id_to_node_id.get(item_def_id.expect_local()).unwrap();
-                            special_types.0.insert(*node_id);
-                        }else{
-                            let num_fields = struct_definition.fields().len();
-                            for field in struct_definition.fields(){
-                                let field_def_id = hir.local_def_id(field.hir_id).to_def_id();
-                                let field_ty = tcx.type_of(field_def_id);
-                                if ictxt.type_implements_trait(trait_id, field_ty, List::empty(), ParamEnv::empty()).must_apply_considering_regions(){
-                                    let node_id = resolver.def_id_to_node_id.get(field_def_id.expect_local()).unwrap();
-                                    if num_fields == 1 {
-                                        special_types.0.insert(*node_id);
-                                    }else{
-                                        special_types.1.insert(*node_id);
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    _=> {}
-                }
-            }
-        }
-    }
-    special_types
-}
-
-
 fn run_compiler(
     at_args: &[String],
     callbacks: &mut (dyn Callbacks + Send),
@@ -333,6 +290,7 @@ fn run_compiler(
         },
     };
 
+
     interface::run_compiler(config, |compiler| {
         let sess = compiler.session();
         let should_stop = print_crate_info(
@@ -351,7 +309,7 @@ fn run_compiler(
         if should_stop == Compilation::Stop {
             return sess.compile_status();
         }
-
+        
         let linker = compiler.enter(|queries| {
             let early_exit = || sess.compile_status().map(|_| None);
             queries.parse()?;
@@ -359,7 +317,7 @@ fn run_compiler(
             if let Some(ppm) = &sess.opts.pretty {
                 if ppm.needs_ast_map() {
                     let expanded_crate = queries.expansion()?.peek().0.clone();
-                    queries.global_ctxt(None)?.peek_mut().enter(|tcx| {
+                    queries.global_ctxt()?.peek_mut().enter(|tcx| {
                         pretty::print_after_hir_lowering(
                             tcx,
                             compiler.input(),
@@ -414,20 +372,14 @@ fn run_compiler(
                 return early_exit();
             }
 
-            queries.global_ctxt(None)?;
+            queries.global_ctxt()?;
 
             if sess.opts.unstable_opts.no_analysis {
                 return early_exit();
             }
 
-<<<<<<< HEAD
-            queries.global_ctxt(None)?.peek_mut().enter(|tcx| {
-=======
-            let mut special_types:(FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>) = (FxHashSet::default(), FxHashSet::default());
             queries.global_ctxt()?.peek_mut().enter(|tcx| {
->>>>>>> parent of 21b9f493e68 (working on analysis)
                 let result = tcx.analysis(());
-                special_types = collect_special_types(tcx);
                 if sess.opts.unstable_opts.save_analysis {
                     let crate_name = queries.crate_name()?.peek().clone();
                     sess.time("save_analysis", || {
@@ -443,6 +395,10 @@ fn run_compiler(
                         )
                     });
                 }
+                
+                if sess.opts.unstable_opts.meta_update {
+                    metaupdate::DumpVisitor::new(tcx).dump_metaupdate_special_types();
+                }
                 result
             })?;
 
@@ -450,7 +406,7 @@ fn run_compiler(
                 return early_exit();
             }
 
-            queries.ongoing_codegen(Some(special_types))?;
+            queries.ongoing_codegen()?;
 
             if sess.opts.unstable_opts.print_type_sizes {
                 sess.code_stats.print_type_sizes();

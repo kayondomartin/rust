@@ -1514,10 +1514,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 .sess
                 .emit_err(StructExprNonExhaustive { span: expr.span, what: adt.variant_descr() });
         }
-        
-        if self.tcx().sess.opts.unstable_opts.meta_update {
-            warn!("checking struct expr: {:?}, ID: {:?}", adt, expr.hir_id);
-        }
 
         self.check_expr_struct_fields(
             adt_ty,

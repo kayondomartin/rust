@@ -389,12 +389,7 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
         },
 
         Node::Field(field) => {
-            let ty_ = icx.to_ty(field.ty);
-            if tcx.is_special_ty(ty_) {
-                tcx.mk_box(ty_)
-            }else{
-                ty_
-            }
+            icx.to_ty(field.ty)
         },
 
         Node::Expr(&Expr { kind: ExprKind::Closure { .. }, .. }) => {
@@ -575,17 +570,6 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
             },
             _ => return false            
         }
-        /*if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
-            tcx.all_impls(trait_id).for_each(| impl_id| {
-                if let Some(trait_ref) = tcx.impl_trait_ref(impl_id) {
-                    if tcx.type_of(def_id) == trait_ref.self_ty() {
-                        is_special = true;
-                        warn!("Found special type: {}", tcx.item_name(def_id));
-                    }
-                    warn!("TraitRef Ty: {}", trait_ref.self_ty());
-                }
-            });
-        }*/
     }
     return is_special;
 }

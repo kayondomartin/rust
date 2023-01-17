@@ -1066,7 +1066,7 @@ pub struct GlobalCtxt<'tcx> {
     /// The entire crate as AST. This field serves as the input for the hir_crate query,
     /// which lowers it from AST to HIR. It must not be read or used by anything else.
     pub untracked_crate: Steal<Lrc<ast::Crate>>,
-    pub special_types: (FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>),
+    pub special_types: bool,
 
     /// This provides access to the incremental compilation on-disk cache for query results.
     /// Do not access this directly. It is only meant to be used by
@@ -1232,8 +1232,7 @@ impl<'tcx> TyCtxt<'tcx> {
         queries: &'tcx dyn query::QueryEngine<'tcx>,
         query_kinds: &'tcx [DepKindStruct<'tcx>],
         crate_name: &str,
-        output_filenames: OutputFilenames,
-        special_types: Option<(FxHashSet<ast::NodeId>, FxHashSet<ast::NodeId>)>
+        output_filenames: OutputFilenames
     ) -> GlobalCtxt<'tcx> {
         let ResolverOutputs {
             definitions,
@@ -1282,7 +1281,7 @@ impl<'tcx> TyCtxt<'tcx> {
             data_layout,
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames),
-            special_types: if special_types.is_none() { (FxHashSet::default(), FxHashSet::default())} else {special_types.unwrap()},
+            special_types: false
         }
     }
 
