@@ -28,6 +28,7 @@ use rustc_passes::{self, hir_stats, layout_test};
 use rustc_plugin_impl as plugin;
 use rustc_query_impl::{OnDiskCache, Queries as TcxQueries};
 use rustc_resolve::{Resolver, ResolverArenas};
+use rustc_save_analysis::metaupdate::SpecialTypes;
 use rustc_session::config::{CrateType, Input, OutputFilenames, OutputType};
 use rustc_session::cstore::{MetadataLoader, MetadataLoaderDyn};
 use rustc_session::output::filename_for_input;
@@ -778,6 +779,7 @@ pub fn create_global_ctxt<'tcx>(
     global_ctxt: &'tcx OnceCell<GlobalCtxt<'tcx>>,
     arena: &'tcx WorkerLocal<Arena<'tcx>>,
     hir_arena: &'tcx WorkerLocal<rustc_hir::Arena<'tcx>>,
+    special_types: Option<Lrc<SpecialTypes>>
 ) -> QueryContext<'tcx> {
     // We're constructing the HIR here; we don't care what we will
     // read, since we haven't even constructed the *input* to
@@ -818,7 +820,8 @@ pub fn create_global_ctxt<'tcx>(
                 queries.as_dyn(),
                 rustc_query_impl::query_callbacks(arena),
                 crate_name,
-                outputs
+                outputs,
+                special_types
             )
         })
     });

@@ -1690,6 +1690,7 @@ options! {
     //rust-meta by SORLAB@kayondomartin
     meta_update: bool = (false, parse_bool, [TRACKED],
                          "enables rust-metadata update protection by SORLAB"),
+    meta_update_analysis: bool = (true, parse_bool, [TRACKED], "enables rust-medata update analysis by SORLAB"),
     meta_update_struct_kind: Option<MetaUpdateStructKind> = (Some(MetaUpdateStructKind::Implicit), parse_meta_update_struct_kind, [TRACKED], 
                                                              "how to handle structs housing smart pointers. \
                                                              Requires `-meta-update[=[on,yes]]`"),

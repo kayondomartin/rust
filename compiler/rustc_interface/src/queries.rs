@@ -20,6 +20,7 @@ use rustc_span::symbol::sym;
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
+use rustc_save_analysis::metaupdate::{SpecialTypes, load_metaupdate_analysis};
 
 /// Represent the result of a query.
 ///
@@ -84,6 +85,7 @@ pub struct Queries<'tcx> {
     prepare_outputs: Query<OutputFilenames>,
     global_ctxt: Query<QueryContext<'tcx>>,
     ongoing_codegen: Query<Box<dyn Any>>,
+    special_types: Query<SpecialTypes>
 }
 
 impl<'tcx> Queries<'tcx> {
@@ -103,6 +105,7 @@ impl<'tcx> Queries<'tcx> {
             prepare_outputs: Default::default(),
             global_ctxt: Default::default(),
             ongoing_codegen: Default::default(),
+            special_types: Default::default(),
         }
     }
 
@@ -124,6 +127,12 @@ impl<'tcx> Queries<'tcx> {
         self.parse.compute(|| {
             passes::parse(self.session(), &self.compiler.input)
                 .map_err(|mut parse_error| parse_error.emit())
+        })
+    }
+    
+    pub fn special_types(&self) -> Result<&Query<SpecialTypes>>{
+        self.special_types.compute(||{
+            Ok(load_metaupdate_analysis())
         })
     }
 
@@ -221,6 +230,12 @@ impl<'tcx> Queries<'tcx> {
             let outputs = self.prepare_outputs()?.peek().clone();
             let dep_graph = self.dep_graph()?.peek().clone();
             let (krate, resolver, lint_store) = self.expansion()?.take();
+            let special_types = if self.compiler.session().opts.unstable_opts.meta_update && !self.compiler.session().opts.unstable_opts.meta_update_analysis {
+                Some(Lrc::new(self.special_types()?.peek().clone()))
+            }else{
+                None
+            };
+                     
             Ok(passes::create_global_ctxt(
                 self.compiler,
                 lint_store,
@@ -233,6 +248,7 @@ impl<'tcx> Queries<'tcx> {
                 &self.gcx,
                 &self.arena,
                 &self.hir_arena,
+                special_types
             ))
         })
     }

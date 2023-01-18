@@ -1392,7 +1392,9 @@ impl<'hir> LoweringContext<'_, 'hir> {
         hir::ExprField {
             hir_id,
             ident: self.lower_ident(f.ident),
-            expr: self.lower_expr(&f.expr),
+            expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.contains(hir_id) {
+                    self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(self.lower_expr(&f.expr)), AttrVec::new()))
+                } else { self.lower_expr(&f.expr)},
             span: self.lower_span(f.span),
             is_shorthand: f.is_shorthand,
         }

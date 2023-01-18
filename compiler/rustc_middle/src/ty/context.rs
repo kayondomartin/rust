@@ -36,6 +36,7 @@ use rustc_data_structures::steal::Steal;
 use rustc_data_structures::sync::{self, Lock, Lrc, ReadGuard, RwLock, WorkerLocal};
 use rustc_data_structures::unord::UnordSet;
 use rustc_data_structures::vec_map::VecMap;
+use rustc_save_analysis::metaupdate::SpecialTypes;
 use rustc_errors::{
     DecorateLint, DiagnosticBuilder, DiagnosticMessage, ErrorGuaranteed, MultiSpan,
 };
@@ -1066,7 +1067,7 @@ pub struct GlobalCtxt<'tcx> {
     /// The entire crate as AST. This field serves as the input for the hir_crate query,
     /// which lowers it from AST to HIR. It must not be read or used by anything else.
     pub untracked_crate: Steal<Lrc<ast::Crate>>,
-    pub special_types: bool,
+    pub special_types: Lrc<SpecialTypes>,
 
     /// This provides access to the incremental compilation on-disk cache for query results.
     /// Do not access this directly. It is only meant to be used by
@@ -1232,7 +1233,8 @@ impl<'tcx> TyCtxt<'tcx> {
         queries: &'tcx dyn query::QueryEngine<'tcx>,
         query_kinds: &'tcx [DepKindStruct<'tcx>],
         crate_name: &str,
-        output_filenames: OutputFilenames
+        output_filenames: OutputFilenames,
+        special_types: Option<Lrc<SpecialTypes>>
     ) -> GlobalCtxt<'tcx> {
         let ResolverOutputs {
             definitions,
@@ -1253,7 +1255,7 @@ impl<'tcx> TyCtxt<'tcx> {
         );
         let common_lifetimes = CommonLifetimes::new(&interners);
         let common_consts = CommonConsts::new(&interners, &common_types);
-
+        let special_types = if special_types.is_none() { Lrc::new(SpecialTypes::Default())}else{Lrc::new(special_types.unwrap())};
         GlobalCtxt {
             sess: s,
             lint_store,
@@ -1281,7 +1283,7 @@ impl<'tcx> TyCtxt<'tcx> {
             data_layout,
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames),
-            special_types: false
+            special_types
         }
     }
 

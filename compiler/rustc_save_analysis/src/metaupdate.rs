@@ -1,22 +1,29 @@
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
-use std::{path::Path, io::Write};
+use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
 use rustc_middle::ty::{TyCtxt, List, ParamEnv};
-use hir::{intravisit::Visitor, def_id::DefId, Expr, ExprKind};
+use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_trait_selection::infer::InferCtxtExt;
+use rustc_index::vec::Idx;
 
 #[derive(Default)]
 pub struct SpecialTypes{
-    types: FxHashSet<hir::HirId>,
-    fields: FxHashSet<hir::HirId>
+    pub types: FxHashSet<hir::HirId>,
+    pub fields: FxHashSet<hir::HirId>
+}
+
+impl Clone for SpecialTypes{
+    fn clone(&self) -> Self {
+        SpecialTypes { types: self.types.clone(), fields: self.fields.clone() }
+    }
 }
 
 pub struct DumpVisitor<'tcx>{
-    tcx: TyCtxt<'tcx>,
-    special_types: SpecialTypes,
-    trait_id: Option<DefId>
+    pub tcx: TyCtxt<'tcx>,
+    pub special_types: SpecialTypes,
+    pub trait_id: Option<DefId>
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -25,36 +32,43 @@ pub struct MetaUpdateHirId{
     def_index: usize
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct JsonObject {
+    types: Vec<MetaUpdateHirId>,
+    fields: Vec<MetaUpdateHirId>,
+}
+
 impl MetaUpdateHirId{
-    fn new(hir_id: hir::HirId) -> Self{
+    pub fn new(hir_id: hir::HirId) -> Self{
         Self{
             local_id: hir_id.local_id.as_u32(),
             def_index: hir_id.owner.def_id.local_def_index.as_usize()
         }
     }
     
-    /*fn to_hir_id(&self) -> hir::HirId{
+    pub fn to_hir_id(&self) -> hir::HirId{
         hir::HirId {
             owner: hir::OwnerId{
                 def_id: LocalDefId::new(self.def_index)
             },
             local_id: hir::ItemLocalId::from(self.local_id)
         }
-    }*/
+    }
 }
 
 impl SpecialTypes {
-    fn types(&self) -> Vec<MetaUpdateHirId> {
+    pub fn types(&self) -> Vec<MetaUpdateHirId> {
         self.types.iter().map(|id| MetaUpdateHirId::new(*id)).collect()
     }
     
-    fn fields(&self) -> Vec<MetaUpdateHirId> {
+    pub fn fields(&self) -> Vec<MetaUpdateHirId> {
         self.fields.iter().map(|id| MetaUpdateHirId::new(*id)).collect()
     }
 }
 
 impl<'tcx> DumpVisitor<'tcx> {
     // TODO: ensure the file name matches crate && file path matches current crate's root path
+    // TODO: safely handle errors concerning file writing, creation and openning.
     fn save(&self){
         if !Path::new("target/metaupdate").exists() {
             std::fs::create_dir_all("target/metaupdate").expect("Failed to create `metaupdate` directory");
@@ -62,24 +76,19 @@ impl<'tcx> DumpVisitor<'tcx> {
         
         let file_path = Path::new("target/metaupdate").join("special_types.json");
         
-        if !file_path.exists() {
-            let _ = std::fs::File::create(&file_path).expect("Failed to create special_types.json file");
-        }
-        
-        #[derive(Serialize, Deserialize, Debug)]
-        struct JsonObject {
-            types: Vec<MetaUpdateHirId>,
-            fields: Vec<MetaUpdateHirId>,
-        }
-        
         let object = JsonObject {
             types: self.special_types.types(),
             fields: self.special_types.fields()
         };
         
         let val = serde_json::to_string(&object).unwrap();
-        let mut file = std::fs::File::open(&file_path).unwrap();
-        let _ = file.write_all(val.as_bytes());
+        let mut file = OpenOptions::new()
+                                .write(true)
+                                .create(true)
+                                .truncate(true)
+                                .open(file_path)
+                                .unwrap();
+        file.write_all(val.as_bytes()).expect("Unable to save metaupdate results");
     }
     
     pub fn new(tcx: TyCtxt<'tcx>) -> Self{
@@ -121,7 +130,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                 for field in fields {
                     if let Some(ty) = tc.node_type_opt(field.expr.hir_id) {
                         if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply(){
-                            self.special_types.fields.insert(field.expr.hir_id);
+                            self.special_types.fields.insert(field.hir_id);
                         }
                     }
                 }
@@ -139,4 +148,21 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
         }
         hir::intravisit::walk_expr(self, expr);
     }
+}
+
+pub fn load_metaupdate_analysis() -> SpecialTypes{
+    if !Path::new("target/metaupdate").exists() {
+        panic!("No metaupdate folder for loading analysis results!");
+    }
+    
+    let file_path = Path::new("target/metaupdate").join("special_types.json");
+    let mut buffer = String::new();
+    let mut file = File::open(file_path).expect("No metaupdate file for loading analysis results");
+    let _ = file.read_to_string(&mut buffer).expect("Unable to read metaupdate file");
+    let json_object: JsonObject = serde_json::from_str(& buffer).expect("Unable to parse metaupdate file to json");
+    
+    let mut special_types = SpecialTypes::default();
+    special_types.types = json_object.types.iter().map(|id| id.to_hir_id()).collect();
+    special_types.fields = json_object.fields.iter().map(|id| id.to_hir_id()).collect();
+    special_types
 }
