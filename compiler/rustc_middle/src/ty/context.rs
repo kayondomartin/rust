@@ -36,7 +36,6 @@ use rustc_data_structures::steal::Steal;
 use rustc_data_structures::sync::{self, Lock, Lrc, ReadGuard, RwLock, WorkerLocal};
 use rustc_data_structures::unord::UnordSet;
 use rustc_data_structures::vec_map::VecMap;
-use rustc_save_analysis::metaupdate::SpecialTypes;
 use rustc_errors::{
     DecorateLint, DiagnosticBuilder, DiagnosticMessage, ErrorGuaranteed, MultiSpan,
 };
@@ -1032,6 +1031,18 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
     }
 }
 
+#[derive(Default)]
+pub struct SpecialTypes {
+    pub types: FxHashSet<HirId>,
+    pub fields: FxHashSet<HirId>
+}
+
+impl Clone for SpecialTypes{
+    fn clone(&self) -> Self {
+        Self { types: self.types.clone(), fields: self.fields.clone() }
+    }
+}
+
 pub struct GlobalCtxt<'tcx> {
     pub arena: &'tcx WorkerLocal<Arena<'tcx>>,
     pub hir_arena: &'tcx WorkerLocal<hir::Arena<'tcx>>,
@@ -1255,7 +1266,7 @@ impl<'tcx> TyCtxt<'tcx> {
         );
         let common_lifetimes = CommonLifetimes::new(&interners);
         let common_consts = CommonConsts::new(&interners, &common_types);
-        let special_types = if special_types.is_none() { Lrc::new(SpecialTypes::Default())}else{Lrc::new(special_types.unwrap())};
+        let special_types = if special_types.is_none() { Lrc::new(SpecialTypes::default())}else{special_types.unwrap()};
         GlobalCtxt {
             sess: s,
             lint_store,

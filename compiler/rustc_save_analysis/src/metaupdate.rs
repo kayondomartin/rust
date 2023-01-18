@@ -1,9 +1,9 @@
-use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_hir as hir;
 use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
 use rustc_middle::ty::{TyCtxt, List, ParamEnv};
-use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind};
+use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind, OwnerId};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_index::vec::Idx;
@@ -11,7 +11,7 @@ use rustc_index::vec::Idx;
 #[derive(Default)]
 pub struct SpecialTypes{
     pub types: FxHashSet<hir::HirId>,
-    pub fields: FxHashSet<hir::HirId>
+    pub fields: FxHashSet<hir::HirId>,
 }
 
 impl Clone for SpecialTypes{
@@ -22,7 +22,8 @@ impl Clone for SpecialTypes{
 
 pub struct DumpVisitor<'tcx>{
     pub tcx: TyCtxt<'tcx>,
-    pub special_types: SpecialTypes,
+    pub special_types: FxHashSet<hir::HirId>,
+    pub special_field_map: FxHashMap<OwnerId, Vec<u32>>,
     pub trait_id: Option<DefId>
 }
 
@@ -67,6 +68,18 @@ impl SpecialTypes {
 }
 
 impl<'tcx> DumpVisitor<'tcx> {
+    
+    fn special_fields(&self) -> Vec<MetaUpdateHirId>{
+        let mut collected = vec![];
+        for (owner, locals) in self.special_field_map.iter() {
+            let mut locals = locals.clone();
+            locals.sort();
+            for id in locals{
+                collected.push(MetaUpdateHirId{local_id: id, def_index: owner.def_id.local_def_index.as_usize()});
+            }
+        }
+        collected
+    }
     // TODO: ensure the file name matches crate && file path matches current crate's root path
     // TODO: safely handle errors concerning file writing, creation and openning.
     fn save(&self){
@@ -77,8 +90,8 @@ impl<'tcx> DumpVisitor<'tcx> {
         let file_path = Path::new("target/metaupdate").join("special_types.json");
         
         let object = JsonObject {
-            types: self.special_types.types(),
-            fields: self.special_types.fields()
+            types: self.special_types.iter().map(|id| MetaUpdateHirId::new(*id)).collect(),
+            fields: self.special_fields()
         };
         
         let val = serde_json::to_string(&object).unwrap();
@@ -94,7 +107,8 @@ impl<'tcx> DumpVisitor<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>) -> Self{
         let mut this = Self{
             tcx,
-            special_types: SpecialTypes::default(),
+            special_types: FxHashSet::default(),
+            special_field_map: FxHashMap::default(),
             trait_id: None
         };
         
@@ -120,6 +134,13 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
         self.tcx.hir()
     }
     
+    fn visit_field_def(&mut self, field_def: &'tcx hir::FieldDef<'_>) {
+        if self.tcx.is_special_ty(self.tcx.type_of(self.tcx.hir().local_def_id(field_def.hir_id).to_def_id())){
+            self.special_types.insert(field_def.hir_id);
+        }
+        hir::intravisit::walk_field_def(self, field_def);
+    }
+    
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>){
         if self.trait_id.is_none() { return; }
         
@@ -129,8 +150,12 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
             ExprKind::Struct(_, fields, _) => {  
                 for field in fields {
                     if let Some(ty) = tc.node_type_opt(field.expr.hir_id) {
-                        if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply(){
-                            self.special_types.fields.insert(field.hir_id);
+                        if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty) {
+                            if let Some(vec) = self.special_field_map.get_mut(&field.hir_id.owner){
+                                vec.push(field.hir_id.local_id.as_u32());
+                            }else{
+                                self.special_field_map.insert(field.hir_id.owner, vec![field.hir_id.local_id.as_u32()]);
+                            }
                         }
                     }
                 }
@@ -138,8 +163,12 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
             ExprKind::Assign(ref lhs, ref rhs,  _) => {
                 if let ExprKind::Field(..) = lhs.kind{
                     if let Some(ty) = tc.node_type_opt(rhs.hir_id) {
-                        if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply(){
-                            self.special_types.fields.insert(rhs.hir_id);
+                        if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty){
+                            if let Some(vec) = self.special_field_map.get_mut(&rhs.hir_id.owner){
+                                vec.push(rhs.hir_id.local_id.as_u32());
+                            }else{
+                                self.special_field_map.insert(rhs.hir_id.owner, vec![rhs.hir_id.local_id.as_u32()]);
+                            }
                         }
                     }
                 }

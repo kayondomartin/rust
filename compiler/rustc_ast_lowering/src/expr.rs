@@ -1029,7 +1029,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
         if is_ordinary(self, lhs) {
             return hir::ExprKind::Assign(
                 self.lower_expr(lhs),
-                self.lower_expr(rhs),
+                {
+                    let expr = self.lower_expr(rhs);
+                    if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.fields.contains(&expr.hir_id){
+                        self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()))
+                    }else{
+                        expr
+                    }
+                 },
                 self.lower_span(eq_sign_span),
             );
         }
@@ -1392,8 +1399,9 @@ impl<'hir> LoweringContext<'_, 'hir> {
         hir::ExprField {
             hir_id,
             ident: self.lower_ident(f.ident),
-            expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.contains(hir_id) {
-                    self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(self.lower_expr(&f.expr)), AttrVec::new()))
+            expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.fields.contains(&hir_id) {
+                    let expr = self.lower_expr(&f.expr);
+                    self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()))
                 } else { self.lower_expr(&f.expr)},
             span: self.lower_span(f.span),
             is_shorthand: f.is_shorthand,

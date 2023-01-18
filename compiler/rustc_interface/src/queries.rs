@@ -12,7 +12,7 @@ use rustc_incremental::DepGraphFuture;
 use rustc_lint::LintStore;
 use rustc_middle::arena::Arena;
 use rustc_middle::dep_graph::DepGraph;
-use rustc_middle::ty::{GlobalCtxt, TyCtxt};
+use rustc_middle::ty::{GlobalCtxt, TyCtxt, SpecialTypes};
 use rustc_query_impl::Queries as TcxQueries;
 use rustc_session::config::{self, OutputFilenames, OutputType};
 use rustc_session::{output::find_crate_name, Session};
@@ -20,7 +20,7 @@ use rustc_span::symbol::sym;
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
-use rustc_save_analysis::metaupdate::{SpecialTypes, load_metaupdate_analysis};
+use rustc_save_analysis::metaupdate::load_metaupdate_analysis;
 
 /// Represent the result of a query.
 ///
@@ -132,7 +132,8 @@ impl<'tcx> Queries<'tcx> {
     
     pub fn special_types(&self) -> Result<&Query<SpecialTypes>>{
         self.special_types.compute(||{
-            Ok(load_metaupdate_analysis())
+            let special_types = load_metaupdate_analysis();
+            Ok(SpecialTypes { types: special_types.types.clone(), fields: special_types.fields.clone() })
         })
     }
 

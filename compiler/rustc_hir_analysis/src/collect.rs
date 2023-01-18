@@ -1411,7 +1411,6 @@ fn rust_metaupdate_trait_id(tcx: TyCtxt<'_>, ():()) -> Option<DefId> {
     if tcx.sess.opts.unstable_opts.meta_update {
         for trait_id in tcx.all_traits() {
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
-                warn!("MetaUpdate path: {}",tcx.def_path_str(trait_id));
                 return Some(trait_id);
             }
         }

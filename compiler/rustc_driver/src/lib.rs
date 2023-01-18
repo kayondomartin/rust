@@ -396,7 +396,7 @@ fn run_compiler(
                     });
                 }
                 
-                if sess.opts.unstable_opts.meta_update {
+                if sess.opts.unstable_opts.meta_update && sess.opts.unstable_opts.meta_update_analysis {
                     metaupdate::DumpVisitor::new(tcx).dump_metaupdate_special_types();
                 }
                 result

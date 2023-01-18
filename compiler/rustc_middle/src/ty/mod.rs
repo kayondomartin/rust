@@ -81,7 +81,7 @@ pub use self::consts::{
 pub use self::context::{
     tls, CanonicalUserType, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations,
     CtxtInterners, DeducedParamAttrs, FreeRegionInfo, GeneratorDiagnosticData,
-    GeneratorInteriorTypeCause, GlobalCtxt, Lift, OnDiskCache, TyCtxt, TypeckResults, UserType,
+    GeneratorInteriorTypeCause, GlobalCtxt, Lift, OnDiskCache, TyCtxt, TypeckResults, UserType, SpecialTypes,
     UserTypeAnnotationIndex,
 };
 pub use self::instance::{Instance, InstanceDef};

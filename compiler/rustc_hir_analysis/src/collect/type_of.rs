@@ -389,7 +389,12 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
         },
 
         Node::Field(field) => {
-            icx.to_ty(field.ty)
+            let ty_ = icx.to_ty(field.ty);
+            if tcx.sess.opts.unstable_opts.meta_update && tcx.special_types.types.contains(&field.hir_id) {
+                tcx.mk_box(ty_)
+            }else{
+                ty_
+            }
         },
 
         Node::Expr(&Expr { kind: ExprKind::Closure { .. }, .. }) => {
@@ -558,7 +563,6 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
                             match trait_ref.self_ty().kind() {
                                 ty::Adt(adt_def2, _) => if adt_def == adt_def2 {
                                             is_special = true;
-                                            warn!("TraitRef Ty: {}", trait_ref.self_ty());
                                 },
                             
                                 _ => {}                     
