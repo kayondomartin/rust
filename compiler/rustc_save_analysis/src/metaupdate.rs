@@ -138,7 +138,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
         if self.tcx.is_special_ty(self.tcx.type_of(self.tcx.hir().local_def_id(field_def.hir_id).to_def_id())){
             self.special_types.insert(field_def.hir_id);
         }
-        hir::intravisit::walk_field_def(self, field_def);
+        //hir::intravisit::walk_field_def(self, field_def);
     }
     
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>){
