@@ -144,10 +144,10 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>){
         if self.trait_id.is_none() { return; }
         
-        let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
-        let ictxt = self.tcx.infer_ctxt().build();
         match expr.kind {
             ExprKind::Struct(_, fields, _) => {  
+                let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
+                let ictxt = self.tcx.infer_ctxt().build();
                 for field in fields {
                     if let Some(ty) = tc.node_type_opt(field.expr.hir_id) {
                         if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty) {
@@ -161,6 +161,8 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                 }
             },
             ExprKind::Assign(ref lhs, ref rhs,  _) => {
+                let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
+                let ictxt = self.tcx.infer_ctxt().build();
                 if let ExprKind::Field(..) = lhs.kind{
                     if let Some(ty) = tc.node_type_opt(rhs.hir_id) {
                         if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty){
