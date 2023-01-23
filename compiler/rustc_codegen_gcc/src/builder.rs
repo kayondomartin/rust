@@ -640,7 +640,7 @@ impl<'a, 'gcc, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'gcc, 'tcx> {
         self.gcc_checked_binop(oop, typ, lhs, rhs)
     }
 
-    fn alloca(&mut self, ty: Type<'gcc>, align: Align) -> RValue<'gcc> {
+    fn alloca(&mut self, ty: Type<'gcc>, align: Align, _is_special: bool) -> RValue<'gcc> {
         // FIXME(antoyo): this check that we don't call get_aligned() a second time on a type.
         // Ideally, we shouldn't need to do this check.
         let aligned_type =

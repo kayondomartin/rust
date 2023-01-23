@@ -49,7 +49,9 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         layout: TyAndLayout<'tcx>,
     ) -> Self {
         assert!(!layout.is_unsized(), "tried to statically allocate unsized place");
-        let tmp = bx.alloca(bx.cx().backend_type(layout), layout.align.abi);
+        let is_special = bx.tcx().is_special_ty(layout.ty); // TODO: @kayondomartin ==> SORLAB:
+                                                            // RustMeta
+        let tmp = bx.alloca(bx.cx().backend_type(layout), layout.align.abi, is_special);
         Self::new_sized(tmp, layout)
     }
 

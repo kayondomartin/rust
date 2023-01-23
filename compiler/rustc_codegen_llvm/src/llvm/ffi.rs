@@ -1061,6 +1061,9 @@ extern "C" {
     pub fn LLVMRustGlobalAddMetadata<'a>(Val: &'a Value, KindID: c_uint, Metadata: &'a Metadata);
     pub fn LLVMValueAsMetadata(Node: &Value) -> &Metadata;
 
+    // RustMeta: SORLAB@kayondomartin: smart pointer metadata
+    pub fn LLVMSetSmartPointerMetadata(Val: &Value);
+
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;
     pub fn LLVMGetUndef(Ty: &Type) -> &Value;

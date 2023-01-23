@@ -134,7 +134,7 @@ pub trait BuilderMethods<'a, 'tcx>:
     }
     fn to_immediate_scalar(&mut self, val: Self::Value, scalar: Scalar) -> Self::Value;
 
-    fn alloca(&mut self, ty: Self::Type, align: Align) -> Self::Value;
+    fn alloca(&mut self, ty: Self::Type, align: Align, is_special: bool) -> Self::Value;
     fn byte_array_alloca(&mut self, len: Self::Value, align: Align) -> Self::Value;
 
     fn load(&mut self, ty: Self::Type, ptr: Self::Value, align: Align) -> Self::Value;
@@ -147,7 +147,7 @@ pub trait BuilderMethods<'a, 'tcx>:
         size: Size,
     ) -> Self::Value;
     fn load_operand(&mut self, place: PlaceRef<'tcx, Self::Value>)
-    -> OperandRef<'tcx, Self::Value>;
+        -> OperandRef<'tcx, Self::Value>;
 
     /// Called for Rvalue::Repeat when the elem is neither a ZST nor optimizable using memset.
     fn write_operand_repeatedly(
@@ -222,7 +222,11 @@ pub trait BuilderMethods<'a, 'tcx>:
             return if signed { self.fptosi(x, dest_ty) } else { self.fptoui(x, dest_ty) };
         }
 
-        if signed { self.fptosi_sat(x, dest_ty) } else { self.fptoui_sat(x, dest_ty) }
+        if signed {
+            self.fptosi_sat(x, dest_ty)
+        } else {
+            self.fptoui_sat(x, dest_ty)
+        }
     }
 
     fn icmp(&mut self, op: IntPredicate, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
