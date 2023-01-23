@@ -411,6 +411,7 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         val
     }
 
+    // TODO: @rust-meta: mark special allocas
     fn alloca(&mut self, ty: &'ll Type, align: Align) -> &'ll Value {
         let mut bx = Builder::with_cx(self.cx);
         bx.position_at_start(unsafe { llvm::LLVMGetFirstBasicBlock(self.llfn()) });
