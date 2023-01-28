@@ -7,7 +7,7 @@ use rustc_hir::{HirId, Node};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::subst::InternalSubsts;
 use rustc_middle::ty::util::IntTypeExt;
-use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFolder, TypeSuperFoldable, TypeVisitable};
+use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFolder, TypeSuperFoldable, TypeVisitable, TyKind};
 use rustc_span::symbol::Ident;
 use rustc_span::{Span, DUMMY_SP};
 
@@ -552,30 +552,27 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 /// TODO: define an enum to differentiate the kind of special type if is: ie. is it entirely special or is it inherently special(specify which field)
 pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
-    let mut is_special = false;
     if tcx.sess.opts.unstable_opts.meta_update {
         match def_ty.kind() {
             ty::Adt(adt_def, _) => {
                                         
                 if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
-                    tcx.all_impls(trait_id).for_each(| impl_id| {
+                    for impl_id in tcx.all_impls(trait_id) {
                         if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
-                            match trait_ref.self_ty().kind() {
-                                ty::Adt(adt_def2, _) => if adt_def == adt_def2 {
-                                            is_special = true;
-                                },
-                            
-                                _ => {}                     
+                            if let ty::Adt(adt, _) = trait_ref.self_ty().kind() {
+                                if adt.did() == adt_def.did() {
+                                    return true;
+                                }
                             }
                         }
-                    });
+                    }
                 }
 
             },
             _ => return false            
         }
     }
-    return is_special;
+    return false;
 }
 
 #[instrument(skip(tcx), level = "debug")]

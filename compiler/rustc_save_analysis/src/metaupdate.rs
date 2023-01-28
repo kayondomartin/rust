@@ -2,7 +2,7 @@ use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_hir as hir;
 use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
-use rustc_middle::ty::{TyCtxt, List, ParamEnv};
+use rustc_middle::ty::{TyCtxt, List, ParamEnv, TyKind};
 use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind, OwnerId};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_trait_selection::infer::InferCtxtExt;
@@ -23,6 +23,9 @@ impl Clone for SpecialTypes{
 pub struct DumpVisitor<'tcx>{
     pub tcx: TyCtxt<'tcx>,
     pub special_types: FxHashSet<hir::HirId>,
+    pub special_fields: FxHashSet<hir::HirId>,
+    pub special_generics: FxHashSet<hir::HirId>,
+    pub special_generic_impls: FxHashSet<hir::HirId>,
     pub special_field_map: FxHashMap<OwnerId, Vec<u32>>,
     pub trait_id: Option<DefId>
 }
@@ -108,6 +111,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         let mut this = Self{
             tcx,
             special_types: FxHashSet::default(),
+            special_fields: FxHashSet::default(),
             special_field_map: FxHashMap::default(),
             trait_id: None
         };
@@ -115,6 +119,15 @@ impl<'tcx> DumpVisitor<'tcx> {
         for trait_id in tcx.all_traits(){
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
                 this.trait_id = Some(trait_id);
+                tcx.all_impls(trait_id).for_each(|impl_id|{
+                    if let Some(trait_ref) = tcx.impl_trait_ref(impl_id) {
+                        if let TyKind::Adt(adt,_ ) = trait_ref.self_ty().kind {
+                            let def_id = adt.0.did.expect_local();
+                            let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
+                            this.special_types.insert(hir_id);
+                        }
+                    }
+                });
                 break;
             }
         }
@@ -136,7 +149,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
     
     fn visit_field_def(&mut self, field_def: &'tcx hir::FieldDef<'_>) {
         if self.tcx.is_special_ty(self.tcx.type_of(self.tcx.hir().local_def_id(field_def.hir_id).to_def_id())){
-            self.special_types.insert(field_def.hir_id);
+            self.special_fields.insert(field_def.hir_id);
         }
         hir::intravisit::walk_field_def(self, field_def);
     }
