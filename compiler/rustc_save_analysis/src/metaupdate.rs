@@ -3,7 +3,7 @@ use rustc_hir as hir;
 use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
 use rustc_middle::ty::{TyCtxt, List, ParamEnv, TyKind};
-use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind, OwnerId};
+use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind, OwnerId, FieldDef};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_index::vec::Idx;
