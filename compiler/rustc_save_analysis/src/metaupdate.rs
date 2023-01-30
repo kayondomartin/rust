@@ -2,31 +2,28 @@ use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_hir as hir;
 use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
-use rustc_middle::ty::{TyCtxt, List, ParamEnv, TyKind};
-use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind, OwnerId, FieldDef};
+use rustc_middle::ty::{TyCtxt, List, ParamEnv, self};
+use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind, OwnerId, Node, ItemKind, VariantData};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_index::vec::Idx;
 
 #[derive(Default)]
 pub struct SpecialTypes{
-    pub types: FxHashSet<hir::HirId>,
     pub fields: FxHashSet<hir::HirId>,
+    pub field_exprs: FxHashSet<hir::HirId>,
 }
 
 impl Clone for SpecialTypes{
     fn clone(&self) -> Self {
-        SpecialTypes { types: self.types.clone(), fields: self.fields.clone() }
+        SpecialTypes { fields: self.fields.clone(), field_exprs: self.field_exprs.clone() }
     }
 }
 
 pub struct DumpVisitor<'tcx>{
     pub tcx: TyCtxt<'tcx>,
-    pub special_types: FxHashSet<hir::HirId>,
     pub special_fields: FxHashSet<hir::HirId>,
-    pub special_generics: FxHashSet<hir::HirId>,
-    pub special_generic_impls: FxHashSet<hir::HirId>,
-    pub special_field_map: FxHashMap<OwnerId, Vec<u32>>,
+    pub special_field_expr_map: FxHashMap<OwnerId, Vec<u32>>,
     pub trait_id: Option<DefId>
 }
 
@@ -38,8 +35,8 @@ pub struct MetaUpdateHirId{
 
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonObject {
-    types: Vec<MetaUpdateHirId>,
     fields: Vec<MetaUpdateHirId>,
+    field_exprs: Vec<MetaUpdateHirId>,
 }
 
 impl MetaUpdateHirId{
@@ -61,24 +58,26 @@ impl MetaUpdateHirId{
 }
 
 impl SpecialTypes {
-    pub fn types(&self) -> Vec<MetaUpdateHirId> {
-        self.types.iter().map(|id| MetaUpdateHirId::new(*id)).collect()
-    }
-    
     pub fn fields(&self) -> Vec<MetaUpdateHirId> {
         self.fields.iter().map(|id| MetaUpdateHirId::new(*id)).collect()
+    }
+    
+    pub fn field_exprs(&self) -> Vec<MetaUpdateHirId> {
+        self.field_exprs.iter().map(|id| MetaUpdateHirId::new(*id)).collect()
     }
 }
 
 impl<'tcx> DumpVisitor<'tcx> {
     
-    fn special_fields(&self) -> Vec<MetaUpdateHirId>{
+    fn special_field_exprs(&self) -> Vec<MetaUpdateHirId>{
         let mut collected = vec![];
-        for (owner, locals) in self.special_field_map.iter() {
+        for (owner, locals) in self.special_field_expr_map.iter() {
             let mut locals = locals.clone();
             locals.sort();
+            let mut count = 0;
             for id in locals{
-                collected.push(MetaUpdateHirId{local_id: id, def_index: owner.def_id.local_def_index.as_usize()});
+                collected.push(MetaUpdateHirId{local_id: id+count, def_index: owner.def_id.local_def_index.as_usize()});
+                count += 5; // every boxing we add shifts the local ID by 5.
             }
         }
         collected
@@ -93,8 +92,8 @@ impl<'tcx> DumpVisitor<'tcx> {
         let file_path = Path::new("target/metaupdate").join("special_types.json");
         
         let object = JsonObject {
-            types: self.special_types.iter().map(|id| MetaUpdateHirId::new(*id)).collect(),
-            fields: self.special_fields()
+            fields: self.special_fields.iter().map(|id| MetaUpdateHirId::new(*id)).collect(),
+            field_exprs: self.special_field_exprs()
         };
         
         let val = serde_json::to_string(&object).unwrap();
@@ -110,24 +109,14 @@ impl<'tcx> DumpVisitor<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>) -> Self{
         let mut this = Self{
             tcx,
-            special_types: FxHashSet::default(),
             special_fields: FxHashSet::default(),
-            special_field_map: FxHashMap::default(),
+            special_field_expr_map: FxHashMap::default(),
             trait_id: None
         };
         
         for trait_id in tcx.all_traits(){
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
                 this.trait_id = Some(trait_id);
-                tcx.all_impls(trait_id).for_each(|impl_id|{
-                    if let Some(trait_ref) = tcx.impl_trait_ref(impl_id) {
-                        if let TyKind::Adt(adt,_ ) = trait_ref.self_ty().kind {
-                            let def_id = adt.0.did.expect_local();
-                            let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
-                            this.special_types.insert(hir_id);
-                        }
-                    }
-                });
                 break;
             }
         }
@@ -161,13 +150,30 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
             ExprKind::Struct(_, fields, _) => {  
                 let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
                 let ictxt = self.tcx.infer_ctxt().build();
-                for field in fields {
+                for (idx,field) in fields.iter().enumerate() {
                     if let Some(ty) = tc.node_type_opt(field.expr.hir_id) {
                         if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty) {
-                            if let Some(vec) = self.special_field_map.get_mut(&field.hir_id.owner){
+                            if let Some(vec) = self.special_field_expr_map.get_mut(&field.hir_id.owner){
                                 vec.push(field.hir_id.local_id.as_u32());
                             }else{
-                                self.special_field_map.insert(field.hir_id.owner, vec![field.hir_id.local_id.as_u32()]);
+                                self.special_field_expr_map.insert(field.hir_id.owner, vec![field.hir_id.local_id.as_u32()]);
+                            }
+                            if let Some(parent_ty) = tc.node_type_opt(expr.hir_id) {
+                                if let ty::Adt(adt, _) = parent_ty.kind() {
+                                    let did = adt.0.did.expect_local();
+                                    let hir_id = self.tcx.hir().local_def_id_to_hir_id(did);
+                                    let parent_node = self.tcx.hir().get(hir_id);
+                                    if let Node::Item(item) = parent_node {
+                                        match item.kind {
+                                            ItemKind::Struct(ref variants, _) => {
+                                                if let VariantData::Struct(fields, _ ) = variants {
+                                                    self.special_fields.insert(fields[idx].hir_id);
+                                                }
+                                            },
+                                            _ => {}
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -176,13 +182,35 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
             ExprKind::Assign(ref lhs, ref rhs,  _) => {
                 let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
                 let ictxt = self.tcx.infer_ctxt().build();
-                if let ExprKind::Field(..) = lhs.kind{
+                if let ExprKind::Field(ref sub_expr, ident) = lhs.kind{
                     if let Some(ty) = tc.node_type_opt(rhs.hir_id) {
                         if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty){
-                            if let Some(vec) = self.special_field_map.get_mut(&rhs.hir_id.owner){
+                            if let Some(vec) = self.special_field_expr_map.get_mut(&rhs.hir_id.owner){
                                 vec.push(rhs.hir_id.local_id.as_u32());
                             }else{
-                                self.special_field_map.insert(rhs.hir_id.owner, vec![rhs.hir_id.local_id.as_u32()]);
+                                self.special_field_expr_map.insert(rhs.hir_id.owner, vec![rhs.hir_id.local_id.as_u32()]);
+                            }
+                            if let Some(parent_ty) = tc.node_type_opt(sub_expr.hir_id) {
+                                if let ty::Adt(adt, _) = parent_ty.kind() {
+                                    let did = adt.0.did.expect_local();
+                                    let hir_id = self.tcx.hir().local_def_id_to_hir_id(did);
+                                    let parent_node = self.tcx.hir().get(hir_id);
+                                    if let Node::Item(item) = parent_node {
+                                        match item.kind {
+                                            ItemKind::Struct(ref variants, _) => {
+                                                if let VariantData::Struct(fields, _) = variants {
+                                                    for field in fields.iter() {
+                                                        if field.ident == ident {
+                                                            self.special_fields.insert(field.hir_id);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            _ => {}
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -206,7 +234,7 @@ pub fn load_metaupdate_analysis() -> SpecialTypes{
     let json_object: JsonObject = serde_json::from_str(& buffer).expect("Unable to parse metaupdate file to json");
     
     let mut special_types = SpecialTypes::default();
-    special_types.types = json_object.types.iter().map(|id| id.to_hir_id()).collect();
     special_types.fields = json_object.fields.iter().map(|id| id.to_hir_id()).collect();
+    special_types.field_exprs = json_object.field_exprs.iter().map(|id| id.to_hir_id()).collect();
     special_types
 }

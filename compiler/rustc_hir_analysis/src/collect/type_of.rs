@@ -7,7 +7,7 @@ use rustc_hir::{HirId, Node};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::subst::InternalSubsts;
 use rustc_middle::ty::util::IntTypeExt;
-use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFolder, TypeSuperFoldable, TypeVisitable, TyKind};
+use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFolder, TypeSuperFoldable, TypeVisitable};
 use rustc_span::symbol::Ident;
 use rustc_span::{Span, DUMMY_SP};
 
@@ -390,7 +390,7 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 
         Node::Field(field) => {
             let ty_ = icx.to_ty(field.ty);
-            if tcx.sess.opts.unstable_opts.meta_update && tcx.special_types.types.contains(&field.hir_id) {
+            if tcx.sess.opts.unstable_opts.meta_update && tcx.special_types.fields.contains(&field.hir_id) {
                 tcx.mk_box(ty_)
             }else{
                 ty_

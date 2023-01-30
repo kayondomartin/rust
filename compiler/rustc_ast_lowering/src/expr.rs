@@ -1031,7 +1031,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 self.lower_expr(lhs),
                 {
                     let expr = self.lower_expr(rhs);
-                    if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.fields.contains(&expr.hir_id){
+                    if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains(&expr.hir_id){
                         self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()))
                     }else{
                         expr
@@ -1399,7 +1399,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         hir::ExprField {
             hir_id,
             ident: self.lower_ident(f.ident),
-            expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.fields.contains(&hir_id) {
+            expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains(&hir_id) {
                     let expr = self.lower_expr(&f.expr);
                     self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()))
                 } else { self.lower_expr(&f.expr)},
