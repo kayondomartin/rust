@@ -1030,17 +1030,19 @@ impl<'hir> LoweringContext<'_, 'hir> {
             return hir::ExprKind::Assign(
                 self.lower_expr(lhs),
                 {
-                    let expr = self.lower_expr(rhs);
+                    let mut expr = self.lower_expr(rhs);
                     if self.tcx.sess.opts.unstable_opts.meta_update {
                         if let Some(set) = self.tcx.special_types.field_exprs.get(&expr.hir_id.owner){
-                            let mut local_id: u32 = expr.hir_id.local_id.as_u32();
-                            if let Some(offset) = self.metaupdate_id_offset_map.get(&expr.hir_id.owner) {
-                                local_id += offset;
+                            let local_id: u32 = expr.hir_id.local_id.as_u32();
+                            let mut offset_id = local_id;
+                            if let Some(saved_offset) = self.metaupdate_id_offset_map.get(&expr.hir_id.owner) {
+                                offset_id -= saved_offset;
                             }else{
                                 self.metaupdate_id_offset_map.insert(expr.hir_id.owner, 0);
                             }
-                            if set.contains(&local_id) {
-                                let expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
+
+                            if set.contains(&offset_id) {
+                                expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
                                 *self.metaupdate_id_offset_map.get_mut(&expr.hir_id.owner).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
                             }
                         }
@@ -1410,8 +1412,22 @@ impl<'hir> LoweringContext<'_, 'hir> {
             hir_id,
             ident: self.lower_ident(f.ident),
             expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains_key(&hir_id.owner) {
-                    let expr = self.lower_expr(&f.expr);
-                    self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()))
+                    let mut expr = self.lower_expr(&f.expr);
+                    let set = self.tcx.special_types.field_exprs.get(&hir_id.owner).unwrap();
+                    let mut local_id = hir_id.local_id.as_u32();
+                    if let Some(offset) = self.metaupdate_id_offset_map.get_mut(&hir_id.owner) {
+                        local_id -= *offset;
+                    }else{
+                        self.metaupdate_id_offset_map.insert(hir_id.owner, 0);
+                    }
+
+                    if set.contains(&local_id){
+                        let mut offset = expr.hir_id.local_id.as_u32();
+                        expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
+                        offset = expr.hir_id.local_id.as_u32() - offset;
+                        *self.metaupdate_id_offset_map.get_mut(&hir_id.owner).unwrap() += offset;
+                    }
+                    expr
                 } else { self.lower_expr(&f.expr)},
             span: self.lower_span(f.span),
             is_shorthand: f.is_shorthand,
