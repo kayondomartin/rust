@@ -1,17 +1,18 @@
 use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_hir as hir;
+use tracing::field;
 use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
 use rustc_middle::ty::{TyCtxt, List, ParamEnv, self};
 use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind, OwnerId, Node, ItemKind, VariantData};
 use rustc_infer::infer::TyCtxtInferExt;
-use rustc_trait_selection::infer::InferCtxtExt;
+use rustc_trait_selection::{infer::InferCtxtExt, traits::specialization_graph::GraphExt};
 use rustc_index::vec::Idx;
 
 #[derive(Default)]
 pub struct SpecialTypes{
     pub fields: FxHashSet<hir::HirId>,
-    pub field_exprs: FxHashSet<hir::HirId>,
+    pub field_exprs: FxHashMap<hir::OwnerId, FxHashSet<u32>>,
 }
 
 impl Clone for SpecialTypes{
@@ -23,7 +24,7 @@ impl Clone for SpecialTypes{
 pub struct DumpVisitor<'tcx>{
     pub tcx: TyCtxt<'tcx>,
     pub special_fields: FxHashSet<hir::HirId>,
-    pub special_field_expr_map: FxHashMap<OwnerId, Vec<u32>>,
+    pub special_field_expr_map: FxHashMap<OwnerId, FxHashSet<u32>>,
     pub trait_id: Option<DefId>
 }
 
@@ -73,10 +74,8 @@ impl<'tcx> DumpVisitor<'tcx> {
         let mut collected = vec![];
         for (owner, locals) in self.special_field_expr_map.iter() {
             let mut locals = locals.clone();
-            locals.sort();
-            let mut count = 0;
             for id in locals{
-                collected.push(MetaUpdateHirId{local_id: id+count, def_index: owner.def_id.local_def_index.as_usize()});
+                collected.push(MetaUpdateHirId{local_id: id, def_index: owner.def_id.local_def_index.as_usize()});
                 count += 5; // every boxing we add shifts the local ID by 5.
             }
         }
@@ -153,10 +152,12 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                 for (idx,field) in fields.iter().enumerate() {
                     if let Some(ty) = tc.node_type_opt(field.expr.hir_id) {
                         if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty) {
-                            if let Some(vec) = self.special_field_expr_map.get_mut(&field.hir_id.owner){
-                                vec.push(field.hir_id.local_id.as_u32());
+                            if let Some(set) = self.special_field_expr_map.get_mut(&field.hir_id.owner){
+                                set.insert(field.hir_id.local_id.as_u32());
                             }else{
-                                self.special_field_expr_map.insert(field.hir_id.owner, vec![field.hir_id.local_id.as_u32()]);
+                                let mut set = FxHashSet::default();
+                                set.insert(field.hir_id.local_id.as_u32());
+                                self.special_field_expr_map.insert(field.hir_id.owner, set);
                             }
                             if let Some(parent_ty) = tc.node_type_opt(expr.hir_id) {
                                 if let ty::Adt(adt, _) = parent_ty.kind() {
@@ -185,10 +186,12 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                 if let ExprKind::Field(ref sub_expr, ident) = lhs.kind{
                     if let Some(ty) = tc.node_type_opt(rhs.hir_id) {
                         if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty){
-                            if let Some(vec) = self.special_field_expr_map.get_mut(&rhs.hir_id.owner){
-                                vec.push(rhs.hir_id.local_id.as_u32());
+                            if let Some(set) = self.special_field_expr_map.get_mut(&rhs.hir_id.owner){
+                                set.insert(rhs.hir_id.local_id.as_u32());
                             }else{
-                                self.special_field_expr_map.insert(rhs.hir_id.owner, vec![rhs.hir_id.local_id.as_u32()]);
+                                let mut set = FxHashSet::default();
+                                set.insert(rhs.hir_id.local_id.as_u32());
+                                self.special_field_expr_map.insert(rhs.hir_id.owner, set);
                             }
                             if let Some(parent_ty) = tc.node_type_opt(sub_expr.hir_id) {
                                 if let ty::Adt(adt, _) = parent_ty.kind() {
@@ -235,6 +238,17 @@ pub fn load_metaupdate_analysis() -> SpecialTypes{
     
     let mut special_types = SpecialTypes::default();
     special_types.fields = json_object.fields.iter().map(|id| id.to_hir_id()).collect();
-    special_types.field_exprs = json_object.field_exprs.iter().map(|id| id.to_hir_id()).collect();
+    let mut fields_exprs: FxHashMap<hir::OwnerId, FxHashSet<u32>> = FxHashMap::default();
+    for id in json_object.field_exprs {
+        let hir_id = id.to_hir_id();
+        if let Some(set) = fields_exprs.get_mut(&hir_id.owner){
+            set.insert(hir_id.local_id.as_u32())
+        }else{
+            let mut set = FxHashSet::default();
+            set.insert(hir_id.local_id.as_u32());
+            fields_exprs.insert(hir_id.owner, set);
+        }
+    }
+    special_types.field_exprs = fields_exprs.clone();
     special_types
 }

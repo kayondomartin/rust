@@ -1031,11 +1031,22 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 self.lower_expr(lhs),
                 {
                     let expr = self.lower_expr(rhs);
-                    if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains(&expr.hir_id){
-                        self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()))
-                    }else{
-                        expr
+                    if self.tcx.sess.opts.unstable_opts.meta_update {
+                        if let Some(set) = self.tcx.special_types.field_exprs.get(&expr.hir_id.owner){
+                            let mut found = false;
+                            let mut local_id: u32 = expr.hir_id.local_id.as_u32();
+                            if let Some(offset) = self.metaupdate_id_offset_map.get(&expr.hir_id.owner) {
+                                local_id += offset;
+                            }else{
+                                self.metaupdate_id_offset_map.insert(&expr.hir_id.owner, 0);
+                            }
+                            if set.contains(&local_id) {
+                                let expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
+                                *self.metaupdate_id_offset_map.get_mut(&expr.hir_id.owner).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
+                            }
+                        }
                     }
+                    expr
                  },
                 self.lower_span(eq_sign_span),
             );

@@ -1034,7 +1034,7 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
 #[derive(Default)]
 pub struct SpecialTypes {
     pub fields: FxHashSet<HirId>,
-    pub field_exprs: FxHashSet<HirId>
+    pub field_exprs: FxHashMap<hir::OwnerId, FxHashSet<u32>>
 }
 
 impl Clone for SpecialTypes{
