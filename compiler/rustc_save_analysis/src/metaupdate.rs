@@ -1,12 +1,11 @@
 use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_hir as hir;
-use tracing::field;
 use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
 use rustc_middle::ty::{TyCtxt, List, ParamEnv, self};
 use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId}, Expr, ExprKind, OwnerId, Node, ItemKind, VariantData};
 use rustc_infer::infer::TyCtxtInferExt;
-use rustc_trait_selection::{infer::InferCtxtExt, traits::specialization_graph::GraphExt};
+use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_index::vec::Idx;
 
 #[derive(Default)]
@@ -47,7 +46,7 @@ impl MetaUpdateHirId{
             def_index: hir_id.owner.def_id.local_def_index.as_usize()
         }
     }
-    
+
     pub fn to_hir_id(&self) -> hir::HirId{
         hir::HirId {
             owner: hir::OwnerId{
@@ -62,21 +61,19 @@ impl SpecialTypes {
     pub fn fields(&self) -> Vec<MetaUpdateHirId> {
         self.fields.iter().map(|id| MetaUpdateHirId::new(*id)).collect()
     }
-    
+   /*
     pub fn field_exprs(&self) -> Vec<MetaUpdateHirId> {
         self.field_exprs.iter().map(|id| MetaUpdateHirId::new(*id)).collect()
-    }
+    }*/
 }
 
 impl<'tcx> DumpVisitor<'tcx> {
-    
+
     fn special_field_exprs(&self) -> Vec<MetaUpdateHirId>{
         let mut collected = vec![];
         for (owner, locals) in self.special_field_expr_map.iter() {
-            let mut locals = locals.clone();
             for id in locals{
-                collected.push(MetaUpdateHirId{local_id: id, def_index: owner.def_id.local_def_index.as_usize()});
-                count += 5; // every boxing we add shifts the local ID by 5.
+                collected.push(MetaUpdateHirId{local_id: *id, def_index: owner.def_id.local_def_index.as_usize()});
             }
         }
         collected
@@ -87,14 +84,14 @@ impl<'tcx> DumpVisitor<'tcx> {
         if !Path::new("target/metaupdate").exists() {
             std::fs::create_dir_all("target/metaupdate").expect("Failed to create `metaupdate` directory");
         }
-        
+
         let file_path = Path::new("target/metaupdate").join("special_types.json");
-        
+
         let object = JsonObject {
             fields: self.special_fields.iter().map(|id| MetaUpdateHirId::new(*id)).collect(),
             field_exprs: self.special_field_exprs()
         };
-        
+
         let val = serde_json::to_string(&object).unwrap();
         let mut file = OpenOptions::new()
                                 .write(true)
@@ -104,7 +101,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                                 .unwrap();
         file.write_all(val.as_bytes()).expect("Unable to save metaupdate results");
     }
-    
+
     pub fn new(tcx: TyCtxt<'tcx>) -> Self{
         let mut this = Self{
             tcx,
@@ -112,17 +109,17 @@ impl<'tcx> DumpVisitor<'tcx> {
             special_field_expr_map: FxHashMap::default(),
             trait_id: None
         };
-        
+
         for trait_id in tcx.all_traits(){
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
                 this.trait_id = Some(trait_id);
                 break;
             }
         }
-        
+
         this
     }
-    
+
     pub fn dump_metaupdate_special_types(&mut self){
         self.tcx.hir().visit_all_item_likes_in_crate(self);
         self.save();
@@ -134,19 +131,19 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
     fn nested_visit_map(&mut self) -> Self::Map {
         self.tcx.hir()
     }
-    
+
     fn visit_field_def(&mut self, field_def: &'tcx hir::FieldDef<'_>) {
         if self.tcx.is_special_ty(self.tcx.type_of(self.tcx.hir().local_def_id(field_def.hir_id).to_def_id())){
             self.special_fields.insert(field_def.hir_id);
         }
         hir::intravisit::walk_field_def(self, field_def);
     }
-    
+
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>){
         if self.trait_id.is_none() { return; }
-        
+
         match expr.kind {
-            ExprKind::Struct(_, fields, _) => {  
+            ExprKind::Struct(_, fields, _) => {
                 let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
                 let ictxt = self.tcx.infer_ctxt().build();
                 for (idx,field) in fields.iter().enumerate() {
@@ -229,20 +226,20 @@ pub fn load_metaupdate_analysis() -> SpecialTypes{
     if !Path::new("target/metaupdate").exists() {
         panic!("No metaupdate folder for loading analysis results!");
     }
-    
+
     let file_path = Path::new("target/metaupdate").join("special_types.json");
     let mut buffer = String::new();
     let mut file = File::open(file_path).expect("No metaupdate file for loading analysis results");
     let _ = file.read_to_string(&mut buffer).expect("Unable to read metaupdate file");
     let json_object: JsonObject = serde_json::from_str(& buffer).expect("Unable to parse metaupdate file to json");
-    
+
     let mut special_types = SpecialTypes::default();
     special_types.fields = json_object.fields.iter().map(|id| id.to_hir_id()).collect();
     let mut fields_exprs: FxHashMap<hir::OwnerId, FxHashSet<u32>> = FxHashMap::default();
     for id in json_object.field_exprs {
         let hir_id = id.to_hir_id();
         if let Some(set) = fields_exprs.get_mut(&hir_id.owner){
-            set.insert(hir_id.local_id.as_u32())
+            set.insert(hir_id.local_id.as_u32());
         }else{
             let mut set = FxHashSet::default();
             set.insert(hir_id.local_id.as_u32());

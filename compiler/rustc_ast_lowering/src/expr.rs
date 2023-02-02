@@ -1033,12 +1033,11 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     let expr = self.lower_expr(rhs);
                     if self.tcx.sess.opts.unstable_opts.meta_update {
                         if let Some(set) = self.tcx.special_types.field_exprs.get(&expr.hir_id.owner){
-                            let mut found = false;
                             let mut local_id: u32 = expr.hir_id.local_id.as_u32();
                             if let Some(offset) = self.metaupdate_id_offset_map.get(&expr.hir_id.owner) {
                                 local_id += offset;
                             }else{
-                                self.metaupdate_id_offset_map.insert(&expr.hir_id.owner, 0);
+                                self.metaupdate_id_offset_map.insert(expr.hir_id.owner, 0);
                             }
                             if set.contains(&local_id) {
                                 let expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
@@ -1410,7 +1409,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         hir::ExprField {
             hir_id,
             ident: self.lower_ident(f.ident),
-            expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains(&hir_id) {
+            expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains_key(&hir_id.owner) {
                     let expr = self.lower_expr(&f.expr);
                     self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()))
                 } else { self.lower_expr(&f.expr)},
