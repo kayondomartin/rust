@@ -445,10 +445,3 @@ impl<T: Copy> WriteCloneIntoRaw for T {
         unsafe { target.copy_from_nonoverlapping(self, 1) };
     }
 }
-
-#[link(name="mimalloc")]
-extern "C" {
-    fn mi_tdi_malloc_aligned(size: usize, align: usize, tdi_index: usize) -> *mut u8;
-    fn mi_tdi_realloc_aligned(ptr: *mut u8, new_size: usize, align: usize, tdi_index: usize) -> *mut u8;
-    fn mi_free(ptr: *mut u8);
-}
