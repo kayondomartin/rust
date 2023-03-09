@@ -60,6 +60,10 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
             llvm::SetUniqueComdat(self.llmod, lldecl);
         }
 
+        if self.tcx.is_special_func(instance.def_id()){
+            
+        }
+
         // If we're compiling the compiler-builtins crate, e.g., the equivalent of
         // compiler-rt, then we want to implicitly compile everything with hidden
         // visibility as we're going to link this object all over the place but
