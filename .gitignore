@@ -48,6 +48,8 @@ no_llvm_build
 /target
 /src/bootstrap/target
 /src/tools/x/target
+/src/ci/docker
+/src/etc/test-float-parse
 # Created by default with `src/ci/docker/run.sh`
 /obj/
 
