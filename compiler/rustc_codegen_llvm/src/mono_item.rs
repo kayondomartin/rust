@@ -60,8 +60,23 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
             llvm::SetUniqueComdat(self.llmod, lldecl);
         }
 
-        if self.tcx.is_special_func(instance.def_id()){
-            
+        // test if this is a special function
+        // Notes: we need to normalize (use normalize erasing regions) the substs types, we need to figure out a way of indexing them types and send the type_index.
+        if let Some(impl_did) = self.tcx.impl_of_method(instance.def_id()) {
+            if self.tcx.is_special_ty(self.tcx.type_of(impl_did)) {
+                let inner_ty = instance.substs.get(0).unwrap().expect_ty();
+                //inner_ty.to_string() -> perhaps this will be better than indices, after all we can compute the string version and hence the index.
+                //let layout = self.layout_of(inner_ty);
+
+                let mut index = 0;
+                if !self.tcx.is_special_ty(inner_ty) && !inner_ty.is_box() {
+                    index = 1;
+                }
+                unsafe {
+                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, index);
+                    println!("Checking: {}", inner_ty);
+                }
+            }
         }
 
         // If we're compiling the compiler-builtins crate, e.g., the equivalent of

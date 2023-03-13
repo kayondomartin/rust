@@ -575,10 +575,6 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
     return false;
 }
 
-pub(super) fn is_special_func(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
-    false
-}
-
 #[instrument(skip(tcx), level = "debug")]
 /// Checks "defining uses" of opaque `impl Trait` types to ensure that they meet the restrictions
 /// laid for "higher-order pattern unification".

@@ -170,13 +170,6 @@ rustc_queries! {
         desc {"check whether a given type is special or not"}
         separate_provide_extern
     }
-
-    /// Whether a given DefId belongs to a function of a special Type
-    query is_special_func(key: DefId) -> bool {
-        desc {"check whether the given defId is of a special function"}
-        cache_on_disk_if {key.is_local()}
-        separate_provide_extern
-    }
     
     query rust_metaupdate_trait_id(_:()) -> Option<DefId> {
         desc {"collect ll special types according to rust_meta"}    
