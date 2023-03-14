@@ -63,18 +63,19 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
         // test if this is a special function
         // Notes: we need to normalize (use normalize erasing regions) the substs types, we need to figure out a way of indexing them types and send the type_index.
         if let Some(impl_did) = self.tcx.impl_of_method(instance.def_id()) {
-            if self.tcx.is_special_ty(self.tcx.type_of(impl_did)) {
-                let inner_ty = instance.substs.get(0).unwrap().expect_ty();
-                //inner_ty.to_string() -> perhaps this will be better than indices, after all we can compute the string version and hence the index.
-                //let layout = self.layout_of(inner_ty);
+            let impl_type =   match self.tcx.try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), self.tcx.type_of(impl_did)) {
+                Ok(t) => t,
+                _ => self.tcx.type_of(impl_did)
+            };
 
-                let mut index = 0;
+            if self.tcx.is_special_ty(impl_type) {
+                let inner_ty = self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), instance.substs.get(0).unwrap().expect_ty());
+                let mut metadata = String::from("000");
                 if !self.tcx.is_special_ty(inner_ty) && !inner_ty.is_box() {
-                    index = 1;
+                    metadata = inner_ty.to_string();
                 }
                 unsafe {
-                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, index);
-                    println!("Checking: {}", inner_ty);
+                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, metadata.as_bytes().as_ptr().cast(), metadata.as_bytes().len());
                 }
             }
         }

@@ -238,7 +238,7 @@ changelog-seen = 2
 #compiler-docs = false
 
 # Indicate whether git submodules are managed and updated automatically.
-submodules = true
+submodules = false
 
 # The path to (or name of) the GDB executable to use. This is only used for
 # executing the debuginfo test suite.
