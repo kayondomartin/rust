@@ -70,12 +70,15 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
 
             if self.tcx.is_special_ty(impl_type) {
                 let inner_ty = self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), instance.substs.get(0).unwrap().expect_ty());
-                let mut metadata = String::from("000");
+                let inner_lltype = self.layout_of(inner_ty).llvm_type(self);
+
                 if !self.tcx.is_special_ty(inner_ty) && !inner_ty.is_box() {
-                    metadata = inner_ty.to_string();
+                    unsafe{
+                        llvm::LLVMMarkSmartPointerType(inner_lltype);
+                    }
                 }
                 unsafe {
-                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, metadata.as_bytes().as_ptr().cast(), metadata.as_bytes().len());
+                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, llvm_type);
                 }
             }
         }
