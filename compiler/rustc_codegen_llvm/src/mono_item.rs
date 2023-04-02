@@ -78,7 +78,9 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
                     }
                 }
                 unsafe {
-                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, llvm_type);
+                    let impl_lltype = self.layout_of(impl_type).llvm_type(self);
+                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, impl_lltype);
+                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, inner_lltype);
                 }
             }
         }
