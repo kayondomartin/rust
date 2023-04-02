@@ -74,12 +74,18 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
 
                 if !self.tcx.is_special_ty(inner_ty) && !inner_ty.is_box() {
                     unsafe{
-                        llvm::LLVMMarkSmartPointerType(inner_lltype);
+                        llvm::LLVMMarkSmartPointerType(lldecl, inner_lltype);
                     }
                 }
                 unsafe {
                     llvm::LLVMSetSmartPointerAPIMetadata(lldecl, llvm_type);
                 }
+            }
+        }
+
+        if instance.def_id() == self.tcx.lang_items().exchange_malloc_fn(){
+            unsafe {
+                llvm::LLVMSetExchangeMallocFunctionMetadata(lldecl);
             }
         }
 
