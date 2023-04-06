@@ -1,3 +1,5 @@
+use std::ffi::c_char;
+
 use crate::attributes;
 use crate::base;
 use crate::context::CodegenCx;
@@ -73,9 +75,12 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
                 let mut metadata = String::from("000");
                 if !self.tcx.is_special_ty(inner_ty) && !inner_ty.is_box() {
                     metadata = inner_ty.to_string();
+                }else{
+                    metadata.push_str(&inner_ty.to_string());
                 }
                 unsafe {
-                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, metadata.as_bytes().as_ptr().cast(), metadata.as_bytes().len());
+                    let send_str = std::ffi::CString::new(&metadata).unwrap();
+                    llvm::LLVMSetSmartPointerAPIMetadata(lldecl, send_str.as_ptr() as *const c_char);
                 }
             }
         }
