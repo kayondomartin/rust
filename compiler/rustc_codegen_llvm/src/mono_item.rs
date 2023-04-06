@@ -72,7 +72,8 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
 
             if self.tcx.is_special_ty(impl_type) {
                 let inner_ty = self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), instance.substs.get(0).unwrap().expect_ty());
-                let mut metadata = String::from("000");
+                let inner_lltype = self.layout_of(inner_ty).llvm_type(self);
+
                 if !self.tcx.is_special_ty(inner_ty) && !inner_ty.is_box() {
                     metadata = inner_ty.to_string();
                 }else{
@@ -82,6 +83,12 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
                     let send_str = std::ffi::CString::new(&metadata).unwrap();
                     llvm::LLVMSetSmartPointerAPIMetadata(lldecl, send_str.as_ptr() as *const c_char);
                 }
+            }
+        }
+
+        if instance.def_id() == self.tcx.lang_items().exchange_malloc_fn(){
+            unsafe {
+                llvm::LLVMSetExchangeMallocFunctionMetadata(lldecl);
             }
         }
 
