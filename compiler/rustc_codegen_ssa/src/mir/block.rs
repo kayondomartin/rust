@@ -179,6 +179,13 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
                 unwind_block,
                 self.funclet(fx),
             );
+
+            // RustMeta - SORLAB @kayondomartin
+            if fx.generating_exchange_malloc {
+                fx.cached_exchange_malloc.push(invokeret);
+                fx.generating_exchange_malloc = false;
+            }
+
             if fx.mir[self.bb].is_cleanup {
                 bx.do_not_inline(invokeret);
             }
@@ -199,6 +206,11 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
                 // struct, there are "symmetry" issues that cause
                 // exponential inlining - see issue #41696.
                 bx.do_not_inline(llret);
+            }
+
+            if fx.generating_exchange_malloc {
+                fx.cached_exchange_malloc.push(llret);
+                fx.generating_exchange_malloc = false;
             }
 
             if let Some((ret_dest, target)) = destination {
@@ -736,6 +748,15 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             let target = target.unwrap();
             helper.funclet_br(self, &mut bx, target);
             return;
+        }
+
+        // RustMeta - SORLAB@kayondomartin
+        if let Some(id) = def {
+            if let Some(ex_id) = bx.tcx().lang_items().exchange_malloc_fn(){
+                if id.def_id() == ex_id {
+                    self.generating_exchange_malloc = true;
+                }
+            }
         }
 
         // FIXME(eddyb) avoid computing this if possible, when `instance` is

@@ -87,6 +87,12 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
 
     /// Caller location propagated if this function has `#[track_caller]`.
     caller_location: Option<OperandRef<'tcx, Bx::Value>>,
+
+    /// cached exchange_malloc call
+    cached_exchange_malloc: Vec<Bx::Value>,
+
+    /// generating exchange_malloc
+    generating_exchange_malloc: bool,
 }
 
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
@@ -178,6 +184,8 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         debug_context,
         per_local_var_debug_info: None,
         caller_location: None,
+        cached_exchange_malloc: Vec::new(),
+        generating_exchange_malloc: false,
     };
 
     fx.per_local_var_debug_info = fx.compute_per_local_var_debug_info(&mut start_bx);
