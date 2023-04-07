@@ -1067,6 +1067,8 @@ extern "C" {
     pub fn LLVMSetSmartPointerAPIMetadata(Val: &Value, TypeName: *const c_char);
     // RustMeta: SORLAB@kayondomartin: exchange malloc api function
     pub fn LLVMMarkExchangeMallocFunc(Val: &Value);
+    // RustMeta: SORLAB@kayondomartin: exchange malloc call
+    pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeName: *const c_char);
 
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;

@@ -506,7 +506,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 { //mark exchange_malloc with data type.
                     let mut metadata = String::from("000");
                     if content_ty.is_box() || bx.tcx().is_special_ty(content_ty) {
-                        metadata.push(content_ty.to_string().as_str());
+                        metadata.push_str(content_ty.to_string().as_str());
                     }else{
                         metadata = content_ty.to_string();
                     }
