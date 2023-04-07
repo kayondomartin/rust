@@ -504,14 +504,18 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
                 let content_ty = self.monomorphize(content_ty);
                 if let Some(exchange_malloc) = exchange_malloc { //mark exchange_malloc with data type.
-                    let llcontent_ty = bx.cx().backend_type(bx.cx().layout_of(content_ty));
+                    let mut actual_type = content_ty;
+                    if let ty::Array(t,_ ) = content_ty.kind(){
+                        actual_type = *t;
+                    }
+                    let llcontent_ty = bx.cx().backend_type(bx.cx().layout_of(actual_type));
                     /*let mut metadata = String::from("000");
                     if content_ty.is_box() || bx.tcx().is_special_ty(content_ty) {
                         metadata.push_str(content_ty.to_string().as_str());
                     }else{
                         metadata = content_ty.to_string();
                     }*/
-                    bx.mark_cached_exchange_malloc(exchange_malloc, llcontent_ty, content_ty.is_box() || bx.tcx().is_special_ty(content_ty));
+                    bx.mark_cached_exchange_malloc(exchange_malloc, llcontent_ty, actual_type.is_box() || bx.tcx().is_special_ty(actual_type));
                 }
                 let box_layout = bx.cx().layout_of(bx.tcx().mk_box(content_ty));
                 let llty_ptr = bx.cx().backend_type(box_layout);

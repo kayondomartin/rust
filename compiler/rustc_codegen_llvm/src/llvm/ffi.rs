@@ -1069,6 +1069,8 @@ extern "C" {
     pub fn LLVMMarkExchangeMallocFunc(Val: &Value);
     // RustMeta: SORLAB@kayondomartin: exchange malloc call
     pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeName: &Type, IsSpecial: Bool);
+    // RustMeta: SORLAB@kayondomartin: set smart pointer inner type on call
+    //pub fn LLVMSetSmartPointerTypeOnCall(Val: &Value, TypeName: &Type, Is)
 
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;

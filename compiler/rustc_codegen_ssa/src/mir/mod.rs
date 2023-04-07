@@ -93,6 +93,8 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
 
     /// generating exchange_malloc
     generating_exchange_malloc: bool,
+
+    smart_pointer_inner_ty: Option<(Bx::Type, bool)>,
 }
 
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
@@ -186,6 +188,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         caller_location: None,
         cached_exchange_malloc: Vec::new(),
         generating_exchange_malloc: false,
+        smart_pointer_inner_ty: None,
     };
 
     fx.per_local_var_debug_info = fx.compute_per_local_var_debug_info(&mut start_bx);

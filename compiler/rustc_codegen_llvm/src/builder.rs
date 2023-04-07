@@ -257,7 +257,16 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     fn mark_cached_exchange_malloc(&self, exchange_malloc: &'ll Value,  content_ty: &'ll Type, is_special: bool) {
         unsafe{
             //let send_str = std::ffi::CString::new(metadata).unwrap();
+            let is_special = if is_special {1}else{0};
             llvm::LLVMMarkExchangeMallocCall(exchange_malloc, content_ty, is_special);
+        }
+    }
+
+    fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty: Self::Type, is_special: bool) {
+        unsafe {
+            let is_special = if is_special{1} else {0};
+            //llvm::LLVMSetSmartPointerTypeOnCall(smp_api_call, inner_ty, is_special);
+            llvm::LLVMMarkExchangeMallocCall(smp_api_call, inner_ty, is_special);
         }
     }
 
