@@ -254,10 +254,10 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     }
 
     //RustMeta - SORLAB: @kayondomartin
-    fn mark_cached_exchange_malloc(&self, exchange_malloc: &'ll Value,  metadata: &str) {
+    fn mark_cached_exchange_malloc(&self, exchange_malloc: &'ll Value,  content_ty: &'ll Type, is_special: bool) {
         unsafe{
-            let send_str = std::ffi::CString::new(metadata).unwrap();
-            llvm::LLVMMarkExchangeMallocCall(exchange_malloc, send_str.as_ptr() as *const c_char);
+            //let send_str = std::ffi::CString::new(metadata).unwrap();
+            llvm::LLVMMarkExchangeMallocCall(exchange_malloc, content_ty, is_special);
         }
     }
 

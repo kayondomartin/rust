@@ -1068,7 +1068,7 @@ extern "C" {
     // RustMeta: SORLAB@kayondomartin: exchange malloc api function
     pub fn LLVMMarkExchangeMallocFunc(Val: &Value);
     // RustMeta: SORLAB@kayondomartin: exchange malloc call
-    pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeName: *const c_char);
+    pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeName: &Type, IsSpecial: Bool);
 
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;

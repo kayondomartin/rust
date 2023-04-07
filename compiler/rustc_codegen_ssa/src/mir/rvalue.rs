@@ -499,18 +499,19 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
             mir::Rvalue::ShallowInitBox(ref operand, content_ty) => {
                 let operand = self.codegen_operand(&mut bx, operand);
-                let exchange_malloc = self.cached_exchange_malloc.pop().unwrap(); //martin
+                let exchange_malloc = self.cached_exchange_malloc.pop(); //martin
                 let lloperand = operand.immediate();
 
                 let content_ty = self.monomorphize(content_ty);
-                { //mark exchange_malloc with data type.
-                    let mut metadata = String::from("000");
+                if let Some(exchange_malloc) = exchange_malloc { //mark exchange_malloc with data type.
+                    let llcontent_ty = bx.cx().backend_type(bx.cx().layout_of(content_ty));
+                    /*let mut metadata = String::from("000");
                     if content_ty.is_box() || bx.tcx().is_special_ty(content_ty) {
                         metadata.push_str(content_ty.to_string().as_str());
                     }else{
                         metadata = content_ty.to_string();
-                    }
-                    bx.mark_cached_exchange_malloc(exchange_malloc, metadata.as_str());
+                    }*/
+                    bx.mark_cached_exchange_malloc(exchange_malloc, llcontent_ty, content_ty.is_box() || bx.tcx().is_special_ty(content_ty));
                 }
                 let box_layout = bx.cx().layout_of(bx.tcx().mk_box(content_ty));
                 let llty_ptr = bx.cx().backend_type(box_layout);

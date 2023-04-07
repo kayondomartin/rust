@@ -157,7 +157,7 @@ pub trait BuilderMethods<'a, 'tcx>:
         dest: PlaceRef<'tcx, Self::Value>,
     ) -> Self;
 
-    fn mark_cached_exchange_malloc(&self, exchange_malloc: Self::Value,  metadata: &str);
+    fn mark_cached_exchange_malloc(&self, exchange_malloc: Self::Value,  content_ty: Self::Type, is_special: bool);
 
     fn range_metadata(&mut self, load: Self::Value, range: WrappingRange);
     fn nonnull_metadata(&mut self, load: Self::Value);
