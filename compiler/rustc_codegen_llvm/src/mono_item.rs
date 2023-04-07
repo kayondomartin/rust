@@ -1,4 +1,3 @@
-use std::ffi::c_char;
 
 use crate::attributes;
 use crate::base;
