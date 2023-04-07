@@ -94,7 +94,7 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     /// generating exchange_malloc
     generating_exchange_malloc: bool,
 
-    smart_pointer_inner_ty: Option<(Bx::Type, bool)>,
+    smart_pointer_inner_ty: Option<u64>,
 }
 
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {

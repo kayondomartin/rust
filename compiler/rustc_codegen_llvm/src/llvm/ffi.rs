@@ -1064,11 +1064,12 @@ extern "C" {
     // RustMeta: SORLAB@kayondomartin: smart pointer metadata
     pub fn LLVMSetSmartPointerMetadata(Val: &Value);
     // RustMeta: SORLAB@kayondomartin: smart pointer api function
-    pub fn LLVMSetSmartPointerAPIMetadata(Val: &Value, TypeName: *const c_char);
+    pub fn LLVMSetSmartPointerAPIMetadata(Val: &Value, TypeID: c_ulonglong
+    );
     // RustMeta: SORLAB@kayondomartin: exchange malloc api function
     pub fn LLVMMarkExchangeMallocFunc(Val: &Value);
     // RustMeta: SORLAB@kayondomartin: exchange malloc call
-    pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeName: &Type, IsSpecial: Bool);
+    pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeID: c_ulonglong);
     // RustMeta: SORLAB@kayondomartin: set smart pointer inner type on call
     //pub fn LLVMSetSmartPointerTypeOnCall(Val: &Value, TypeName: &Type, Is)
 

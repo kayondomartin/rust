@@ -186,6 +186,11 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
                 fx.generating_exchange_malloc = false;
             }
 
+            if let Some(inner_ty_id) = fx.smart_pointer_inner_ty {
+                bx.set_smart_pointer_type_on_call(invokeret, inner_ty_id);
+                fx.smart_pointer_inner_ty = None;
+            }
+
             if fx.mir[self.bb].is_cleanup {
                 bx.do_not_inline(invokeret);
             }
@@ -213,8 +218,9 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
                 fx.generating_exchange_malloc = false;
             }
 
-            if let Some(inner_ty) = fx.smart_pointer_inner_ty {
-                bx.set_smart_pointer_type_on_call(llret, inner_ty.0, inner_ty.1);
+            if let Some(inner_ty_id) = fx.smart_pointer_inner_ty {
+                bx.set_smart_pointer_type_on_call(llret, inner_ty_id);
+                fx.smart_pointer_inner_ty = None;
             }
 
             if let Some((ret_dest, target)) = destination {
@@ -760,15 +766,18 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 if id.def_id() == ex_id {
                     self.generating_exchange_malloc = true;
                 }
-            }else if let Some(impl_did) = bx.tcx().impl_of_method(id.def_id()){
+            }
+            
+            if let Some(impl_did) = bx.tcx().impl_of_method(id.def_id()){
                 let impl_type =   match bx.tcx().try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), bx.tcx().type_of(impl_did)) {
                     Ok(t) => t,
                     _ => bx.tcx().type_of(impl_did)
                 };
-                let owner_ty = self.monomorphize(impl_type);
-                if bx.tcx().is_special_ty(owner_ty){
+                //let owner_ty = self.monomorphize(impl_type);
+                if bx.tcx().is_special_ty(impl_type){
                     let inner_ty = self.monomorphize(instance.unwrap().substs.get(0).unwrap().expect_ty());
-                    self.smart_pointer_inner_ty = Some((bx.backend_type(bx.layout_of(inner_ty)), bx.tcx().is_special_ty(inner_ty) || inner_ty.is_box()));
+                    let type_id = if bx.tcx().is_special_ty(inner_ty) || inner_ty.is_box() { 0 }else{bx.tcx().type_id_hash(inner_ty)};
+                    self.smart_pointer_inner_ty = Some(type_id);
                 }
             }
         }

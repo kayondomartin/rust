@@ -508,14 +508,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     if let ty::Array(t,_ ) = content_ty.kind(){
                         actual_type = *t;
                     }
-                    let llcontent_ty = bx.cx().backend_type(bx.cx().layout_of(actual_type));
-                    /*let mut metadata = String::from("000");
-                    if content_ty.is_box() || bx.tcx().is_special_ty(content_ty) {
-                        metadata.push_str(content_ty.to_string().as_str());
-                    }else{
-                        metadata = content_ty.to_string();
-                    }*/
-                    bx.mark_cached_exchange_malloc(exchange_malloc, llcontent_ty, actual_type.is_box() || bx.tcx().is_special_ty(actual_type));
+                    let actual_ty_id = if bx.tcx().is_special_ty(actual_type) || actual_type.is_box() {0}else{bx.tcx().type_id_hash(actual_type)};
+                    bx.mark_cached_exchange_malloc(exchange_malloc, actual_ty_id);
                 }
                 let box_layout = bx.cx().layout_of(bx.tcx().mk_box(content_ty));
                 let llty_ptr = bx.cx().backend_type(box_layout);

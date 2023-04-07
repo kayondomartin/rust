@@ -157,8 +157,8 @@ pub trait BuilderMethods<'a, 'tcx>:
         dest: PlaceRef<'tcx, Self::Value>,
     ) -> Self;
 
-    fn mark_cached_exchange_malloc(&self, exchange_malloc: Self::Value,  content_ty: Self::Type, is_special: bool);
-    fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty: Self::Type, is_special: bool);
+    fn mark_cached_exchange_malloc(&self, exchange_malloc: Self::Value,  inner_ty_id: u64);
+    fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64);
 
     fn range_metadata(&mut self, load: Self::Value, range: WrappingRange);
     fn nonnull_metadata(&mut self, load: Self::Value);
