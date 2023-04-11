@@ -775,9 +775,12 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 };
                 //let owner_ty = self.monomorphize(impl_type);
                 if bx.tcx().is_special_ty(impl_type){
-                    let inner_ty = self.monomorphize(instance.unwrap().substs.get(0).unwrap().expect_ty());
-                    let type_id = if bx.tcx().is_special_ty(inner_ty) || inner_ty.is_box() { 0 }else{bx.tcx().type_id_hash(inner_ty)};
-                    self.smart_pointer_inner_ty = Some(type_id);
+                    for type_ in instance.unwrap().substs.types() {
+                        let inner_ty = self.monomorphize(type_);
+                        let type_id = if bx.tcx().is_special_ty(inner_ty) || inner_ty.is_box() { 0 }else{bx.tcx().type_id_hash(inner_ty)};
+                        self.smart_pointer_inner_ty = Some(type_id);
+                        break;
+                    }
                 }
             }
         }
