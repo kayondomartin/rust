@@ -145,6 +145,9 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
         match expr.kind {
             ExprKind::Struct(_, fields, _) => {
                 let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
+                if self.tcx.is_special_ty(tc.expr_ty(expr)) {
+                    return;
+                }
                 let ictxt = self.tcx.infer_ctxt().build();
                 for (idx,field) in fields.iter().enumerate() {
                     if let Some(ty) = tc.node_type_opt(field.expr.hir_id) {
@@ -181,6 +184,9 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                 let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
                 let ictxt = self.tcx.infer_ctxt().build();
                 if let ExprKind::Field(ref sub_expr, ident) = lhs.kind{
+                    if self.tcx.is_special_ty(tc.expr_ty(*sub_expr)) {
+                        return;
+                    }
                     if let Some(ty) = tc.node_type_opt(rhs.hir_id) {
                         if ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty){
                             if let Some(set) = self.special_field_expr_map.get_mut(&rhs.hir_id.owner){

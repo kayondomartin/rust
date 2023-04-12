@@ -5,11 +5,12 @@
 use core::ops::{Drop, Deref};
 
 /// MetaUpdate trait. The trait to be implemented by smartpointers.
-/// We are using Drop + Deref with the assumption that all smart
-/// pointers implement the Deref and Drop trait.
+/// We were using Drop + Deref with the assumption that all smart
+/// pointers implement the Deref and Drop trait. But it turns out not all
+/// smart pointers implement Deref and Drop. Forexam Mutex
 #[unstable(feature = "metadata_update", issue = "none")]
 #[allow(drop_bounds)]
-pub trait MetaUpdate: Drop + Deref{
+pub trait MetaUpdate{
     /// synchronize the update metadata with the allocator.
     fn synchronize(&self, new: usize) -> bool;
 }
