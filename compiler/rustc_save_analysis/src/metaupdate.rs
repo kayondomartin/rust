@@ -190,8 +190,8 @@ impl<'tcx> DumpVisitor<'tcx> {
                     let _ = file.read_to_string(&mut buffer).expect("Unable to read metaupdate file");
                     let json_object: JsonObject = serde_json::from_str(& buffer).expect("Unable to parse metaupdate file to json");
                     this.struct_field_records = json_object.data.iter().map(|(krate_name, structs_map)|{
-                        (CrateNum::from_u32(*krate),structs_map.iter().map(|(def_idx, fields)|{
-                            (DefId{index: LocalDefId::new(*def_idx).local_def_index, krate: CrateNum::from_u32(*krate)}, fields.iter().map(|(s, jsf)|{
+                        (krate_name.clone(),structs_map.iter().map(|(def_idx, fields)|{
+                            (LocalDefId::new(*def_idx), fields.iter().map(|(s, jsf)|{
                                 (s.clone(), jsf.to_extern_struct_field())
                             }).collect())
                         }).collect())
