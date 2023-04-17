@@ -90,21 +90,21 @@ unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 
-#[unstable(feature = "metadata_update", issues = "none")]
+#[unstable(feature = "metadata_update", issue = "none")]
 impl<T: ?Sized> MetaUpdate for RwLock<T> {
     fn synchronize(&self, _new: usize) -> bool {
         true
     }
 }
 
-#[unstable(feature = "metadata_update", issues = "none")]
+#[unstable(feature = "metadata_update", issue = "none")]
 impl<T: ?Sized> MetaUpdate for RwLockReadGuard<'_, T>{
     fn synchronize(&self, _new: usize) -> bool {
         true
     }
 }
 
-#[unstable(feature = "metadata_update", issues = "none")]
+#[unstable(feature = "metadata_update", issue = "none")]
 impl<T: ?Sized> MetaUpdate for RwLockWriteGuard<'_, T>{
     fn synchronize(&self, _new: usize) -> bool {
         true

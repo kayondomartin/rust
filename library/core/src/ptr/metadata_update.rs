@@ -2,8 +2,6 @@
 /// Each smart pointer whose metadata wishes to be protected should implement this trait, and define
 /// a synchronization method.
 
-use core::ops::{Drop, Deref};
-
 /// MetaUpdate trait. The trait to be implemented by smartpointers.
 /// We were using Drop + Deref with the assumption that all smart
 /// pointers implement the Deref and Drop trait. But it turns out not all
