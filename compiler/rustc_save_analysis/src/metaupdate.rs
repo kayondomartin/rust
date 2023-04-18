@@ -7,7 +7,6 @@ use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId, LOCAL_CRATE}, Expr, E
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_index::vec::Idx;
-use rustc_span::def_id::CrateNum;
 
 
 #[derive(Default)]
@@ -158,7 +157,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         let object = JsonObject {
             data: self.struct_field_records.iter().map(|(crate_name, structs)|{
                 (crate_name.clone(), structs.iter().map(|(did, fields)|{
-                    (did.index.as_usize(), fields.iter().map(|(ident, uses)|{
+                    (did.local_def_index.as_usize(), fields.iter().map(|(ident, uses)|{
                         (String::from(ident.as_str()), uses.to_json_serializable())
                     }).collect())
                 }).collect())
@@ -172,6 +171,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                                 .truncate(true)
                                 .open(file_path)
                                 .unwrap();
+        println!("Crate: {}", self.tcx.crate_name(LOCAL_CRATE).to_string());
         file.write_all(val.as_bytes()).expect("Unable to save metaupdate results");
     }
 
@@ -183,6 +183,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         };
 
         if Path::new("target/metaupdate/special_types.json").exists() {
+            println!("Current Directory: {}, metaupdate exists: {}", std::env::current_dir().unwrap().to_str().unwrap(), Path::new("target/metaupdate").exists());
             let file_path = Path::new("target/metaupdate").join("special_types.json");
             let mut buffer = String::new();
             match File::open(file_path) {
@@ -217,14 +218,14 @@ impl<'tcx> DumpVisitor<'tcx> {
     }
 
     pub fn add_field_def_use(&mut self, adt_def: DefId, field_hir: hir::HirId, field_ident: String, is_special: bool){
-        let krate = adt_def.krate;
-        if let Some(struct_map) = self.struct_field_records.get_mut(&krate){
-            if let Some(fields) = struct_map.get_mut(&adt_def) {
+        let krate_name = self.tcx.crate_name(adt_def.krate).to_string();
+        if let Some(struct_map) = self.struct_field_records.get_mut(&krate_name){
+            if let Some(fields) = struct_map.get_mut(&LocalDefId{local_def_index: adt_def.index}) {
                 if let Some(field) = fields.get_mut(&field_ident) {
                     if !field.needs_boxed && is_special{
                         field.needs_boxed = true;
                     }
-                    if let Some(uses) = field.used_exprs.get_mut(&LOCAL_CRATE) {
+                    if let Some(uses) = field.used_exprs.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()) {
                         if let Some(exprs) = uses.get_mut(&field_hir.owner){
                             exprs.insert(field_hir.local_id.as_u32());
                         }else{
@@ -237,7 +238,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                         let mut locals = FxHashSet::default();
                         locals.insert(field_hir.local_id.as_u32());
                         uses.insert(field_hir.owner, locals);
-                        field.used_exprs.insert(LOCAL_CRATE, uses);
+                        field.used_exprs.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), uses);
                     }
                 }
             }
@@ -246,8 +247,8 @@ impl<'tcx> DumpVisitor<'tcx> {
 
 
     pub fn add_field_def(&mut self, field_def: &'tcx hir::FieldDef<'_>) -> bool{
-        let parent_def_id = self.tcx.hir().get_parent_item(field_def.hir_id).def_id.to_def_id();
-        if let Some(struct_map) = self.struct_field_records.get_mut(&parent_def_id.krate){
+        let parent_def_id = self.tcx.hir().get_parent_item(field_def.hir_id).def_id;
+        if let Some(struct_map) = self.struct_field_records.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()){
             if let Some(fields) = struct_map.get_mut(&parent_def_id) {
                 let is_special = self.tcx.is_special_ty(self.tcx.type_of(self.tcx.hir().local_def_id(field_def.hir_id).to_def_id()));
                 if let Some(field_rec) = fields.get_mut(&field_def.ident.to_string()) {
@@ -267,7 +268,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                 return false;
             }
         }else{
-            self.struct_field_records.insert(parent_def_id.krate, FxHashMap::default());
+            self.struct_field_records.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), FxHashMap::default());
             return false;
         }
     }
@@ -328,7 +329,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
     }
 }
 
-pub fn load_metaupdate_analysis() -> SpecialTypes{
+pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
     if !Path::new("target/metaupdate").exists() {
         panic!("No metaupdate folder for loading analysis results!");
     }
@@ -339,17 +340,15 @@ pub fn load_metaupdate_analysis() -> SpecialTypes{
     let _ = file.read_to_string(&mut buffer).expect("Unable to read metaupdate file");
     let json_object: JsonObject = serde_json::from_str(& buffer).expect("Unable to parse metaupdate file to json");
 
-    let special_types = SpecialTypes::default();
-    special_types.fields = if let Some(data) = json_object.data.get(&LOCAL_CRATE) {
-        let mut real_fields = FxHashSet::default();
-        let mut field_exprs = FxHashMap::default();
-        for (index, fields) in data.iter() {
-            for (name, field) in fields.iter(){
+    let mut special_types = SpecialTypes::default();
+    if let Some(data) = json_object.data.get(&String::from(crate_name)) {
+        for (_index, fields) in data.iter() {
+            for (_name, field) in fields.iter(){
                 let extern_struct_field = field.to_extern_struct_field();
                 if extern_struct_field.needs_boxed {
-                   real_fields.insert(extern_struct_field.field_hir_id);
-                   if let Some(field_exprs) = extern_struct_field.used_exprs.get(&LOCAL_CRATE) {
-
+                   special_types.fields.insert(extern_struct_field.field_hir_id);
+                   if let Some(field_exprs) = extern_struct_field.used_exprs.get(&String::from(crate_name)) {
+                        special_types.field_exprs = field_exprs.clone();
                    }
                 }
             }
