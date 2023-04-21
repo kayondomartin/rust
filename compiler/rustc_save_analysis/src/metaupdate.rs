@@ -148,11 +148,11 @@ impl<'tcx> DumpVisitor<'tcx> {
     // TODO: ensure the file name matches crate && file path matches current crate's root path
     // TODO: safely handle errors concerning file writing, creation and openning.
     fn save(&self){
-        if !Path::new("target/metaupdate").exists() {
-            std::fs::create_dir_all("target/metaupdate").expect("Failed to create `metaupdate` directory");
+        if !Path::new("/tmp/metaupdate").exists() {
+            std::fs::create_dir_all("/tmp/metaupdate").expect("Failed to create `metaupdate` directory");
         }
 
-        let file_path = Path::new("target/metaupdate").join("special_types.json");
+        let file_path = Path::new("/tmp/metaupdate").join("special_types.json");
 
         let object = JsonObject {
             data: self.struct_field_records.iter().map(|(crate_name, structs)|{
@@ -182,9 +182,9 @@ impl<'tcx> DumpVisitor<'tcx> {
             trait_id: None
         };
 
-        if Path::new("target/metaupdate/special_types.json").exists() {
-            println!("Current Directory: {}, metaupdate exists: {}", std::env::current_dir().unwrap().to_str().unwrap(), Path::new("target/metaupdate").exists());
-            let file_path = Path::new("target/metaupdate").join("special_types.json");
+        if Path::new("/tmp/metaupdate").exists() {
+            println!("Current Directory: {}, metaupdate exists: {}", std::env::current_dir().unwrap().to_str().unwrap(), Path::new("/tmp/metaupdate").exists());
+            let file_path = Path::new("/tmp/metaupdate").join("special_types.json");
             let mut buffer = String::new();
             match File::open(file_path) {
                 Ok(mut file) => {
@@ -300,7 +300,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                             for (_, field) in fields.iter().enumerate() {
                                 if let Some(ty) = tc.node_type_opt(field.expr.hir_id){
                                     let is_special = ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::reveal_all()).may_apply() || self.tcx.is_special_ty(ty);
-                                    self.add_field_def_use(adt.0.did, field.expr.hir_id, field.ident.to_string(), is_special);
+                                    self.add_field_def_use(adt.0.did, field.hir_id, field.ident.to_string(), is_special);
                                 }
                             }
                         }
@@ -330,11 +330,13 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
 }
 
 pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
-    if !Path::new("target/metaupdate").exists() {
+    if !Path::new("/tmp/metaupdate").exists() {
         panic!("No metaupdate folder for loading analysis results!");
     }
 
-    let file_path = Path::new("target/metaupdate").join("special_types.json");
+    println!("Crate name from load analysis: {}", crate_name);
+
+    let file_path = Path::new("/tmp/metaupdate").join("special_types.json");
     let mut buffer = String::new();
     let mut file = File::open(file_path).expect("No metaupdate file for loading analysis results");
     let _ = file.read_to_string(&mut buffer).expect("Unable to read metaupdate file");
@@ -342,17 +344,27 @@ pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
 
     let mut special_types = SpecialTypes::default();
     if let Some(data) = json_object.data.get(&String::from(crate_name)) {
+        println!("Crate name: {}", crate_name);
         for (_index, fields) in data.iter() {
-            for (_name, field) in fields.iter(){
-                let extern_struct_field = field.to_extern_struct_field();
-                if extern_struct_field.needs_boxed {
-                   special_types.fields.insert(extern_struct_field.field_hir_id);
-                   if let Some(field_exprs) = extern_struct_field.used_exprs.get(&String::from(crate_name)) {
-                        special_types.field_exprs = field_exprs.clone();
-                   }
+            for (_field_name, field) in fields.iter(){
+                if field.should_box {
+                    let extern_struct_field = field.to_extern_struct_field();
+                    special_types.fields.insert(extern_struct_field.field_hir_id);
+                    if let Some(field_exprs) = extern_struct_field.used_exprs.get(&String::from(crate_name)) {
+                            special_types.field_exprs.extend(field_exprs.into_iter().map(|(owner, locals)|{
+                                (*owner, locals.clone())
+                            }));
+                    }
                 }
             }
         }
+    }
+    for f in &special_types.field_exprs {
+        println!("Owner: {}\nIDs:\n", f.0.def_id.local_def_index.as_usize());
+        for id in f.1 {
+            print!("{}, ", *id);
+        }
+        println!("");
     }
     /*special_types.fields = json_object.fields.iter().map(|id| id.to_hir_id()).collect();
     let mut fields_exprs: FxHashMap<hir::OwnerId, FxHashSet<u32>> = FxHashMap::default();

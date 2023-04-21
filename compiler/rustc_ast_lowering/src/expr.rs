@@ -1415,6 +1415,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     let mut expr = self.lower_expr(&f.expr);
                     let set = self.tcx.special_types.field_exprs.get(&hir_id.owner).unwrap();
                     let mut local_id = hir_id.local_id.as_u32();
+                    println!("Owner exists: {}, elements: {}, this: {}", hir_id.owner.def_id.local_def_index.as_usize(),  set.len(), local_id);
                     if let Some(offset) = self.metaupdate_id_offset_map.get_mut(&hir_id.owner) {
                         local_id -= *offset;
                     }else{
