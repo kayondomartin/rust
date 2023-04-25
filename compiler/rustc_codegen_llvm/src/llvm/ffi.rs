@@ -1072,6 +1072,8 @@ extern "C" {
     pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeID: c_ulonglong);
     // RustMeta: SORLAB@kayondomartin: set smart pointer inner type on call
     //pub fn LLVMSetSmartPointerTypeOnCall(Val: &Value, TypeName: &Type, Is)
+    // RustMeta: SORLAB@kayondomartin: mark extern functions with appropriate metadata.
+    pub fn LLVMRustMarkExternFunc(Val: &Value);
 
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;
