@@ -3,7 +3,7 @@ use rustc_hir as hir;
 use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
 use rustc_middle::ty::{TyCtxt, List, ParamEnv, self};
-use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId, LOCAL_CRATE}, Expr, ExprKind};
+use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId, LOCAL_CRATE}, Expr, ExprKind, Node};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_index::vec::Idx;
@@ -289,11 +289,11 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
 
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>){
         if self.trait_id.is_none() { return; }
+        let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
+        let ictxt = self.tcx.infer_ctxt().build();
 
         match expr.kind {
             ExprKind::Struct(_, fields, _) => {
-                let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
-                let ictxt = self.tcx.infer_ctxt().build();
                 if let Some(parent_ty) = tc.node_type_opt(expr.hir_id){
                     if !self.tcx.is_special_ty(parent_ty) {
                         if let ty::Adt(adt, _) = parent_ty.kind(){
@@ -308,8 +308,6 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                 }
             },
             ExprKind::Assign(ref lhs, ref rhs,  _) => {
-                let tc = self.tcx.typeck(expr.hir_id.owner.def_id);
-                let ictxt = self.tcx.infer_ctxt().build();
                 if let ExprKind::Field(ref sub_expr, ident) = lhs.kind{
                     if let Some(ty) = tc.node_type_opt(rhs.hir_id) {
                         let is_special = ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::empty()).may_apply() || self.tcx.is_special_ty(ty);
@@ -323,7 +321,29 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                     }
                 }
             },
-            _ => {}
+            _ => {
+                if let ExprKind::Field(ref sub_expr, ident) = expr.kind {
+                    let parent_id = self.tcx.hir().get_parent_node(expr.hir_id);
+                    if let Some(parent_node) = self.tcx.hir().find(parent_id) {
+                        match parent_node {
+                            Node::Expr(ref parent_expr) => {
+                                match parent_expr.kind {
+                                    ExprKind::Struct(_,_,_) =>{}, //Don't care, we're handling this above
+                                    ExprKind::Assign(ref lhs, ref rhs ) => {
+                                        if *rhs == expr {
+                                            //TODO: check if lhs is a field too, if not, add rhs to required deref's
+                                        }//Don't care about RHS, we're handling it about anyway.
+                                    },
+                                    _ => {
+                                        //TODO: add expr to those that require deref
+                                    }
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
         }
         hir::intravisit::walk_expr(self, expr);
     }
