@@ -133,7 +133,7 @@ impl<'tcx> Queries<'tcx> {
     pub fn special_types(&self, crate_name: &str) -> Result<&Query<SpecialTypes>>{
         self.special_types.compute(||{
             let special_types = load_metaupdate_analysis(crate_name);
-            Ok(SpecialTypes { fields: special_types.fields.clone(), field_exprs: special_types.field_exprs.clone() })
+            Ok(SpecialTypes { fields: special_types.fields.clone(), field_exprs: special_types.field_exprs.clone(), need_unbox: special_types.unbox_exprs.clone()})
         })
     }
 

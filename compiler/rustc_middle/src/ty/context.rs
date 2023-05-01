@@ -1034,12 +1034,13 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
 #[derive(Default)]
 pub struct SpecialTypes {
     pub fields: FxHashSet<HirId>,
-    pub field_exprs: FxHashMap<hir::OwnerId, FxHashSet<u32>>
+    pub field_exprs: FxHashMap<hir::OwnerId, FxHashSet<u32>>,
+    pub need_unbox: FxHashMap<hir::OwnerId, FxHashSet<u32>>
 }
 
 impl Clone for SpecialTypes{
     fn clone(&self) -> Self {
-        Self { fields: self.fields.clone(), field_exprs: self.field_exprs.clone() }
+        Self { fields: self.fields.clone(), field_exprs: self.field_exprs.clone(), need_unbox: self.need_unbox.clone() }
     }
 }
 
