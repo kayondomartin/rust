@@ -669,12 +669,12 @@ impl SyntaxContext {
     }
 
     #[inline]
-    pub(crate) fn as_u32(self) -> u32 {
+    pub fn as_u32(self) -> u32 {
         self.0
     }
 
     #[inline]
-    pub(crate) fn from_u32(raw: u32) -> SyntaxContext {
+    pub fn from_u32(raw: u32) -> SyntaxContext {
         SyntaxContext(raw)
     }
 
