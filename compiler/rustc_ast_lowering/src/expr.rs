@@ -302,7 +302,24 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
             let hir_id = self.lower_node_id(e.id);
             self.lower_attrs(hir_id, &e.attrs);
-            hir::Expr { hir_id, kind, span: self.lower_span(e.span) }
+            let mut expr = hir::Expr { hir_id, kind, span: self.lower_span(e.span) };
+            if self.tcx.sess.opts.unstable_opts.meta_update && !self.tcx.sess.opts.unstable_opts.meta_update_analysis{
+                    if let Some(set) = self.tcx.special_types.need_unbox.get(&hir_id.owner){
+                    let local_id: u32 = hir_id.local_id.as_u32();
+                    let mut offset_id = local_id;
+                    if let Some(saved_offset) = self.metaupdate_id_offset_map.get(&hir_id.owner) {
+                        offset_id -= saved_offset;
+                    }else{
+                        self.metaupdate_id_offset_map.insert(hir_id.owner, 0);
+                    }
+
+                    if set.contains(&offset_id) {
+                        expr = hir::Expr{hir_id: self.next_id(), kind: hir::ExprKind::Unary(hir::UnOp::Deref, self.arena.alloc(expr)), span: DUMMY_SP};
+                        *self.metaupdate_id_offset_map.get_mut(&expr.hir_id.owner).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
+                    }
+                }
+            }
+            expr
         })
     }
 

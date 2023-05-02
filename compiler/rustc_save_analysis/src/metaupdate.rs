@@ -2,7 +2,7 @@ use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_hir as hir;
 use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
 use serde::{Serialize, Deserialize};
-use rustc_middle::ty::{TyCtxt, List, ParamEnv, self};
+use rustc_middle::{ty::{TyCtxt, List, ParamEnv, self}};
 use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId, LOCAL_CRATE}, Expr, ExprKind, Node};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_trait_selection::infer::InferCtxtExt;
@@ -384,6 +384,11 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                                                     }
                                                 },
                                                 ExprKind::Struct(_,_ ,_ ) => {unbox = false;},
+                                                ExprKind::MethodCall(_, obj,_,_ ) =>{
+                                                    if obj.hir_id == expr.hir_id {
+                                                        unbox = false;
+                                                    }
+                                                },
                                                 _ => {}
                                             }
                                         },
