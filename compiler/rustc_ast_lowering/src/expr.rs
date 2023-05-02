@@ -314,7 +314,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     }else{
                         self.metaupdate_id_offset_map.insert(hir_id.owner, 0);
                     }
-
+                    println!("Found owner: {}, local_id: {}, offset: {}", hir_id.owner.def_id.index(), local_id, offset);
                     if set.contains(&offset_id) {
                         println!("Found unboxable, crate: {}, owner: {}, local: {}",self.tcx.crate_name(LOCAL_CRATE).to_string(), hir_id.owner.def_id.index(), offset_id);
                         expr = hir::Expr{hir_id: self.next_id(), kind: hir::ExprKind::Unary(hir::UnOp::Deref, self.arena.alloc(expr)), span: DUMMY_SP};
