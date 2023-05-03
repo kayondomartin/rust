@@ -363,17 +363,8 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                             match parent_expr_node {
                                 Node::Expr(parent_expr) => {
                                     match parent_expr.kind {
-                                        ExprKind::Assign(lhs, _, _ ) => {
-                                            if lhs.hir_id == expr.hir_id {
-                                                unboxable = false;
-                                            }
-                                        },
+                                        ExprKind::Assign(_, _, _ ) |
                                         ExprKind::Struct(_, _, _) => {unboxable = false;},
-                                        ExprKind::MethodCall(_, obj, _, _) => {
-                                            if obj.hir_id == expr.hir_id {
-                                                unboxable = false;
-                                            }
-                                        },
                                         _ => {}
                                     }
                                 },
