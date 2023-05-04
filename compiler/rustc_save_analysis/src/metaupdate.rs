@@ -1,6 +1,7 @@
 use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_hir as hir;
-use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
+use rustc_span::def_id;
+use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}, collections::hash_map::Entry};
 use serde::{Serialize, Deserialize};
 use rustc_middle::{ty::{TyCtxt, List, ParamEnv, self}};
 use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId, LOCAL_CRATE}, Expr, ExprKind, Node};
@@ -36,11 +37,14 @@ pub struct ExternStructField {
 
 pub struct DumpVisitor<'tcx>{
     pub tcx: TyCtxt<'tcx>,
-    pub struct_field_records: FxHashMap<String, FxHashMap<LocalDefId, FxHashMap<String, ExternStructField>>>, //LocalDefId: struct DefId,
+    pub used_field_exprs: FxHashMap<String, FxHashMap<String, FxHashMap<LocalDefId, FxHashMap<String, FxHashSet<hir::HirId>>>>>, // field_def expressions in a given crate
+    pub need_box_exprs: FxHashMap<String, FxHashSet<hir::HirId>>,
+    pub unbox_except_exprs: FxHashMap<String, FxHashSet<hir::HirId>>,
+    pub field_defs: FxHashMap<String, FxHashMap<LocalDefId, FxHashMap<String, bool>>>,
     pub trait_id: Option<DefId>
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 pub struct MetaUpdateHirId{
     local_id: u32,
     def_index: usize
@@ -102,7 +106,10 @@ impl JsonExternStructField {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonObject {
-    data: FxHashMap<String, FxHashMap<usize, FxHashMap<String, JsonExternStructField>>>
+    used_field_exprs: FxHashMap<String, FxHashMap<String, FxHashMap<usize, FxHashMap<String, Vec<MetaUpdateHirId>>>>>,
+    need_box_exprs: FxHashMap<String, Vec<MetaUpdateHirId>>,
+    unbox_except_exprs: FxHashMap<String, Vec<MetaUpdateHirId>>,
+    field_defs: FxHashMap<String, FxHashMap<usize, FxHashMap<String, bool>>>
 }
 
 impl MetaUpdateHirId{
@@ -133,19 +140,62 @@ impl SpecialTypes {
     }*/
 }
 
+
 impl<'tcx> DumpVisitor<'tcx> {
 
-    /*fn special_field_exprs(&self) -> Vec<MetaUpdateHirId>{
-        let mut collected = vec![];
-        for (owner, locals) in self.special_field_expr_map.iter() {
-            for id in locals{
-                collected.push(MetaUpdateHirId{local_id: *id, def_index: owner.def_id.local_def_index.as_usize()});
-            }
-        }
-        collected
-    }*/
-    // TODO: ensure the file name matches crate && file path matches current crate's root path
-    // TODO: safely handle errors concerning file writing, creation and openning.
+    fn data_to_json(&self) -> JsonObject {
+        let object = JsonObject {
+            used_field_exprs: self.used_field_exprs.iter().map(|(local_krate, uses)|{
+                (local_krate.clone(), uses.iter().map(|(krate, struct_def)|{
+                    (krate.clone(), struct_def.iter().map(|(def_id, fields)|{
+                        (def_id.as_usize(), fields.iter().map(|(field, use_hir_ids)|{
+                            (field.clone(), use_hir_ids.iter().map(|id| MetaUpdateHirId::new(*id)).collect())
+                        }).collect())
+                    }).collect())
+                }).collect())
+            }).collect(),
+            need_box_exprs: self.need_box_exprs.iter().map(|(krate, ids)|{
+                (krate.clone(), ids.iter().map(|id|MetaUpdateHirId::new(*id)).collect())
+            }).collect(),
+            unbox_except_exprs: self.unbox_except_exprs.iter().map(|(krate, ids)|{
+                (krate.clone(), ids.iter().map(|(id)| MetaUpdateHirId::new(*id)).collect())
+            }).collect(),
+            field_defs: self.field_defs.iter().map(|(krate, structs)|{
+                (krate.clone(), structs.iter().map(|(struct_id, field_uses)|{
+                    (struct_id.as_usize(), field_uses.iter().map(|(field, should_box)|{
+                        (field.clone(), *should_box)
+                    }).collect())
+                }).collect())
+            }).collect()
+        };
+        object
+    }
+
+    fn load_data_from_json_object(&mut self, object: &JsonObject) {
+        self.need_box_exprs = object.need_box_exprs.iter().map(|(krate, ids)|{
+            (krate.clone(), ids.iter().map(|id|id.to_hir_id()).collect())
+        }).collect();
+        self.unbox_except_exprs = object.unbox_except_exprs.iter().map(|(krate, ids)|{
+            (krate.clone(), ids.iter().map(|id|id.to_hir_id()).collect())
+        }).collect();
+        self.field_defs = object.field_defs.iter().map(|(krate, structs)|{
+            (krate.clone(), structs.iter().map(|(struct_def_id, fields)|{
+                (LocalDefId::new(*def_id), fields.iter().map(|(field_ident, should_box)|{
+                    (field_ident.clone(), *should_box)
+                }).collect())
+            }).collect())
+        }).collect();
+        self.used_field_exprs  = object.used_field_exprs.iter().map(|(krate, uses)|{
+            (krate.clone(), uses.iter().map(|(def_krate, structs)|{
+                (def_krate.clone(), structs.iter().map(|(def_id, fields_uses)|{
+                    (LocalDefId::new(*def_id), fields_uses.iter().map(|(field_name, use_ids)|{
+                        (field_name.clone(), use_ids.iter().map(|(id)|id.to_hir_id()))
+                    }).collect())
+                }).collect())
+            }).collect())
+        }).collect();
+    }
+
     fn save(&self){
         if !Path::new("/tmp/metaupdate").exists() {
             std::fs::create_dir_all("/tmp/metaupdate").expect("Failed to create `metaupdate` directory");
@@ -153,15 +203,7 @@ impl<'tcx> DumpVisitor<'tcx> {
 
         let file_path = Path::new("/tmp/metaupdate").join("special_types.json");
 
-        let object = JsonObject {
-            data: self.struct_field_records.iter().map(|(crate_name, structs)|{
-                (crate_name.clone(), structs.iter().map(|(did, fields)|{
-                    (did.local_def_index.as_usize(), fields.iter().map(|(ident, uses)|{
-                        (String::from(ident.as_str()), uses.to_json_serializable())
-                    }).collect())
-                }).collect())
-            }).collect(),
-        };
+        let object = self.data_to_json();
 
         let val = serde_json::to_string(&object).unwrap();
         let mut file = OpenOptions::new()
@@ -176,7 +218,10 @@ impl<'tcx> DumpVisitor<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>) -> Self{
         let mut this = Self{
             tcx,
-            struct_field_records: FxHashMap::default(),
+            need_box_exprs: FxHashMap::default(),
+            unbox_except_exprs: FxHashMap::default(),
+            used_field_exprs: FxHashMap::default(),
+            field_defs: FxHashMap::default(),
             trait_id: None
         };
 
@@ -187,13 +232,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                 Ok(mut file) => {
                     let _ = file.read_to_string(&mut buffer).expect("Unable to read metaupdate file");
                     let json_object: JsonObject = serde_json::from_str(& buffer).expect("Unable to parse metaupdate file to json");
-                    this.struct_field_records = json_object.data.iter().map(|(krate_name, structs_map)|{
-                        (krate_name.clone(),structs_map.iter().map(|(def_idx, fields)|{
-                            (LocalDefId::new(*def_idx), fields.iter().map(|(s, jsf)|{
-                                (s.clone(), jsf.to_extern_struct_field())
-                            }).collect())
-                        }).collect())
-                    }).collect()
+                    this.load_from_json_object(&json_object);
                 }
                 _ => {}
             }
@@ -216,58 +255,52 @@ impl<'tcx> DumpVisitor<'tcx> {
 
     pub fn mark_require_unbox_def(&mut self, adt_def: DefId,  field_hir: hir::HirId, field_ident: String, unboxable: bool){
         let krate_name = self.tcx.crate_name(adt_def.krate).to_string();
-        if let Some(struct_map) = self.struct_field_records.get_mut(&krate_name){
+        let local_krate_name = self.tcx.crate_name(LOCAL_CRATE).to_string();
+        let struct_def_id = LocalDefId{local_def_index: adt_def.index};
+        if let Some(struct_map) = self.field_defs.get_mut(&krate_name){
             if let Some(fields) = struct_map.get_mut(&LocalDefId{local_def_index: adt_def.index}) {
-                if let Some(field) = fields.get_mut(&field_ident) {
-                    if let Some(uses) = field.used_exprs.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()) {
-                        if let Some(exprs) = uses.get_mut(&field_hir.owner){
-                            let old = exprs.insert(field_hir.local_id.as_u32(), if !unboxable {Some(FieldExprAction::DontTouch)} else {None});
-                            if unboxable && old.is_some() && old.as_ref().unwrap().is_some(){
-                                exprs.insert(field_hir.local_id.as_u32(), old.unwrap());
-                            }
-                        }else{
-                            let mut locals = FxHashMap::default();
-                            locals.insert(field_hir.local_id.as_u32(), if !unboxable {Some(FieldExprAction::DontTouch)} else {None});
-                            uses.insert(field_hir.owner, locals);
+               match fields.entry(&field_ident) {
+                    Entry::Occupied(_) => {
+                        self.used_field_exprs.entry(&local_krate_name)
+                                            .or_insert(FxHashMap::default()).entry(&krate_name)
+                                            .or_insert(FxHashMap::default()).entry(&struct_def_id)
+                                            .or_insert(FxHashMap::default()).entry(&field_indent)
+                                            .or_insert(FxHashSet::default()).insert(field_hir);
+                        if !unboxable {
+                            self.unbox_except_exprs.entry(&local_krate_name)
+                                .or_insert(FxHashSet::default()).insert(field_hir);
                         }
-                    }else{
-                        let mut uses = FxHashMap::default();
-                        let mut locals = FxHashMap::default();
-                        locals.insert(field_hir.local_id.as_u32(), if !unboxable {Some(FieldExprAction::DontTouch)} else {None});
-                        uses.insert(field_hir.owner, locals);
-                        field.used_exprs.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), uses);
-                    }
-                }
+                    },
+
+                    Entry::Vacant(_) => {}
+               }
             }
         }
     }
 
-    pub fn add_boxable_def_use(&mut self, adt_def: DefId, field_hir: hir::HirId, field_ident: String, is_special: bool){
+    pub fn add_box_require_def_use(&mut self, adt_def: DefId, field_hir: hir::HirId, field_ident: String, is_special: bool){
         let krate_name = self.tcx.crate_name(adt_def.krate).to_string();
-        if let Some(struct_map) = self.struct_field_records.get_mut(&krate_name){
-            if let Some(fields) = struct_map.get_mut(&LocalDefId{local_def_index: adt_def.index}) {
+        let local_krate_name = self.tcx.crate_name(LOCAL_CRATE).to_string();
+        let struct_def_id = LocalDefId {local_def_index: adt_def.index};
+        if let Some(struct_map) = self.field_defs.get_mut(&krate_name){
+            if let Some(fields) = struct_map.get_mut(&struct_def_id) {
                 if let Some(field) = fields.get_mut(&field_ident) {
-                    if !field.needs_boxed && is_special{
-                        field.needs_boxed = true;
+                    if !field && is_special{
+                        *field = true;
                     }
-                    if let Some(uses) = field.used_exprs.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()) {
-                        if let Some(exprs) = uses.get_mut(&field_hir.owner){
-                            let old = exprs.insert(field_hir.local_id.as_u32(), if is_special {Some(FieldExprAction::NeedsBox)} else {None});
-                            if !is_special && old.is_some() && old.as_ref().unwrap().is_some() {
-                                exprs.insert(field_hir.local_id.as_u32(), old.unwrap());
-                            }
-                        }else{
-                            let mut locals = FxHashMap::default();
-                            locals.insert(field_hir.local_id.as_u32(), if is_special {Some(FieldExprAction::NeedsBox)}else{None});
-                            uses.insert(field_hir.owner, locals);
-                        }
-                    }else{
-                        let mut uses = FxHashMap::default();
-                        let mut locals = FxHashMap::default();
-                        locals.insert(field_hir.local_id.as_u32(), if is_special {Some(FieldExprAction::NeedsBox)} else {None});
-                        uses.insert(field_hir.owner, locals);
-                        field.used_exprs.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), uses);
-                    }
+
+                    self.used_field_exprs.entry(&local_krate_name)
+                    .or_insert_with(||{
+                        FxHashMap::default()
+                    }).entry(&krate_name)
+                    .or_insert_with(FxHashMap::default()).entry(&struct_def_id)
+                    .or_insert_with(FxHashMap::default()).entry(&field_ident).or_insert(FxHashSe
+                    ::default()).insert(field_hir);
+
+                    self.need_box_exprs.entry(&local_krate_name)
+                    .or_insert_with(||{
+                        FxHashSet::default()
+                    }).insert(field_hir);
                 }
             }
         }
@@ -276,19 +309,15 @@ impl<'tcx> DumpVisitor<'tcx> {
 
     pub fn add_field_def(&mut self, field_def: &'tcx hir::FieldDef<'_>) -> bool{
         let parent_def_id = self.tcx.hir().get_parent_item(field_def.hir_id).def_id;
-        if let Some(struct_map) = self.struct_field_records.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()){
+        if let Some(struct_map) = self.field_defs.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()){
             if let Some(fields) = struct_map.get_mut(&parent_def_id) {
                 let is_special = self.tcx.is_special_ty(self.tcx.type_of(self.tcx.hir().local_def_id(field_def.hir_id).to_def_id()));
                 if let Some(field_rec) = fields.get_mut(&field_def.ident.to_string()) {
-                    if !field_rec.needs_boxed && is_special {
-                        field_rec.needs_boxed = true
+                    if !field_rec && is_special {
+                        *field_rec = true
                     }
                 }else{
-                    fields.insert(field_def.ident.to_string(), ExternStructField {
-                        field_hir_id: field_def.hir_id,
-                        needs_boxed: is_special,
-                        used_exprs: FxHashMap::default(),
-                    });
+                    fields.insert(field_def.ident.to_string(), is_special);
                 }
                 return true;
             }else{
@@ -296,7 +325,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                 return false;
             }
         }else{
-            self.struct_field_records.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), FxHashMap::default());
+            self.field_defs.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), FxHashMap::default());
             return false;
         }
     }
@@ -327,7 +356,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                             for (_, field) in fields.iter().enumerate() {
                                 if let Some(ty) = tc.node_type_opt(field.expr.hir_id){
                                     let is_special = ictxt.type_implements_trait(self.trait_id.unwrap(), ty, List::empty(), ParamEnv::reveal_all()).may_apply() || self.tcx.is_special_ty(ty);
-                                    self.add_boxable_def_use(adt.0.did, field.hir_id, field.ident.to_string(), is_special);
+                                    self.add_box_require_def_use(adt.0.did, field.hir_id, field.ident.to_string(), is_special);
                                 }
                             }
                         }
@@ -343,7 +372,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                         if let Some(parent_ty) = tc.node_type_opt(sub_expr.hir_id){
                             if !self.tcx.is_special_ty(parent_ty) {
                                 if let ty::Adt(adt, _) = parent_ty.kind() {
-                                    self.add_boxable_def_use(adt.0.did, rhs.hir_id, ident.to_string(), is_special);
+                                    self.add_box_require_def_use(adt.0.did, lhs.hir_id, ident.to_string(), is_special);
                                 }
                             }
                         }
@@ -354,12 +383,12 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                 let tc  = self.tcx.typeck(expr.hir_id.owner.def_id);
                 let _ictxt = self.tcx.infer_ctxt().build();
                 if let Some(parent_ty) = tc.node_type_opt(field.hir_id) {
-                    if !self.tcx.is_special_ty(parent_ty) {
-                        if let ty::Adt(adt, _) = parent_ty.kind() {
-                            let parent_expr_id = self.tcx.hir().get_parent_node(expr.hir_id);
-                            let parent_expr_node = self.tcx.hir().get(parent_expr_id);
-                            let mut unboxable = true;
+                    if let ty::Adt(adt, _) = parent_ty.kind() {
+                        let parent_expr_id = self.tcx.hir().get_parent_node(expr.hir_id);
+                        let parent_expr_node = self.tcx.hir().get(parent_expr_id);
+                        let mut unboxable = true;
 
+                        if !self.tcx.is_special_ty(parent_ty) {
                             match parent_expr_node {
                                 Node::Expr(parent_expr) => {
                                     match parent_expr.kind {
@@ -370,9 +399,9 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
                                 },
                                 _ => {}
                             }
-
-                            self.mark_require_unbox_def(adt.0.did, expr.hir_id, ident.to_string(), unboxable);
                         }
+
+                        self.mark_require_unbox_def(adt.0.did, expr.hir_id, ident.to_string(), unboxable);
                     }
                 }
             },
@@ -395,47 +424,26 @@ pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
     let json_object: JsonObject = serde_json::from_str(& buffer).expect("Unable to parse metaupdate file to json");
 
     let mut special_types = SpecialTypes::default();
-    if let Some(data) = json_object.data.get(&String::from(crate_name)) {
-        for (_index, fields) in data.iter() {
-            for (_field_name, field) in fields.iter(){
-                let extern_struct_field = field.to_extern_struct_field();
-                if field.should_box {
-                    special_types.fields.insert(extern_struct_field.field_hir_id);
-                    //very poorly done set and map operations!
-                    //just to get the work done!
-                    if let Some(field_exprs) = extern_struct_field.used_exprs.get(&String::from(crate_name)) {
-                        for (owner, locals) in field_exprs {
-                            let mut field_locals = FxHashSet::default();
-                            let mut unboxable_locals = FxHashSet::default();
-                            for (id, action) in locals {
-                                if let Some(action) = action {
-                                    match action {
-                                        FieldExprAction::NeedsBox => {
-                                            field_locals.insert(*id);
-                                        },
-                                        _ => {}
-                                    }
-                                }else {
-                                    unboxable_locals.insert(*id);
-                                }
-                            }
-                            if let Some(set) = special_types.field_exprs.get_mut(owner) {
-                                set.extend(field_locals.into_iter());
-                            }else{
-                                special_types.field_exprs.insert(*owner, field_locals);
-                            }
-
-                            if let Some(set) = special_types.unbox_exprs.get_mut(owner) {
-                                set.extend(unboxable_locals.into_iter())
-                            }else{
-                                special_types.unbox_exprs.insert(*owner, unboxable_locals);
-                            }
-                        }
-
-                    }
-                }
-            }
-        }
+    let mut should_box = json_object.field_defs.clone();
+    for (_, structs) in should_box.iter_mut(){
+        structs.retain(|_, usage|{
+            usage.retain(|fname, should_box| *should_box);
+            !usage.is_empty()
+        })
     }
+    let mut used_exprs = json_object.used_field_exprs.clone().get_mut(&String::from(crate_name)).unwrap_or_default();
+    let mut expr_per_owner = used_exprs.iter().map(|(krate, structs)|{
+        (krate.clone(), structs.iter().map(|(def_id, uses){
+            (*def_id, uses.iter().map(|(field_name, hir_ids)|{
+                let mut hir_id_map = FxHashMap::default();
+                for id in hir_ids.iter() {
+                    hir_id_map.entry(id.def_index).or_insert(Vec::new()).push(id.local_id);
+                }
+                (field_name.clone(), hir_ids.iter().map(|id|))
+            }))
+        }))
+    }).collect();
+
     special_types
+
 }
