@@ -1074,6 +1074,8 @@ extern "C" {
     //pub fn LLVMSetSmartPointerTypeOnCall(Val: &Value, TypeName: &Type, Is)
     // RustMeta: SORLAB@kayondomartin: mark extern functions with appropriate metadata.
     pub fn LLVMRustMarkExternFunc(Val: &Value);
+    //RustMeta: mark special type
+    pub fn LLVMRustMarkSpecialType(Type_: &Type);
 
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;
