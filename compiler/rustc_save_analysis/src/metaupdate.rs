@@ -441,11 +441,11 @@ pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
                                 special_types.field_exprs.insert(*owner, field_locals);
                             }
 
-                            if let Some(set) = special_types.unbox_exprs.get_mut(owner) {
+                            /*if let Some(set) = special_types.unbox_exprs.get_mut(owner) {
                                 set.extend(unboxable_locals.into_iter())
                             }else{
-                                special_types.unbox_exprs.insert(*owner, unboxable_locals);
-                            }
+                                //special_types.unbox_exprs.insert(*owner, unboxable_locals);
+                            }*/
                         }
 
                     }

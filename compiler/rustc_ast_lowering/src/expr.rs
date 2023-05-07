@@ -1433,7 +1433,6 @@ impl<'hir> LoweringContext<'_, 'hir> {
             hir_id,
             ident: self.lower_ident(f.ident),
             expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains_key(&hir_id.owner) {
-                    let mut expr = self.lower_expr(&f.expr);
                     let set = self.tcx.special_types.field_exprs.get(&hir_id.owner).unwrap();
                     let mut local_id = hir_id.local_id.as_u32();
                     if let Some(offset) = self.metaupdate_id_offset_map.get_mut(&hir_id.owner) {
@@ -1442,6 +1441,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         self.metaupdate_id_offset_map.insert(hir_id.owner, 0);
                     }
 
+                    let mut expr = self.lower_expr(&f.expr);
                     if set.contains(&local_id){
                         let mut offset = expr.hir_id.local_id.as_u32();
                         expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
