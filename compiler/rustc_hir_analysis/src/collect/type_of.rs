@@ -389,12 +389,24 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
         },
 
         Node::Field(field) => {
-            let ty_ = icx.to_ty(field.ty);
-            if tcx.sess.opts.unstable_opts.meta_update && tcx.special_types.fields.contains(&field.hir_id) {
-                tcx.mk_box(ty_)
-            }else{
-                ty_
+            let mut ty_ = icx.to_ty(field.ty);
+            let parent_id = tcx.hir().get_parent_node(field.hir_id);
+            let parent_node = tcx.hir().get(parent_id);
+            match parent_node {
+                Node::Item(item) => {
+                    match item.kind {
+                        ItemKind::Struct(_, _) => {
+                            if tcx.sess.opts.unstable_opts.meta_update && tcx.special_types.fields.contains(&field.hir_id) {
+                                ty_ = tcx.mk_box(ty_)
+                            }
+                        },
+
+                        _ => {}
+                    }
+                },
+                _ => {}
             }
+            ty_
         },
 
         Node::Expr(&Expr { kind: ExprKind::Closure { .. }, .. }) => {

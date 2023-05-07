@@ -126,6 +126,7 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
                     bx.struct_gep(ty, self.llval, bx.cx().backend_field_index(self.layout, ix))
                 }
             };
+            bx.mark_field_projection(llval, ix);
             PlaceRef {
                 // HACK(eddyb): have to bitcast pointers until LLVM removes pointee types.
                 llval: bx.pointercast(llval, bx.cx().type_ptr_to(bx.cx().backend_type(field))),

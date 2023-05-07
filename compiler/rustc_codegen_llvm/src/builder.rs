@@ -260,6 +260,14 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
+
+    //RustMeta - SORLAB: @kayondomartin
+    fn mark_field_projection(&self, inst: Self::Value, field_idx: usize) {
+        unsafe {
+            llvm::LLVMMarkFieldProjection(inst, field_idx);
+        }
+    }
+
     fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64) {
         unsafe {
             llvm::LLVMMarkExchangeMallocCall(smp_api_call, inner_ty_id);
