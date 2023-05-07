@@ -91,7 +91,7 @@ fn uncached_llvm_type<'a, 'tcx>(
                 cx.type_struct(&llfields, packed)
             }
             Some(ref name) => {
-                let llty = cx.type_named_struct(name);
+                let llty = cx.tySORLApe_named_struct(name);
                 *defer = Some((llty, layout));
                 llty
             }
@@ -285,6 +285,13 @@ impl<'tcx> LayoutLlvmExt<'tcx> for TyAndLayout<'tcx> {
             uncached_llvm_type(cx, *self, &mut defer, &mut field_remapping)
         };
         debug!("--> mapped {:#?} to llty={:?}", self, llty);
+
+        //SORLAB: Mark special types as special.
+        if cx.tcx.is_special_ty(self.ty) {
+            unsafe {
+                llvm::LLVMRustMarkSpecialType(llty);
+            }
+        }
 
         cx.type_lowering
             .borrow_mut()
