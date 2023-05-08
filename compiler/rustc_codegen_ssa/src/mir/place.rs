@@ -94,36 +94,41 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         let effective_field_align = self.align.restrict_for_offset(offset);
 
         let mut simple = || {
-            let llval = match self.layout.abi {
-                _ if offset.bytes() == 0 => {
-                    // Unions and newtypes only use an offset of 0.
-                    // Also handles the first field of Scalar, ScalarPair, and Vector layouts.
-                    self.llval
-                }
-                Abi::ScalarPair(a, b)
-                    if offset == a.size(bx.cx()).align_to(b.align(bx.cx()).abi) =>
-                {
-                    // Offset matches second field.
-                    let ty = bx.backend_type(self.layout);
-                    bx.struct_gep(ty, self.llval, 1)
-                }
-                Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } if field.is_zst() => {
-                    // ZST fields are not included in Scalar, ScalarPair, and Vector layouts, so manually offset the pointer.
-                    let byte_ptr = bx.pointercast(self.llval, bx.cx().type_i8p());
-                    bx.gep(bx.cx().type_i8(), byte_ptr, &[bx.const_usize(offset.bytes())])
-                }
-                Abi::Scalar(_) | Abi::ScalarPair(..) => {
-                    // All fields of Scalar and ScalarPair layouts must have been handled by this point.
-                    // Vector layouts have additional fields for each element of the vector, so don't panic in that case.
-                    bug!(
-                        "offset of non-ZST field `{:?}` does not match layout `{:#?}`",
-                        field,
-                        self.layout
-                    );
-                }
-                _ => {
-                    let ty = bx.backend_type(self.layout);
-                    bx.struct_gep(ty, self.llval, bx.cx().backend_field_index(self.layout, ix))
+            let llval = if bx.tcx().is_special_ty(field.ty) && !bx.tcx().is_special_ty(self.layout.ty) {
+                let segment_cast = bx.bitcast(self.llval, bx.cx().type_);
+                bx.and(segment_cast, bx.const_int(bx.cx().type_i64(), 0xFFFFFFFFFE000000))
+            } else {
+                match self.layout.abi {
+                    _ if offset.bytes() == 0 => {
+                        // Unions and newtypes only use an offset of 0.
+                        // Also handles the first field of Scalar, ScalarPair, and Vector layouts.
+                        self.llval
+                    }
+                    Abi::ScalarPair(a, b)
+                        if offset == a.size(bx.cx()).align_to(b.align(bx.cx()).abi) =>
+                    {
+                        // Offset matches second field.
+                        let ty = bx.backend_type(self.layout);
+                        bx.struct_gep(ty, self.llval, 1)
+                    }
+                    Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } if field.is_zst() => {
+                        // ZST fields are not included in Scalar, ScalarPair, and Vector layouts, so manually offset the pointer.
+                        let byte_ptr = bx.pointercast(self.llval, bx.cx().type_i8p());
+                        bx.gep(bx.cx().type_i8(), byte_ptr, &[bx.const_usize(offset.bytes())])
+                    }
+                    Abi::Scalar(_) | Abi::ScalarPair(..) => {
+                        // All fields of Scalar and ScalarPair layouts must have been handled by this point.
+                        // Vector layouts have additional fields for each element of the vector, so don't panic in that case.
+                        bug!(
+                            "offset of non-ZST field `{:?}` does not match layout `{:#?}`",
+                            field,
+                            self.layout
+                        );
+                    }
+                    _ => {
+                        let ty = bx.backend_type(self.layout);
+                        bx.struct_gep(ty, self.llval, bx.cx().backend_field_index(self.layout, ix))
+                    }
                 }
             };
             bx.mark_field_projection(llval, ix);
