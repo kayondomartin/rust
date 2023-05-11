@@ -1063,6 +1063,8 @@ extern "C" {
 
     // RustMeta: SORLAB@kayondomartin: smart pointer metadata
     pub fn LLVMSetSmartPointerMetadata(Val: &Value);
+    //RustMeta: SORLAB@kayondomartin: smartpointer metadata
+    pub fn LLVMSetSmartPointerHouseMetadata(Val: &Value);
     // RustMeta: SORLAB@kayondomartin: smart pointer api function
     pub fn LLVMSetSmartPointerAPIMetadata(Val: &Value, TypeID: c_ulonglong
     );

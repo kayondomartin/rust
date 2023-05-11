@@ -9,7 +9,7 @@ use rustc_middle::mir;
 use rustc_middle::mir::tcx::PlaceTy;
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutOf, TyAndLayout};
 use rustc_middle::ty::{self, Ty};
-use rustc_target::abi::{Abi, Align, FieldsShape, Int, TagEncoding};
+use rustc_target::abi::{Abi, Align, FieldsShape, Int, TagEncoding, AllocaSpecial};
 use rustc_target::abi::{VariantIdx, Variants};
 
 #[derive(Copy, Clone, Debug)]
@@ -19,8 +19,6 @@ pub struct PlaceRef<'tcx, V> {
 
     /// This place's extra data if it is unsized, or `None` if null.
     pub llextra: Option<V>,
-
-    /// This place's smart pointer data if any (for housed smart pointers)
 
     /// The monomorphized type of this place, including variant information.
     pub layout: TyAndLayout<'tcx>,
@@ -51,7 +49,10 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         layout: TyAndLayout<'tcx>,
     ) -> Self {
         assert!(!layout.is_unsized(), "tried to statically allocate unsized place");
-        let is_special = bx.tcx().is_special_ty(layout.ty); // TODO: @kayondomartin ==> SORLAB:
+        let is_special = if bx.tcx().is_special_ty(layout.ty){AllocaSpecial::SmartPointer} else
+                         if bx.tcx().contains_special_ty(layout.ty){AllocaSpecial::SmartPointerHouse} else{
+                            AllocaSpecial::None
+                         }; // TODO: @kayondomartin ==> SORLAB:
                                                             // RustMeta
         let tmp = bx.alloca(bx.cx().backend_type(layout), layout.align.abi, is_special);
         Self::new_sized(tmp, layout)

@@ -2,7 +2,7 @@ use crate::abi::FnAbiLlvmExt;
 use crate::attributes;
 use crate::common::Funclet;
 use crate::context::CodegenCx;
-use crate::llvm::{self, AtomicOrdering, AtomicRmwBinOp, BasicBlock, LLVMSetSmartPointerMetadata};
+use crate::llvm::{self, AtomicOrdering, AtomicRmwBinOp, BasicBlock, LLVMSetSmartPointerMetadata, LLVMSetSmartPointerHouseMetadata};
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
@@ -20,6 +20,7 @@ use rustc_middle::ty::layout::{
 };
 use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_span::Span;
+use rustc_target::abi::AllocaSpecial;
 use rustc_target::abi::{self, call::FnAbi, Align, Size, WrappingRange};
 use rustc_target::spec::{HasTargetSpec, Target};
 use std::borrow::Cow;
@@ -433,14 +434,21 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     }
 
     // TODO: @rust-meta: mark special allocas
-    fn alloca(&mut self, ty: &'ll Type, align: Align, is_special: bool) -> &'ll Value {
+    fn alloca(&mut self, ty: &'ll Type, align: Align, is_special: AllocaSpecial ) -> &'ll Value {
         let mut bx = Builder::with_cx(self.cx);
         bx.position_at_start(unsafe { llvm::LLVMGetFirstBasicBlock(self.llfn()) });
         unsafe {
             let alloca = llvm::LLVMBuildAlloca(bx.llbuilder, ty, UNNAMED);
             llvm::LLVMSetAlignment(alloca, align.bytes() as c_uint);
-            if is_special {
-                LLVMSetSmartPointerMetadata(alloca);
+
+            match is_special {
+                AllocaSpecial::SmartPointer => {
+                    LLVMSetSmartPointerMetadata(alloca);
+                },
+                AllocaSpecial::SmartPointerHouse => {
+                    LLVMSetSmartPointerHouseMetadata(alloca);
+                },
+                _ => {}
             }
             alloca
         }

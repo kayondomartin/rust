@@ -18,7 +18,7 @@ use rustc_middle::ty::layout::{FnAbiOf, HasTyCtxt, LayoutOf};
 use rustc_middle::ty::{self, Ty};
 use rustc_middle::{bug, span_bug};
 use rustc_span::{sym, symbol::kw, Span, Symbol};
-use rustc_target::abi::{self, Align, HasDataLayout, Primitive};
+use rustc_target::abi::{self, Align, HasDataLayout, Primitive, AllocaSpecial};
 use rustc_target::spec::{HasTargetSpec, PanicStrategy};
 
 use std::cmp::Ordering;
@@ -533,7 +533,7 @@ fn codegen_msvc_try<'ll>(
         //
         // More information can be found in libstd's seh.rs implementation.
         let ptr_align = bx.tcx().data_layout.pointer_align.abi;
-        let slot = bx.alloca(bx.type_i8p(), ptr_align, false); // TODO: @kayondomartin: RustMeta,
+        let slot = bx.alloca(bx.type_i8p(), ptr_align, AllocaSpecial::None); // TODO: @kayondomartin: RustMeta,
                                                                // SORLAB
         let try_func_ty = bx.type_func(&[bx.type_i8p()], bx.type_void());
         bx.invoke(try_func_ty, None, try_func, &[data], normal, catchswitch, None);
@@ -733,7 +733,7 @@ fn codegen_emcc_try<'ll>(
         let ptr_align = bx.tcx().data_layout.pointer_align.abi;
         let i8_align = bx.tcx().data_layout.i8_align.abi;
         let catch_data_type = bx.type_struct(&[bx.type_i8p(), bx.type_bool()], false);
-        let catch_data = bx.alloca(catch_data_type, ptr_align, false); // TODO: @kayondomartin:
+        let catch_data = bx.alloca(catch_data_type, ptr_align, AllocaSpecial::None); // TODO: @kayondomartin:
                                                                        // RustMeta, SORLAB
         let catch_data_0 =
             bx.inbounds_gep(catch_data_type, catch_data, &[bx.const_usize(0), bx.const_usize(0)]);
@@ -1135,7 +1135,7 @@ fn generic_simd_intrinsic<'ll, 'tcx>(
                 let ze = bx.zext(i_, bx.type_ix(expected_bytes * 8));
 
                 // Convert the integer to a byte array
-                let ptr = bx.alloca(bx.type_ix(expected_bytes * 8), Align::ONE, false); // TODO:
+                let ptr = bx.alloca(bx.type_ix(expected_bytes * 8), Align::ONE, AllocaSpecial::None); // TODO:
                                                                                         // @kayondomartin,
                                                                                         // SORLAB:
                                                                                         // RustMeta
