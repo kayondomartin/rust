@@ -170,6 +170,12 @@ rustc_queries! {
         desc {"check whether a given type is special or not"}
         separate_provide_extern
     }
+
+    /// Whether a given type contains a special field (a field which is a smart pointer)\
+    query contains_special_ty(key: Ty<'tcx>) -> bool {
+        desc {"check whether a given type houses a smart pointer"}
+        separate_provide_extern
+    }
     
     query rust_metaupdate_trait_id(_:()) -> Option<DefId> {
         desc {"collect ll special types according to rust_meta"}    

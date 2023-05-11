@@ -157,7 +157,9 @@ pub trait BuilderMethods<'a, 'tcx>:
         dest: PlaceRef<'tcx, Self::Value>,
     ) -> Self;
 
+    //RustMeta => setting metadata
     fn mark_cached_exchange_malloc(&self, exchange_malloc: Self::Value,  inner_ty_id: u64);
+    //fn mark_need_safe_house_copy(&self, intrinsic_inst: Self::Value);
     fn mark_field_projection(&self, inst: Self::Value, field_idx: usize);
     fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64);
 

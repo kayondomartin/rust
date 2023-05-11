@@ -28,6 +28,9 @@ fn copy_intrinsic<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     let align = layout.align.abi;
     let size = bx.mul(bx.const_usize(size.bytes()), count);
     let flags = if volatile { MemFlags::VOLATILE } else { MemFlags::empty() };
+    if bx.tcx().sess.opts.unstable_opts.meta_update {
+        println!("Copy Instrinsic type: {}", ty.to_string());
+    }
     if allow_overlap {
         bx.memmove(dst, align, src, align, size, flags);
     } else {
@@ -65,6 +68,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         let ty::FnDef(def_id, substs) = *callee_ty.kind() else {
             bug!("expected fn item type, found {}", callee_ty);
         };
+        if bx.tcx().sess.opts.unstable_opts.meta_update {
+            println!("Calling codegen intrinsic: {}", instance.to_string());
+        }
 
         let sig = callee_ty.fn_sig(bx.tcx());
         let sig = bx.tcx().normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), sig);

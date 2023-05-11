@@ -297,7 +297,21 @@ impl<'a, 'tcx, V: CodegenObject> OperandValue<V> {
                     bx.store_with_flags(val, dest.llval, dest.align, flags);
                     return;
                 }
-                base::memcpy_ty(bx, dest.llval, dest.align, r, source_align, dest.layout, flags)
+                base::memcpy_ty(bx, dest.llval, dest.align, r, source_align, dest.layout, flags);
+                if bx.tcx().contains_special_ty(dest.layout.ty) {
+                    let src_int = bx.ptrtoint(r, bx.type_i64());
+                    let src_segment = bx.and(src_int, bx.const_u64(0xFFFFFFFFFE000000));
+                    let src_segment_ptr = bx.inttoptr(src_segment, bx.type_ptr_to(bx.type_i64()));
+                    let safe_house = bx.load(bx.type_i64(), src_segment_ptr, Align::from_bits(64).expect("align"));
+                    let src_offset = bx.and(src_int, bx.const_u64(0x1FFFFFF));
+                    let src_safe_int = bx.or(safe_house, src_offset);
+                    let dest_int = bx.ptrtoint(dest.llval, bx.type_i64());
+                    let dest_offset = bx.and(dest_int, bx.const_u64(0x1FFFFFF));
+                    let dest_safe_int = bx.or(safe_house, dest_offset);
+                    let src_safe_ptr = bx.inttoptr(src_safe_int, bx.type_i8p());
+                    let dest_safe_ptr = bx.inttoptr(dest_safe_int, bx.type_i8());
+                    base::memcpy_ty(bx, dest_safe_ptr, dest.align, src_safe_ptr, source_align, dest.layout, flags);
+                }
             }
             OperandValue::Ref(_, Some(_), _) => {
                 bug!("cannot directly store unsized values");

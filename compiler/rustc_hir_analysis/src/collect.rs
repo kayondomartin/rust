@@ -64,6 +64,7 @@ pub fn provide(providers: &mut Providers) {
         type_of: type_of::type_of,
         rust_metaupdate_trait_id,
         is_special_ty: type_of::is_special_ty,
+        contains_special_ty: type_of::contains_special_ty,
         item_bounds: item_bounds::item_bounds,
         explicit_item_bounds: item_bounds::explicit_item_bounds,
         generics_of: generics_of::generics_of,

@@ -565,6 +565,7 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
     if tcx.sess.opts.unstable_opts.meta_update {
+        if def_ty.is_box() || def_ty.is_fn_ptr() {return true;}
         match def_ty.kind() {
             ty::Adt(adt_def, _) => {
                                         
@@ -581,9 +582,31 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
                 }
 
             },
-            _ => return false            
+            _ => return false
         }
     }
+    return false;
+}
+
+/// Given a type, this function checks whether any of its fields is a smart pointer
+/// Recursively checks if any of its fields houses a smart pointer either way
+pub (super) fn contains_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
+    if is_special_ty(tcx, def_ty){
+        return false;
+    } else if tcx.sess.opts.unstable_opts.meta_update {
+        match def_ty.kind() {
+            ty::Adt(adt_def, _) => {
+                for field in adt_def.all_fields() {
+                    let field_ty = tcx.type_of(field.did);
+                    if tcx.is_special_ty(field_ty) || tcx.contains_special_ty(field_ty) {
+                        return true;
+                    }
+                }
+            },
+            _ => return false
+        }
+    }
+
     return false;
 }
 

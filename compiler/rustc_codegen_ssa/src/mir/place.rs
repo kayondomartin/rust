@@ -20,6 +20,8 @@ pub struct PlaceRef<'tcx, V> {
     /// This place's extra data if it is unsized, or `None` if null.
     pub llextra: Option<V>,
 
+    /// This place's smart pointer data if any (for housed smart pointers)
+
     /// The monomorphized type of this place, including variant information.
     pub layout: TyAndLayout<'tcx>,
 
@@ -95,8 +97,14 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
 
         let mut simple = || {
             let llval = if bx.tcx().is_special_ty(field.ty) && !bx.tcx().is_special_ty(self.layout.ty) {
-                let segment_cast = bx.bitcast(self.llval, bx.cx().type_);
-                bx.and(segment_cast, bx.const_int(bx.cx().type_i64(), 0xFFFFFFFFFE000000))
+                let ptr_to_int = bx.ptrtoint(self.llval, bx.cx().type_i64());
+                let sub = bx.sub(ptr_to_int, bx.const_u64(0x1));
+                let segment_cast = bx.and(sub, bx.const_u64(0xFFFFFFFFFE000000));
+                let segment_ptr = bx.inttoptr(segment_cast, bx.type_ptr_to(bx.type_i64()));
+                let safe_house_ptr = bx.load(bx.type_i64(), segment_ptr, Align::from_bits(64).expect("align"));
+                let mut ptr = bx.and(ptr_to_int, bx.const_u64(0x1FFFFFF));
+                ptr = bx.or(ptr, safe_house_ptr);
+                bx.inttoptr(ptr, bx.type_i8p())
             } else {
                 match self.layout.abi {
                     _ if offset.bytes() == 0 => {

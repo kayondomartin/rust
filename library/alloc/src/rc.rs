@@ -1531,7 +1531,7 @@ impl<T> MetaUpdate for Rc<T> {
     /// the reference counter. changing it doesn't seem to require synchronization:
     /// Rather, we will ensure no double free/drop is reaches the allocator side to 
     /// ensure temporal safety. This will be done through the analysis stage of
-    /// the MetaUpdate project. 
+    /// the MetaUpdate project.
     /// TODO: ensure analysis is done to prevent double free/drop
     fn synchronize(&self, _new: usize) -> bool {
         true
