@@ -309,7 +309,7 @@ impl<'a, 'tcx, V: CodegenObject> OperandValue<V> {
                     let dest_offset = bx.and(dest_int, bx.const_u64(0x1FFFFFF));
                     let dest_safe_int = bx.or(safe_house, dest_offset);
                     let src_safe_ptr = bx.inttoptr(src_safe_int, bx.type_i8p());
-                    let dest_safe_ptr = bx.inttoptr(dest_safe_int, bx.type_i8());
+                    let dest_safe_ptr = bx.inttoptr(dest_safe_int, bx.type_i8p());
                     base::memcpy_ty(bx, dest_safe_ptr, dest.align, src_safe_ptr, source_align, dest.layout, flags);
                 }
             }
