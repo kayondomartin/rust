@@ -68,9 +68,6 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         let ty::FnDef(def_id, substs) = *callee_ty.kind() else {
             bug!("expected fn item type, found {}", callee_ty);
         };
-        if bx.tcx().sess.opts.unstable_opts.meta_update {
-            println!("Calling codegen intrinsic: {}", instance.to_string());
-        }
 
         let sig = callee_ty.fn_sig(bx.tcx());
         let sig = bx.tcx().normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), sig);
