@@ -298,7 +298,7 @@ impl<'a, 'tcx, V: CodegenObject> OperandValue<V> {
                     return;
                 }
                 base::memcpy_ty(bx, dest.llval, dest.align, r, source_align, dest.layout, flags);
-                if bx.tcx().contains_special_ty(dest.layout.ty) {
+                /*if bx.tcx().contains_special_ty(dest.layout.ty) {
                     let src_int = bx.ptrtoint(r, bx.type_i64());
                     let src_segment = bx.and(src_int, bx.const_u64(0xFFFFFFFFFE000000));
                     let src_segment_ptr = bx.inttoptr(src_segment, bx.type_ptr_to(bx.type_i64()));
@@ -311,7 +311,7 @@ impl<'a, 'tcx, V: CodegenObject> OperandValue<V> {
                     let src_safe_ptr = bx.inttoptr(src_safe_int, bx.type_i8p());
                     let dest_safe_ptr = bx.inttoptr(dest_safe_int, bx.type_i8p());
                     base::memcpy_ty(bx, dest_safe_ptr, dest.align, src_safe_ptr, source_align, dest.layout, flags);
-                }
+                }*/
             }
             OperandValue::Ref(_, Some(_), _) => {
                 bug!("cannot directly store unsized values");

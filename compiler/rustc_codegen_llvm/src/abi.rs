@@ -247,7 +247,14 @@ impl<'ll, 'tcx> ArgAbiExt<'ll, 'tcx> for ArgAbi<'tcx, Ty<'tcx>> {
                 // We instead thus allocate some scratch space...
                 let scratch_size = cast.size(bx);
                 let scratch_align = cast.align(bx);
-                let llscratch = bx.alloca(cast.llvm_type(bx), scratch_align, AllocaSpecial::None); // TODO:
+                let is_special = if bx.tcx.is_special_ty(self.layout.ty) {
+                                                    AllocaSpecial::SmartPointer
+                                                } else if bx.tcx.contains_special_ty(self.layout.ty){
+                                                    AllocaSpecial::SmartPointerHouse
+                                                }else {
+                                                    AllocaSpecial::None
+                                                };
+                let llscratch = bx.alloca(cast.llvm_type(bx), scratch_align, is_special); // TODO:
                                                                                      // @kayondomartin,
                                                                                      // SORLAB: RustMeta
                 bx.lifetime_start(llscratch, scratch_size);

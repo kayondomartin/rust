@@ -1,7 +1,7 @@
 use rustc_middle::mir;
 use rustc_middle::mir::NonDivergingIntrinsic;
-use rustc_middle::ty;
-use rustc_target::abi::Align;
+//use rustc_middle::ty;
+//use rustc_target::abi::Align;
 
 use super::FunctionCx;
 use super::LocalRef;
@@ -99,7 +99,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 bx.memcpy(dst, align, src, align, bytes, crate::MemFlags::empty());
 
                 //RustMeta: copy smart pointers
-                if let ty::RawPtr(i) = dst_val.layout.ty.kind() {
+                /*if let ty::RawPtr(i) = dst_val.layout.ty.kind() {
                     if bx.tcx().contains_special_ty(i.ty){
                         let dst_segment_ptr_int = bx.ptrtoint(dst, bx.type_i64()); //TODO: need to consider cases where the dst & src may be from different
                         let src_segment_ptr_int = bx.ptrtoint(src, bx.type_i64());
@@ -114,7 +114,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         let safe_dst_ptr = bx.inttoptr(safe_dst, bx.type_ptr_to(bx.type_i64()));
                         bx.memcpy(safe_dst_ptr, align, safe_src_ptr, align, bytes, crate::MemFlags::empty());
                     }
-                }
+                }*/
                 bx
             }
             mir::StatementKind::FakeRead(..)

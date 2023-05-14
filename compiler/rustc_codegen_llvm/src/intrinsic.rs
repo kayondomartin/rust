@@ -533,7 +533,7 @@ fn codegen_msvc_try<'ll>(
         //
         // More information can be found in libstd's seh.rs implementation.
         let ptr_align = bx.tcx().data_layout.pointer_align.abi;
-        let slot = bx.alloca(bx.type_i8p(), ptr_align, AllocaSpecial::None); // TODO: @kayondomartin: RustMeta,
+        let slot = bx.alloca(bx.type_i8p(), ptr_align, AllocaSpecial::SmartPointer); // TODO: @kayondomartin: RustMeta,
                                                                // SORLAB
         let try_func_ty = bx.type_func(&[bx.type_i8p()], bx.type_void());
         bx.invoke(try_func_ty, None, try_func, &[data], normal, catchswitch, None);

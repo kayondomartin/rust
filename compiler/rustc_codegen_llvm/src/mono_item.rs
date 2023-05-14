@@ -73,7 +73,7 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
                 for type_ in instance.substs.types() {
                     let inner_ty = self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), type_);
                     let mut type_id = self.tcx.type_id_hash(inner_ty);
-                    if self.tcx.is_special_ty(inner_ty) && inner_ty.is_box() {
+                    if self.tcx.is_special_ty(inner_ty) {
                         type_id = 0;
                     }
                     unsafe {

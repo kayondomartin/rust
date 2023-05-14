@@ -261,6 +261,13 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
+    //RustMeta - SORLAB: @kayondomartin
+    fn mark_special_ty_alloca(&self, alloca: Self::Value) {
+        unsafe {
+            llvm::LLVMSetSmartPointerMetadata(alloca);
+        }
+    }
+
 
     //RustMeta - SORLAB: @kayondomartin
     fn mark_field_projection(&self, inst: Self::Value, field_idx: usize) {
