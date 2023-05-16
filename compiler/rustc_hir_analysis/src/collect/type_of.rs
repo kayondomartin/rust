@@ -582,6 +582,22 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
                 }
 
             },
+            ty::Ref(_, ref_ty, _) => {
+                return is_special_ty(tcx, *ref_ty);
+            },
+            ty::RawPtr(i) => {
+                return is_special_ty(tcx, i.ty);
+            },
+            ty::Array(elem_ty, _) => {
+                return is_special_ty(tcx, *elem_ty);
+            },
+            ty::Slice(elem_ty) => {
+                return is_special_ty(tcx, *elem_ty);
+            },
+            ty::Closure(_, _) | ty::Generator(_, _, _) | ty::Dynamic(_, _, _)=> {
+                return true;
+            },
+
             _ => return false
         }
     }
@@ -603,6 +619,25 @@ pub (super) fn contains_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
                     }
                 }
             },
+            ty::Tuple(tys) => {
+                for typ in *tys {
+                    if is_special_ty(tcx, typ) || contains_special_ty(tcx,typ) {
+                        return true;
+                    } 
+                }
+            },
+            ty::RawPtr(i) => {
+                return is_special_ty(tcx, i.ty) || contains_special_ty(tcx, i.ty);
+            },
+            ty::Ref(_, i, _) => {
+                return is_special_ty(tcx, *i) || contains_special_ty(tcx, *i);
+            },
+            ty::Array(i, _) => {
+                return contains_special_ty(tcx, *i);
+            },
+            ty::Slice(i) => {
+                return contains_special_ty(tcx, *i);
+            }
             _ => return false
         }
     }

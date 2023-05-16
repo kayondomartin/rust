@@ -328,13 +328,13 @@ impl<'a, 'tcx, V: CodegenObject> OperandValue<V> {
                 let b_offset = a_scalar.size(bx).align_to(b_scalar.align(bx).abi);
 
                 let llptr = bx.struct_gep(ty, dest.llval, 0);
-                bx.mark_field_projection(llptr, 0); //RustMeta
+                //bx.mark_field_projection(llptr, 0); //RustMeta
                 let val = bx.from_immediate(a);
                 let align = dest.align;
                 bx.store_with_flags(val, llptr, align, flags);
 
                 let llptr = bx.struct_gep(ty, dest.llval, 1);
-                bx.mark_field_projection(llptr, 1); //RustMeta
+                //bx.mark_field_projection(llptr, 1); //RustMeta
                 let val = bx.from_immediate(b);
                 let align = dest.align.restrict_for_offset(b_offset);
                 bx.store_with_flags(val, llptr, align, flags);

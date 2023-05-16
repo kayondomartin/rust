@@ -69,7 +69,7 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         let ptr_ty = bx.cx().tcx().mk_mut_ptr(layout.ty);
         let ptr_layout = bx.cx().layout_of(ptr_ty);
         let alloced = Self::alloca(bx, ptr_layout);
-        if bx.tcx().is_special_ty(layout.ty) {
+        if bx.tcx().is_special_ty(layout.ty) || bx.tcx().contains_special_ty(layout.ty){
             bx.mark_special_ty_alloca(alloced.llval);
         }
         alloced
@@ -144,7 +144,7 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
                     }
                 };
             //};
-            bx.mark_field_projection(llval, ix);
+            //bx.mark_field_projection(llval, ix);
             PlaceRef {
                 // HACK(eddyb): have to bitcast pointers until LLVM removes pointee types.
                 llval: bx.pointercast(llval, bx.cx().type_ptr_to(bx.cx().backend_type(field))),
