@@ -1081,7 +1081,7 @@ extern "C" {
     // RustMeta Mark Field projection (smart pointers)
     pub fn LLVMMarkFieldProjection(Inst: &Value, Idx: size_t);
     // RustMeta insert TDI index store
-    pub fn LLVMStoreTDIIndex(Before: &Value, Idx: size_t);
+    pub fn LLVMStoreTDIIndex(Before: &Value, Idx: c_ulonglong);
 
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;
