@@ -258,7 +258,9 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     fn mark_cached_exchange_malloc(&self, exchange_malloc: &'ll Value,  inner_ty_id: u64) {
         unsafe{
             llvm::LLVMMarkExchangeMallocCall(exchange_malloc, inner_ty_id);
-            llvm::LLVMStoreTDIIndex(exchange_malloc, inner_ty_id);
+            if self.tcx.sess.opts.unstable_opts.meta_update {
+                llvm::LLVMStoreTDIIndex(exchange_malloc, inner_ty_id);
+            }
         }
     }
 
@@ -280,7 +282,9 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64) {
         unsafe {
             llvm::LLVMMarkExchangeMallocCall(smp_api_call, inner_ty_id);
-            llvm::LLVMStoreTDIIndex(smp_api_call, inner_ty_id);
+            if self.tcx.sess.opts.unstable_opts.meta_update {
+                llvm::LLVMStoreTDIIndex(smp_api_call, inner_ty_id);
+            }
         }
     }
 

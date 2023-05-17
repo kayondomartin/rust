@@ -774,7 +774,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     _ => bx.tcx().type_of(impl_did)
                 };
                 //let owner_ty = self.monomorphize(impl_type);
-                if bx.tcx().is_special_ty(impl_type){
+                if impl_type.is_adt() && bx.tcx().is_special_ty(impl_type) {
                     for type_ in instance.unwrap().substs.types() {
                         let inner_ty = self.monomorphize(type_);
                         let type_id = if bx.tcx().is_special_ty(inner_ty) || inner_ty.is_box() { 0 }else{bx.tcx().type_id_hash(inner_ty)};
