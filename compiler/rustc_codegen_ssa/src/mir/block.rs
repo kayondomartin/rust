@@ -761,25 +761,27 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         }
 
         // RustMeta - SORLAB@kayondomartin
-        if let Some(id) = def {
-            if let Some(ex_id) = bx.tcx().lang_items().exchange_malloc_fn(){
-                if id.def_id() == ex_id {
-                    self.generating_exchange_malloc = true;
+        if !self.is_special {
+            if let Some(id) = def {
+                if let Some(ex_id) = bx.tcx().lang_items().exchange_malloc_fn(){
+                    if id.def_id() == ex_id {
+                        self.generating_exchange_malloc = true;
+                    }
                 }
-            }
-            
-            if let Some(impl_did) = bx.tcx().impl_of_method(id.def_id()){
-                let impl_type =   match bx.tcx().try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), bx.tcx().type_of(impl_did)) {
-                    Ok(t) => t,
-                    _ => bx.tcx().type_of(impl_did)
-                };
-                //let owner_ty = self.monomorphize(impl_type);
-                if impl_type.is_adt() && bx.tcx().is_special_ty(impl_type) {
-                    for type_ in instance.unwrap().substs.types() {
-                        let inner_ty = self.monomorphize(type_);
-                        let type_id = if bx.tcx().is_special_ty(inner_ty) || inner_ty.is_box() { 0 }else{bx.tcx().type_id_hash(inner_ty)};
-                        self.smart_pointer_inner_ty = Some(type_id);
-                        break;
+                
+                if let Some(impl_did) = bx.tcx().impl_of_method(id.def_id()){
+                    let impl_type =   match bx.tcx().try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), bx.tcx().type_of(impl_did)) {
+                        Ok(t) => t,
+                        _ => bx.tcx().type_of(impl_did)
+                    };
+                    //let owner_ty = self.monomorphize(impl_type);
+                    if impl_type.is_adt() && bx.tcx().is_special_ty(impl_type) {
+                        for type_ in instance.unwrap().substs.types() {
+                            let inner_ty = self.monomorphize(type_);
+                            let type_id = if bx.tcx().is_special_ty(inner_ty) || inner_ty.is_box() { 0 }else{bx.tcx().type_id_hash(inner_ty)};
+                            self.smart_pointer_inner_ty = Some(type_id);
+                            break;
+                        }
                     }
                 }
             }
