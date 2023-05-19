@@ -1538,6 +1538,16 @@ impl<T> MetaUpdate for Rc<T> {
     }
 }
 
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T> MetaUpdate for RcBox<T> {
+    /// Synchronize metadata changes for RcBox
+    /// Actually this is the actual smart pointer, but we don't want it
+    /// allocated in an unsafe place since it contains the metadata
+    fn synchronize(&self, _new: usize) -> bool {
+        true
+    }
+}
+
 #[unstable(feature = "receiver_trait", issue = "none")]
 impl<T: ?Sized> Receiver for Rc<T> {}
 

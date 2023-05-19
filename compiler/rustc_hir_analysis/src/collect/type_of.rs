@@ -562,12 +562,12 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 /// A complex ADT whose all fields are smart pointers is simply a smart pointer.
 /// TODO: add this to notes && to the paper. perhaps to implementation & design
 /// TODO: define an enum to differentiate the kind of special type if is: ie. is it entirely special or is it inherently special(specify which field)
-pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
+pub(super) fn is_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
     if tcx.sess.opts.unstable_opts.meta_update {
         if def_ty.is_box() || def_ty.is_fn_ptr() {return true;}
         match def_ty.kind() {
-            ty::Adt(adt_def, _) => {
+            ty::Adt(adt_def, substs) => {
                                         
                 if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
                     for impl_id in tcx.all_impls(trait_id) {
@@ -581,6 +581,15 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
                     }
                 }
 
+                if adt_def.all_fields().count() > 0 {
+                    for field in adt_def.all_fields() {
+                        let field_ty = field.ty(tcx, &substs);
+                        if !tcx.is_special_ty(field_ty){
+                            return false;
+                        }
+                    }
+                    return true;
+                }
             },
             ty::Ref(_, ref_ty, _) => {
                 return is_special_ty(tcx, *ref_ty);
@@ -606,7 +615,7 @@ pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
 
 /// Given a type, this function checks whether any of its fields is a smart pointer
 /// Recursively checks if any of its fields houses a smart pointer either way
-pub (super) fn contains_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
+pub (super) fn contains_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
     if is_special_ty(tcx, def_ty){
         return false;
     } else if tcx.sess.opts.unstable_opts.meta_update {

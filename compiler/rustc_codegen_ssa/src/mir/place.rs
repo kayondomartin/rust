@@ -101,7 +101,8 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         let effective_field_align = self.align.restrict_for_offset(offset);
 
         let mut simple = || {
-            let llval = /*if bx.tcx().is_special_ty(field.ty) && !bx.tcx().is_special_ty(self.layout.ty) {
+            let llval = if bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit) &&
+                bx.tcx().is_special_ty(field.ty) && !bx.tcx().is_special_ty(self.layout.ty) {
                 let ptr_to_int = bx.ptrtoint(self.llval, bx.cx().type_i64());
                 let sub = bx.sub(ptr_to_int, bx.const_u64(0x1));
                 let segment_cast = bx.and(sub, bx.const_u64(0xFFFFFFFFFE000000));
@@ -110,7 +111,7 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
                 let mut ptr = bx.and(ptr_to_int, bx.const_u64(0x1FFFFFF));
                 ptr = bx.or(ptr, safe_house_ptr);
                 bx.inttoptr(ptr, bx.type_i8p())
-            } else {*/
+            } else {
                 match self.layout.abi {
                     _ if offset.bytes() == 0 => {
                         // Unions and newtypes only use an offset of 0.
@@ -142,8 +143,8 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
                         let ty = bx.backend_type(self.layout);
                         bx.struct_gep(ty, self.llval, bx.cx().backend_field_index(self.layout, ix))
                     }
-                };
-            //};
+                }
+            };
             //bx.mark_field_projection(llval, ix);
             PlaceRef {
                 // HACK(eddyb): have to bitcast pointers until LLVM removes pointee types.
