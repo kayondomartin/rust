@@ -1533,7 +1533,7 @@ impl<T> MetaUpdate for Rc<T> {
     /// ensure temporal safety. This will be done through the analysis stage of
     /// the MetaUpdate project.
     /// TODO: ensure analysis is done to prevent double free/drop
-    fn synchronize(&self, _new: usize) -> bool {
+    fn synchronize(&self) -> bool {
         true
     }
 }
@@ -1543,7 +1543,7 @@ impl<T> MetaUpdate for RcBox<T> {
     /// Synchronize metadata changes for RcBox
     /// Actually this is the actual smart pointer, but we don't want it
     /// allocated in an unsafe place since it contains the metadata
-    fn synchronize(&self, _new: usize) -> bool {
+    fn synchronize(&self) -> bool {
         true
     }
 }

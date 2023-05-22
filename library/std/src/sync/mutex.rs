@@ -502,14 +502,14 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
 
 #[unstable(feature = "metadata_update", issue = "none")]
 impl<T: ?Sized> MetaUpdate for Mutex<T>{
-    fn synchronize(&self, _new: usize) -> bool {
+    fn synchronize(&self) -> bool {
         true
     }
 }
 
 #[unstable(feature = "metadata_update", issue = "none")]
 impl<'mutex, T: ?Sized> MetaUpdate for MutexGuard<'mutex, T> {
-    fn synchronize(&self, _new: usize) -> bool {
+    fn synchronize(&self) -> bool {
         true
     }
 }

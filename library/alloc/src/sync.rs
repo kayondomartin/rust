@@ -1716,7 +1716,7 @@ unsafe impl<#[may_dangle] T: ?Sized> Drop for Arc<T> {
 
 #[unstable(feature = "metadata_update", issue = "none")]
 impl<T> MetaUpdate for Arc<T>{
-    fn synchronize(&self, _new: usize) -> bool {
+    fn synchronize(&self) -> bool {
         true
     }
 }

@@ -3279,7 +3279,7 @@ impl<T, A: Allocator> MetaUpdate for Vec<T, A> {
     /// Ensure the new length is not longer than the capacity. (for now)
     /// TODO: check whether there are no legal cases of overwriting the capacity
     /// without 'contacting' the allocator.
-    fn synchronize(&self, new: usize) -> bool {
-	    return new <= self.capacity();
+    fn synchronize(&self) -> bool {
+	    self.capacity() >= self.len()
     }
 }

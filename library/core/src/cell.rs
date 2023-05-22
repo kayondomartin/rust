@@ -639,7 +639,7 @@ pub struct BorrowError {
 
 #[unstable(feature = "metadata_update", issue = "none")]
 impl<T: ?Sized> MetaUpdate for RefCell<T> {
-    fn synchronize(&self, _new: usize) -> bool {
+    fn synchronize(&self) -> bool {
         true
     }
 }

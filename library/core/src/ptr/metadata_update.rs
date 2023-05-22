@@ -10,7 +10,7 @@
 #[allow(drop_bounds)]
 pub trait MetaUpdate{
     /// synchronize the update metadata with the allocator.
-    fn synchronize(&self, new: usize) -> bool;
+    fn synchronize(&self) -> bool;
 }
 
 /// enable write access on the metadata memory region
