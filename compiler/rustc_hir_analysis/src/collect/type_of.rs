@@ -567,7 +567,7 @@ pub(super) fn is_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
     if tcx.sess.opts.unstable_opts.meta_update {
         if def_ty.is_box() || def_ty.is_fn_ptr() {return true;}
         match def_ty.kind() {
-            ty::Adt(adt_def, substs) => {
+            ty::Adt(adt_def, _substs) => {
                                         
                 if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
                     for impl_id in tcx.all_impls(trait_id) {
@@ -581,15 +581,15 @@ pub(super) fn is_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
                     }
                 }
 
-                if adt_def.all_fields().count() > 0 {
+                /*if adt_def.all_fields().count() > 0 {
                     for field in adt_def.all_fields() {
                         let field_ty = field.ty(tcx, &substs);
-                        if !tcx.is_special_ty(field_ty){
+                        if !is_special_ty(tcx, field_ty){
                             return false;
                         }
                     }
                     return true;
-                }
+                }*/
             },
             ty::Ref(_, ref_ty, _) => {
                 return is_special_ty(tcx, *ref_ty);
@@ -623,7 +623,7 @@ pub (super) fn contains_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) ->
             ty::Adt(adt_def, _) => {
                 for field in adt_def.all_fields() {
                     let field_ty = tcx.type_of(field.did);
-                    if tcx.is_special_ty(field_ty) || tcx.contains_special_ty(field_ty) {
+                    if tcx.is_special_ty(field_ty) || contains_special_ty(tcx, field_ty) {
                         return true;
                     }
                 }
