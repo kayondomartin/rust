@@ -10,6 +10,7 @@ use rustc_middle::ty::util::IntTypeExt;
 use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFolder, TypeSuperFoldable, TypeVisitable};
 use rustc_span::symbol::Ident;
 use rustc_span::{Span, DUMMY_SP};
+use rustc_data_structures::fx::FxHashSet;
 
 use super::ItemCtxt;
 use super::{bad_placeholder, is_suggestable_infer_ty};
@@ -566,51 +567,67 @@ pub(super) fn is_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
     if tcx.sess.opts.unstable_opts.meta_update {
         if def_ty.is_box() || def_ty.is_fn_ptr() {return true;}
-        match def_ty.kind() {
-            ty::Adt(adt_def, _substs) => {
-                                        
-                if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
-                    for impl_id in tcx.all_impls(trait_id) {
-                        if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
-                            if let ty::Adt(adt, _) = trait_ref.self_ty().kind() {
-                                if adt.did() == adt_def.did() {
-                                    return true;
+
+        let v = FxHashSet::default();
+
+        fn is_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool{
+            if visited.contains(&typ) {
+                return false;
+            }
+
+            let mut nvisited = visited.clone();
+            nvisited.insert(typ);
+            match typ.kind() {
+                ty::Adt(adt_def, substs) => {
+                                            
+                    if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
+                        for impl_id in tcx.all_impls(trait_id) {
+                            if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
+                                if let ty::Adt(adt, _) = trait_ref.self_ty().kind() {
+                                    if adt.did() == adt_def.did() {
+                                        return true;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-
-                /*if adt_def.all_fields().count() > 0 {
-                    for field in adt_def.all_fields() {
-                        let field_ty = field.ty(tcx, &substs);
-                        if !is_special_ty(tcx, field_ty){
-                            return false;
+    
+                    if adt_def.all_fields().count() > 0 {
+                        for field in adt_def.all_fields() {
+                            let field_ty = field.ty(tcx, &substs);
+                            if !is_special(tcx, field_ty, nvisited.clone()){
+                                return false;
+                            }
                         }
+                        return true;
                     }
+                },
+                ty::Ref(_, ref_ty, _) => {
+                    return is_special(tcx, *ref_ty, nvisited.clone());
+                },
+                ty::RawPtr(i) => {
+                    return is_special(tcx, i.ty, nvisited.clone());
+                },
+                ty::Array(elem_ty, _) => {
+                    return is_special(tcx, *elem_ty, nvisited.clone());
+                },
+                ty::Slice(elem_ty) => {
+                    return is_special(tcx, *elem_ty, nvisited.clone());
+                },
+                ty::Closure(_, _) | ty::Generator(_, _, _) | ty::Dynamic(_, _, _)=> {
                     return true;
-                }*/
-            },
-            ty::Ref(_, ref_ty, _) => {
-                return is_special_ty(tcx, *ref_ty);
-            },
-            ty::RawPtr(i) => {
-                return is_special_ty(tcx, i.ty);
-            },
-            ty::Array(elem_ty, _) => {
-                return is_special_ty(tcx, *elem_ty);
-            },
-            ty::Slice(elem_ty) => {
-                return is_special_ty(tcx, *elem_ty);
-            },
-            ty::Closure(_, _) | ty::Generator(_, _, _) | ty::Dynamic(_, _, _)=> {
-                return true;
-            },
+                },
+    
+                _ => {return false;}
+            };
 
-            _ => return false
+            return false;
         }
+
+        return is_special(tcx, def_ty, v.clone());
+        
     }
-    return false;
+    false
 }
 
 /// Given a type, this function checks whether any of its fields is a smart pointer
@@ -619,36 +636,51 @@ pub (super) fn contains_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) ->
     if is_special_ty(tcx, def_ty){
         return false;
     } else if tcx.sess.opts.unstable_opts.meta_update {
-        match def_ty.kind() {
-            ty::Adt(adt_def, _) => {
-                for field in adt_def.all_fields() {
-                    let field_ty = tcx.type_of(field.did);
-                    if tcx.is_special_ty(field_ty) || contains_special_ty(tcx, field_ty) {
-                        return true;
-                    }
-                }
-            },
-            ty::Tuple(tys) => {
-                for typ in *tys {
-                    if is_special_ty(tcx, typ) || contains_special_ty(tcx,typ) {
-                        return true;
-                    } 
-                }
-            },
-            ty::RawPtr(i) => {
-                return is_special_ty(tcx, i.ty) || contains_special_ty(tcx, i.ty);
-            },
-            ty::Ref(_, i, _) => {
-                return is_special_ty(tcx, *i) || contains_special_ty(tcx, *i);
-            },
-            ty::Array(i, _) => {
-                return contains_special_ty(tcx, *i);
-            },
-            ty::Slice(i) => {
-                return contains_special_ty(tcx, *i);
+
+        fn contains_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool {
+            if visited.contains(&typ){
+                return false;
             }
-            _ => return false
+
+            let mut nvisited = visited.clone();
+            nvisited.insert(typ);
+
+            match typ.kind() {
+                ty::Adt(adt_def, _) => {
+                    for field in adt_def.all_fields() {
+                        let field_ty = tcx.type_of(field.did);
+                        if tcx.is_special_ty(field_ty) || contains_special(tcx, field_ty, nvisited.clone()) {
+                            return true;
+                        }
+                    }
+                },
+                ty::Tuple(tys) => {
+                    for typ in *tys {
+                        if contains_special(tcx,typ,nvisited.clone()) {
+                            return true;
+                        } 
+                    }
+                },
+                ty::RawPtr(i) => {
+                    return contains_special(tcx, i.ty, nvisited);
+                },
+                ty::Ref(_, i, _) => {
+                    return contains_special(tcx, *i, nvisited);
+                },
+                ty::Array(i, _) => {
+                    return contains_special(tcx, *i, nvisited);
+                },
+                ty::Slice(i) => {
+                    return contains_special(tcx, *i, nvisited);
+                },
+                _ => {return false;}
+            }
+
+            return false;
         }
+
+        return contains_special(tcx, def_ty, FxHashSet::default());
+        
     }
 
     return false;
