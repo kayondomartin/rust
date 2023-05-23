@@ -780,7 +780,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                             let inner_ty = self.monomorphize(type_);
                             let type_id = if bx.tcx().is_special_ty(inner_ty) ||
                             (bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit) &&
-                             bx.tcx().contains_special_ty(inner_ty)){ 0 }else{bx.tcx().type_id_hash(inner_ty)};
+                             bx.tcx().contains_special_ty(inner_ty)){ 1 }else{bx.tcx().type_id_hash(inner_ty)};
                             self.smart_pointer_inner_ty = Some(type_id);
                             break;
                         }
