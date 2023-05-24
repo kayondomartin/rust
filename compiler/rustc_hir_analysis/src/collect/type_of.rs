@@ -566,13 +566,13 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 pub(super) fn is_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
     if tcx.sess.opts.unstable_opts.meta_update {
-        if def_ty.is_box() || def_ty.is_fn_ptr() {return true;}
+        //if def_ty.is_box() || def_ty.is_fn_ptr() {return true;}
 
         let v = FxHashSet::default();
 
         fn is_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool{
-            if visited.contains(&typ) {
-                return false;
+            if visited.contains(&typ) || typ.is_box() || typ.is_closure() || typ.is_fn() || typ.is_fn_ptr() || typ.is_dyn_star() || typ.contains(other) {
+                return true;
             }
 
             let mut nvisited = visited.clone();
@@ -639,7 +639,7 @@ pub (super) fn contains_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) ->
 
         fn contains_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool {
             if visited.contains(&typ){
-                return false;
+                return true;
             }
 
             let mut nvisited = visited.clone();
