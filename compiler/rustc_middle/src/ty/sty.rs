@@ -14,7 +14,7 @@ use crate::ty::{List, ParamEnv};
 use hir::def::DefKind;
 use polonius_engine::Atom;
 use rustc_data_structures::captures::Captures;
-use rustc_data_structures::fx::FxHashSet;
+//use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::intern::Interned;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;

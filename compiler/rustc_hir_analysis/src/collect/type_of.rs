@@ -571,7 +571,7 @@ pub(super) fn is_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
         let v = FxHashSet::default();
 
         fn is_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool{
-            if visited.contains(&typ) || typ.is_box() || typ.is_closure() || typ.is_fn() || typ.is_fn_ptr() || typ.is_dyn_star() || typ.contains(other) {
+            if visited.contains(&typ) || typ.is_box() || typ.is_closure() || typ.is_fn() || typ.is_fn_ptr() || typ.is_dyn_star() || typ.is_trait() {
                 return true;
             }
 
