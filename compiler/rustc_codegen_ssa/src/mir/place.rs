@@ -103,14 +103,18 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         let mut simple = || {
             let llval = if bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit) &&
                 bx.tcx().is_special_ty(field.ty) && !bx.tcx().is_special_ty(self.layout.ty) {
-                let ptr_to_int = bx.ptrtoint(self.llval, bx.cx().type_i64());
+                /*let ptr_to_int = bx.ptrtoint(self.llval, bx.cx().type_i64());
                 let sub = bx.sub(ptr_to_int, bx.const_u64(0x1));
                 let segment_cast = bx.and(sub, bx.const_u64(0xFFFFFFFFFE000000));
                 let segment_ptr = bx.inttoptr(segment_cast, bx.type_ptr_to(bx.type_i64()));
                 let safe_house_ptr = bx.load(bx.type_i64(), segment_ptr, Align::from_bits(64).expect("align"));
                 let mut ptr = bx.and(ptr_to_int, bx.const_u64(0x1FFFFFF));
                 ptr = bx.or(ptr, safe_house_ptr);
-                bx.inttoptr(ptr, bx.type_i8p())
+                bx.inttoptr(ptr, bx.type_i8p())*/
+                let shadow = bx.project_smart_pointer_field(self.llval);
+                let ty = bx.backend_type(self.layout);
+                let ix = bx.cx().backend_field_index(self.layout, ix);
+                bx.struct_gep(bx.backend_type(self.layout), shadow, ix)
             } else {
                 match self.layout.abi {
                     _ if offset.bytes() == 0 => {

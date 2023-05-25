@@ -733,7 +733,7 @@ fn codegen_emcc_try<'ll>(
         let ptr_align = bx.tcx().data_layout.pointer_align.abi;
         let i8_align = bx.tcx().data_layout.i8_align.abi;
         let catch_data_type = bx.type_struct(&[bx.type_i8p(), bx.type_bool()], false);
-        let catch_data = bx.alloca(catch_data_type, ptr_align, AllocaSpecial::None); // TODO: @kayondomartin:
+        let catch_data = bx.alloca(catch_data_type, ptr_align, AllocaSpecial::SmartPointer); // TODO: @kayondomartin:
                                                                        // RustMeta, SORLAB
         let catch_data_0 =
             bx.inbounds_gep(catch_data_type, catch_data, &[bx.const_usize(0), bx.const_usize(0)]);

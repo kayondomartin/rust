@@ -1,3 +1,5 @@
+use crate::ptr::metadata_update::MetaUpdate;
+
 use crate::convert::From;
 use crate::fmt;
 use crate::marker::{PhantomData, Unsize};
@@ -40,6 +42,15 @@ pub struct Unique<T: ?Sized> {
     // For details, see:
     // https://github.com/rust-lang/rfcs/blob/master/text/0769-sound-generic-drop.md#phantom-data
     _marker: PhantomData<T>,
+}
+
+/// consider unique ptr as smart
+/// anyone who stores this 
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for Unique<T> {
+    fn synchronize(&self) -> bool {
+        true
+    }
 }
 
 /// `Unique` pointers are `Send` if `T` is `Send` because the data they

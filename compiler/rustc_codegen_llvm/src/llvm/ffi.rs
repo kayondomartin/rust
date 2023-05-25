@@ -1068,6 +1068,8 @@ extern "C" {
     // RustMeta: SORLAB@kayondomartin: smart pointer api function
     pub fn LLVMSetSmartPointerAPIMetadata(Val: &Value, TypeID: c_ulonglong
     );
+    // RustMeta: SORLAB@kayondomartin: get a projection of a smart pointer
+    pub fn LLVMRustMetaGetSmartPointerProjection(Val: &Value) -> &Value;
     // RustMeta: SORLAB@kayondomartin: exchange malloc api function
     pub fn LLVMMarkExchangeMallocFunc(Val: &Value);
     // RustMeta: SORLAB@kayondomartin: exchange malloc call

@@ -7,6 +7,7 @@ use core::mem::{self, ManuallyDrop, MaybeUninit, SizedTypeProperties};
 use core::ops::Drop;
 use core::ptr::{self, NonNull, Unique};
 use core::slice;
+use core::ptr::metadata_update::MetaUpdate;
 
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::handle_alloc_error;
@@ -53,6 +54,15 @@ pub(crate) struct RawVec<T, A: Allocator = Global> {
     ptr: Unique<T>,
     cap: usize,
     alloc: A,
+}
+
+/// raw vec is a smart pointer
+/// otherwise cap and alloc may be stored in the unsafe region
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T> MetaUpdate for RawVec<T> {
+    fn synchronize(&self) -> bool {
+        true
+    }
 }
 
 impl<T> RawVec<T, Global> {

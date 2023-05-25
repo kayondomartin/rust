@@ -276,6 +276,12 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
+    //RustMeta - SORLAB: @kayondomartin
+    fn project_smart_pointer_field(&self, val: Self::Value) -> Self::Value{
+        unsafe {
+            llvm::LLVMRustMetaGetSmartPointerProjection(val)
+        }
+    }
 
     //RustMeta - SORLAB: @kayondomartin
     fn mark_field_projection(&self, inst: Self::Value, field_idx: usize) {
