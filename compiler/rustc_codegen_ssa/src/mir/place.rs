@@ -112,9 +112,33 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
                 ptr = bx.or(ptr, safe_house_ptr);
                 bx.inttoptr(ptr, bx.type_i8p())*/
                 let shadow = bx.project_smart_pointer_field(self.llval);
-                let ty = bx.backend_type(self.layout);
-                let ix = bx.cx().backend_field_index(self.layout, ix);
-                bx.struct_gep(bx.backend_type(self.layout), shadow, ix)
+
+                match self.layout.abi {
+                    _ if offset.bytes() == 0 => {
+                        shadow
+                    }
+                    Abi::ScalarPair(a, b)
+                        if offset == a.size(bx.cx()).align_to(b.align(bx.cx()).abi) => 
+                    {
+                        let ty = bx.backend_type(self.layout);
+                        bx.struct_gep(ty, shadow, 1)
+                    }
+                    Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } if field.is_zst() => {
+                        let byte_ptr = bx.pointercast(shadow, bx.cx().type_i8p());
+                        bx.gep(bx.cx().type_i8(), byte_ptr, &[bx.const_usize(offset.bytes())])
+                    }
+                    Abi::Scalar(_) | Abi::ScalarPair(..) => {
+                        bug!(
+                            "offset of non-ZST field `{:?}` does not match layout `{:#?}`",
+                            field,
+                            self.layout
+                        );
+                    }
+                    _ => {
+                        let ty = bx.backend_type(self.layout);
+                        bx.struct_gep(ty, shadow, bx.cx().backend_field_index(self.layout, ix))
+                    }
+                }
             } else {
                 match self.layout.abi {
                     _ if offset.bytes() == 0 => {

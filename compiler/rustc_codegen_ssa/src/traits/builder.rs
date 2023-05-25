@@ -162,8 +162,8 @@ pub trait BuilderMethods<'a, 'tcx>:
     //fn mark_need_safe_house_copy(&self, intrinsic_inst: Self::Value);
     fn mark_field_projection(&self, inst: Self::Value, field_idx: usize);
     fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64);
-    fn mark_special_ty_alloca(&self, alloca: Self::Value) -> Self::Value;
-    fn project_smart_pointer_field(&self, val: Self::Value);
+    fn mark_special_ty_alloca(&self, alloca: Self::Value);
+    fn project_smart_pointer_field(&self, val: Self::Value) -> Self::Value;
 
     fn range_metadata(&mut self, load: Self::Value, range: WrappingRange);
     fn nonnull_metadata(&mut self, load: Self::Value);
