@@ -1084,6 +1084,8 @@ extern "C" {
     pub fn LLVMMarkFieldProjection(Inst: &Value, Idx: size_t);
     // RustMeta insert TDI index store
     pub fn LLVMStoreTDIIndex(Before: &Value, Idx: c_ulonglong);
+    // RustMeta get stack ptr
+    pub fn LLVMReadStackPtr(BB: &Value, Func: &Value) -> &Value;
 
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;

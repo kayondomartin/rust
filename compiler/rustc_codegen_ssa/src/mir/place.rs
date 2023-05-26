@@ -111,7 +111,7 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
                 let mut ptr = bx.and(ptr_to_int, bx.const_u64(0x1FFFFFF));
                 ptr = bx.or(ptr, safe_house_ptr);
                 bx.inttoptr(ptr, bx.type_i8p())*/
-                let shadow = bx.project_smart_pointer_field(self.llval);
+                let shadow = bx.get_smart_pointer_shadow(self.llval);
 
                 match self.layout.abi {
                     _ if offset.bytes() == 0 => {

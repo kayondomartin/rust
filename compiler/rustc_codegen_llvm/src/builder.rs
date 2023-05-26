@@ -3,6 +3,7 @@ use crate::attributes;
 use crate::common::Funclet;
 use crate::context::CodegenCx;
 use crate::llvm::{self, AtomicOrdering, AtomicRmwBinOp, BasicBlock, LLVMSetSmartPointerMetadata, LLVMSetSmartPointerHouseMetadata};
+use crate::metaupdate::get_smart_pointer_shadow;
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
@@ -281,6 +282,10 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         unsafe {
             llvm::LLVMRustMetaGetSmartPointerProjection(val)
         }
+    }
+
+    fn get_smart_pointer_shadow(&mut self, val: Self::Value) -> Self::Value {
+        get_smart_pointer_shadow(self, val)
     }
 
     //RustMeta - SORLAB: @kayondomartin
