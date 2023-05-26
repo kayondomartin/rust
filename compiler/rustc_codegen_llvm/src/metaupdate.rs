@@ -1,7 +1,5 @@
 use rustc_codegen_ssa::traits::BuilderMethods;
 use rustc_codegen_ssa::traits::ConstMethods;
-use rustc_codegen_ssa::traits::DebugInfoBuilderMethods;
-use rustc_codegen_ssa::traits::DebugInfoMethods;
 use rustc_codegen_ssa::traits::DerivedTypeMethods;
 use rustc_codegen_ssa::traits::BaseTypeMethods;
 use rustc_codegen_ssa::common::IntPredicate;
@@ -21,8 +19,6 @@ pub(super) fn get_smart_pointer_shadow<'ll>(
     // if bx.project_smart_pointer_field(val) {
 
     // }
-    
-    let dbg_loc = llvm::LLVMGetDebugLocation(val);
     let stack_mask: u64 = u64::MAX ^ 0x7FFFFF;
     let segment_mask: u64 = 0xFFFFFFFFFE000000;
     let lower_addr_offset: u64 = !segment_mask;
