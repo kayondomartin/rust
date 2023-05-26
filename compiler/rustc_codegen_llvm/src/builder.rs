@@ -3,7 +3,7 @@ use crate::attributes;
 use crate::common::Funclet;
 use crate::context::CodegenCx;
 use crate::llvm::{self, AtomicOrdering, AtomicRmwBinOp, BasicBlock, LLVMSetSmartPointerMetadata, LLVMSetSmartPointerHouseMetadata};
-use crate::metaupdate::get_smart_pointer_shadow;
+use crate::metaupdate::{get_smart_pointer_shadow, self};
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
@@ -286,6 +286,10 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
 
     fn get_smart_pointer_shadow(&mut self, val: Self::Value) -> Self::Value {
         get_smart_pointer_shadow(self, val)
+    }
+
+    fn copy_smart_pointers(&mut self, src: Self::Value, src_ty: Ty<'tcx>, dst: Self::Value, dst_ty: Ty<'tcx>, align: Align, flags: MemFlags) {
+        metaupdate::copy_smart_pointers(src, src_ty, dst, dst_ty, self, align, flags);
     }
 
     //RustMeta - SORLAB: @kayondomartin

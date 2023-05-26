@@ -165,6 +165,7 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn mark_special_ty_alloca(&self, alloca: Self::Value);
     fn project_smart_pointer_field(&self, val: Self::Value) -> Self::Value;
     fn get_smart_pointer_shadow(&mut self, val: Self::Value) -> Self::Value;
+    fn copy_smart_pointers(&mut self, src: Self::Value, src_ty: Ty<'tcx>, dst: Self::Value, dst_ty: Ty<'tcx>, align: Align, flags: MemFlags);
 
     fn range_metadata(&mut self, load: Self::Value, range: WrappingRange);
     fn nonnull_metadata(&mut self, load: Self::Value);

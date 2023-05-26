@@ -1,23 +1,29 @@
 use rustc_codegen_ssa::traits::BuilderMethods;
 use rustc_codegen_ssa::traits::ConstMethods;
+use rustc_codegen_ssa::traits::DebugInfoBuilderMethods;
+use rustc_codegen_ssa::traits::DebugInfoMethods;
 use rustc_codegen_ssa::traits::DerivedTypeMethods;
 use rustc_codegen_ssa::traits::BaseTypeMethods;
 use rustc_codegen_ssa::common::IntPredicate;
+use rustc_codegen_ssa::MemFlags;
+use rustc_middle::ty::layout::HasTyCtxt;
 use rustc_target::abi::Align;
 use crate::builder::Builder;
 use crate::value::Value;
 use crate::llvm;
+use rustc_middle::ty::Ty;
 
 
-pub(super) fn get_smart_pointer_shadow(
-    bx: &mut Builder<'_, 'll, 'tcx>,
+pub(super) fn get_smart_pointer_shadow<'ll>(
+    bx: &mut Builder<'_, 'll, '_>,
     val: &'ll Value
 ) -> &'ll Value {
     // if bx.project_smart_pointer_field(val) {
 
     // }
-
-    let stack_mask: u64 = !(0x7FFFFF);
+    
+    let dbg_loc = llvm::LLVMGetDebugLocation(val);
+    let stack_mask: u64 = u64::MAX ^ 0x7FFFFF;
     let segment_mask: u64 = 0xFFFFFFFFFE000000;
     let lower_addr_offset: u64 = !segment_mask;
 
@@ -38,19 +44,52 @@ pub(super) fn get_smart_pointer_shadow(
     bx.cond_br(icmp, stack_shadow_bb, heap_shadow_bb);
 
     bx.switch_to_block(stack_shadow_bb); //TODO: load the shadow stack here
-    let dummy_mask = bx.and(val, bx.const_u64(u64::MAX));
+    unsafe { llvm::LLVMCopyDebugLocation(val, bx.llbuilder); }
+    let dummy_mask = bx.and(addr_to_int, bx.const_u64(u64::MAX));
     let stack_shadow = bx.inttoptr(dummy_mask, bx.type_i8p());
     //TODO: remember to mask the address at the end
     bx.br(end);
 
     bx.switch_to_block(heap_shadow_bb);
+    unsafe{ llvm::LLVMCopyDebugLocation(val, bx.llbuilder); }
     let segment_ptr_int_sub = bx.sub(addr_to_int, bx.const_u64(1));
     let segment_ptr_int = bx.and(segment_ptr_int_sub, segment_mask_val);
-    let segment_ptr = bx.inttoptr(segment_ptr_int, bx.type_ptr_to(bx.type_i8p()));
-    let heap_shadow = bx.load(bx.type_i8p(), segment_ptr, Align::from_bits(64).expect("align"));
+    let segment_ptr = bx.inttoptr(segment_ptr_int, bx.type_ptr_to(bx.type_i64()));
+    let heap_shadow_ptr = bx.load(bx.type_i64(), segment_ptr, Align::from_bits(64).expect("align"));
+    let addr_offset_mask = bx.and(addr_to_int, lower_addr_mask_val);
+    let heap_shadow_int = bx.or(heap_shadow_ptr, addr_offset_mask);
+    let mut heap_shadow = bx.inttoptr(heap_shadow_int, bx.type_i8p());
+    //dummy store, need to meaure actual heap & performance overhead.
+    bx.store(bx.const_int(bx.type_i8(), 1), heap_shadow, Align::from_bits(8).expect("align"));
+    heap_shadow = bx.and(addr_to_int, bx.const_u64(u64::MAX));
+    heap_shadow = bx.inttoptr(heap_shadow, bx.type_i8p());
     bx.br(end);
 
     bx.switch_to_block(end);
+    unsafe { llvm::LLVMCopyDebugLocation(val, bx.llbuilder); }
     let address = bx.phi(bx.type_i8p(), &[heap_shadow, stack_shadow], &[heap_shadow_bb, stack_shadow_bb]);
     address //TODO: bit cast to orig type, cache, we don't want to do this over and over again for the same object.
+}
+
+
+pub(super) fn copy_smart_pointers<'ll, 'tcx>(
+    src: &'ll Value,
+    src_ty: Ty<'tcx>,
+    dst: &'ll Value,
+    dst_ty: Ty<'tcx>,
+    bx: &mut Builder<'_, 'll, 'tcx>,
+    align: Align,
+    flags: MemFlags
+){
+    if bx.tcx().contains_special_ty(src_ty) && bx.tcx().contains_special_ty(dst_ty) {
+        let src_shadow = get_smart_pointer_shadow(bx, src);
+        let dst_shadow = get_smart_pointer_shadow(bx, dst);
+        bx.memcpy(dst_shadow, align, src_shadow, align, bx.const_i32(1), flags);
+    } else if bx.tcx().contains_special_ty(src_ty) {
+        let src_shadow = get_smart_pointer_shadow(bx, src);
+        bx.memcpy(dst, align, src_shadow, align, bx.const_i32(1), flags);
+    } else if bx.tcx().contains_special_ty(dst_ty) {
+        let dst_shadow = get_smart_pointer_shadow(bx, dst);
+        bx.memcpy(dst_shadow, align, src, align, bx.const_i32(1), flags);
+    }
 }
