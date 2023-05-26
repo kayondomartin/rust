@@ -1,7 +1,12 @@
 use rustc_codegen_ssa::traits::BuilderMethods;
-
+use rustc_codegen_ssa::traits::ConstMethods;
+use rustc_codegen_ssa::traits::DerivedTypeMethods;
+use rustc_codegen_ssa::traits::BaseTypeMethods;
+use rustc_codegen_ssa::common::IntPredicate;
+use rustc_target::abi::Align;
 use crate::builder::Builder;
 use crate::value::Value;
+use crate::llvm;
 
 
 pub(super) fn get_smart_pointer_shadow(
@@ -33,7 +38,7 @@ pub(super) fn get_smart_pointer_shadow(
     bx.cond_br(icmp, stack_shadow_bb, heap_shadow_bb);
 
     bx.switch_to_block(stack_shadow_bb); //TODO: load the shadow stack here
-    let dummy_mask = bx.and(val, bx.const_u64(-1));
+    let dummy_mask = bx.and(val, bx.const_u64(u64::MAX));
     let stack_shadow = bx.inttoptr(dummy_mask, bx.type_i8p());
     //TODO: remember to mask the address at the end
     bx.br(end);
@@ -41,8 +46,8 @@ pub(super) fn get_smart_pointer_shadow(
     bx.switch_to_block(heap_shadow_bb);
     let segment_ptr_int_sub = bx.sub(addr_to_int, bx.const_u64(1));
     let segment_ptr_int = bx.and(segment_ptr_int_sub, segment_mask_val);
-    let segment_ptr = bx.inttoptr(segment_ptr, bx.type_ptr_to(bx.type_i8p()));
-    let heap_shadow = bx.load(bx.type_i8p(), segment_ptr, Align::from_bits(64));
+    let segment_ptr = bx.inttoptr(segment_ptr_int, bx.type_ptr_to(bx.type_i8p()));
+    let heap_shadow = bx.load(bx.type_i8p(), segment_ptr, Align::from_bits(64).expect("align"));
     bx.br(end);
 
     bx.switch_to_block(end);
