@@ -1086,8 +1086,9 @@ extern "C" {
         pub fn LLVMStoreTDIIndex(Before: &Value, Idx: c_ulonglong);
         // RustMeta get stack ptr
         pub fn LLVMReadStackPtr<'ll>(BB: &'ll BasicBlock, Func: &'ll Value) -> &'ll Value;
-        // RustMeta set debug location: for some reason, we lose debug locations when we're generating shadow pointers causing errors
-        pub fn LLVMCopyDebugLocation<'a>(Val: &Value, IRB: &Builder<'a>);
+        // RustMeta get/set debug location: for some reason, we lose debug locations when we're generating shadow pointers causing errors
+        pub fn LLVMGetCurrentDebugLocation2<'a, 'll>(IRB: & Builder<'a>) -> &'ll Metadata;
+        pub fn LLVMSetCurrentDebugLocation2<'a, 'll>(IRB: & Builder<'a>, MD: &'ll Metadata);
         //RustMeta save shadow
         //pub fn LLVMSaveShadowPtr<'ll>(Val: &Value);
         //RustMeta get sac

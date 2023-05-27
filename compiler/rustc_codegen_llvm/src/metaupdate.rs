@@ -2,13 +2,14 @@ use rustc_codegen_ssa::traits::BuilderMethods;
 use rustc_codegen_ssa::traits::ConstMethods;
 use rustc_codegen_ssa::traits::DerivedTypeMethods;
 use rustc_codegen_ssa::traits::BaseTypeMethods;
-use rustc_codegen_ssa::common::IntPredicate;
+//use rustc_codegen_ssa::common::IntPredicate;
 use rustc_codegen_ssa::MemFlags;
+//use rustc_data_structures::fx::FxHashMap;
 use rustc_middle::ty::layout::HasTyCtxt;
 use rustc_target::abi::Align;
 use crate::builder::Builder;
 use crate::value::Value;
-use crate::llvm;
+//use crate::llvm;
 use rustc_middle::ty::Ty;
 
 
@@ -16,12 +17,12 @@ pub(super) fn get_smart_pointer_shadow<'ll>(
     bx: &mut Builder<'_, 'll, '_>,
     val: &'ll Value
 ) -> &'ll Value {
-    // if bx.project_smart_pointer_field(val) {
-
-    // }
+    /*
     let stack_mask: u64 = u64::MAX ^ 0x7FFFFF;
     let segment_mask: u64 = 0xFFFFFFFFFE000000;
     let lower_addr_offset: u64 = !segment_mask;
+
+    let dbg_loc = unsafe {llvm::LLVMGetCurrentDebugLocation2(bx.llbuilder)};
 
     let stack_shadow_bb = bx.append_sibling_block("shadow.maybe_stack");
     let heap_shadow_bb = bx.append_sibling_block("shadow.maybe_heap");
@@ -40,14 +41,14 @@ pub(super) fn get_smart_pointer_shadow<'ll>(
     bx.cond_br(icmp, stack_shadow_bb, heap_shadow_bb);
 
     bx.switch_to_block(stack_shadow_bb); //TODO: load the shadow stack here
-    unsafe { llvm::LLVMCopyDebugLocation(val, bx.llbuilder); }
+    unsafe { llvm::LLVMSetCurrentDebugLocation2(bx.llbuilder, dbg_loc); }
     let dummy_mask = bx.and(addr_to_int, bx.const_u64(u64::MAX));
     let stack_shadow = bx.inttoptr(dummy_mask, bx.type_i8p());
     //TODO: remember to mask the address at the end
     bx.br(end);
 
     bx.switch_to_block(heap_shadow_bb);
-    unsafe{ llvm::LLVMCopyDebugLocation(val, bx.llbuilder); }
+    unsafe{ llvm::LLVMSetCurrentDebugLocation2(bx.llbuilder, dbg_loc); }
     let segment_ptr_int_sub = bx.sub(addr_to_int, bx.const_u64(1));
     let segment_ptr_int = bx.and(segment_ptr_int_sub, segment_mask_val);
     let segment_ptr = bx.inttoptr(segment_ptr_int, bx.type_ptr_to(bx.type_i64()));
@@ -62,9 +63,16 @@ pub(super) fn get_smart_pointer_shadow<'ll>(
     bx.br(end);
 
     bx.switch_to_block(end);
-    unsafe { llvm::LLVMCopyDebugLocation(val, bx.llbuilder); }
+    unsafe { llvm::LLVMSetCurrentDebugLocation2(bx.llbuilder, dbg_loc); }
     let address = bx.phi(bx.type_i8p(), &[heap_shadow, stack_shadow], &[heap_shadow_bb, stack_shadow_bb]);
-    address //TODO: bit cast to orig type, cache, we don't want to do this over and over again for the same object.
+    SHADOW_MAP.insert(val, address);
+
+    address //TODO: bit cast to orig type, cache, we don't want to do this over and over again for the same object.*/
+    let bitcast = bx.ptrtoint(val, bx.type_i64());
+    let mask = bx.and(bitcast, bx.const_u64(u64::MAX));
+    let ptr = bx.inttoptr(mask, bx.type_i8p());
+    bx.mark_field_projection(ptr, 0);
+    ptr
 }
 
 
