@@ -17,12 +17,16 @@ pub(super) fn get_smart_pointer_shadow<'ll>(
     bx: &mut Builder<'_, 'll, '_>,
     val: &'ll Value
 ) -> &'ll Value {
-    /*
-    let stack_mask: u64 = u64::MAX ^ 0x7FFFFF;
-    let segment_mask: u64 = 0xFFFFFFFFFE000000;
-    let lower_addr_offset: u64 = !segment_mask;
 
-    let dbg_loc = unsafe {llvm::LLVMGetCurrentDebugLocation2(bx.llbuilder)};
+    let addr_to_int = bx.ptrtoint(val, bx.type_i64());
+    let addr_masked = bx.and(addr_to_int, bx.const_u64(u64::MAX)); 
+    //mask this for soon comming dummy load from llvm pass. we need to maintain the performance overhead
+    // putting the volatile load here may affect optimizations such as DCE before reaching LLVm pass.
+    let addr = bx.inttoptr(dummy_mask, bx.type_ptr_to(bx.type_i8p()));
+    bx.mark_field_projection(addr, 0); //mark this for further optimizatoin in LLVM pass.
+    addr
+
+    /*let dbg_loc = unsafe {llvm::LLVMGetCurrentDebugLocation2(bx.llbuilder)};
 
     let stack_shadow_bb = bx.append_sibling_block("shadow.maybe_stack");
     let heap_shadow_bb = bx.append_sibling_block("shadow.maybe_heap");
@@ -41,14 +45,14 @@ pub(super) fn get_smart_pointer_shadow<'ll>(
     bx.cond_br(icmp, stack_shadow_bb, heap_shadow_bb);
 
     bx.switch_to_block(stack_shadow_bb); //TODO: load the shadow stack here
-    unsafe { llvm::LLVMSetCurrentDebugLocation2(bx.llbuilder, dbg_loc); }
+    //unsafe { llvm::LLVMSetCurrentDebugLocation2(bx.llbuilder, dbg_loc); }
     let dummy_mask = bx.and(addr_to_int, bx.const_u64(u64::MAX));
     let stack_shadow = bx.inttoptr(dummy_mask, bx.type_i8p());
     //TODO: remember to mask the address at the end
     bx.br(end);
 
     bx.switch_to_block(heap_shadow_bb);
-    unsafe{ llvm::LLVMSetCurrentDebugLocation2(bx.llbuilder, dbg_loc); }
+    //unsafe{ llvm::LLVMSetCurrentDebugLocation2(bx.llbuilder, dbg_loc); }
     let segment_ptr_int_sub = bx.sub(addr_to_int, bx.const_u64(1));
     let segment_ptr_int = bx.and(segment_ptr_int_sub, segment_mask_val);
     let segment_ptr = bx.inttoptr(segment_ptr_int, bx.type_ptr_to(bx.type_i64()));
@@ -65,14 +69,14 @@ pub(super) fn get_smart_pointer_shadow<'ll>(
     bx.switch_to_block(end);
     unsafe { llvm::LLVMSetCurrentDebugLocation2(bx.llbuilder, dbg_loc); }
     let address = bx.phi(bx.type_i8p(), &[heap_shadow, stack_shadow], &[heap_shadow_bb, stack_shadow_bb]);
-    SHADOW_MAP.insert(val, address);
+    //SHADOW_MAP.insert(val, address);
 
-    address //TODO: bit cast to orig type, cache, we don't want to do this over and over again for the same object.*/
+    address //TODO: bit cast to orig type, cache, we don't want to do this over and over again for the same object.
     let bitcast = bx.ptrtoint(val, bx.type_i64());
     let mask = bx.and(bitcast, bx.const_u64(u64::MAX));
     let ptr = bx.inttoptr(mask, bx.type_i8p());
     bx.mark_field_projection(ptr, 0);
-    ptr
+    ptr*/
 }
 
 

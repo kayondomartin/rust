@@ -1,10 +1,10 @@
 use rustc_middle::mir;
 use rustc_middle::mir::NonDivergingIntrinsic;
-use rustc_middle::ty;
+//use rustc_middle::ty;
 
 use super::FunctionCx;
 use super::LocalRef;
-use crate::MemFlags;
+//use crate::MemFlags;
 use crate::traits::BuilderMethods;
 use crate::traits::*;
 
@@ -99,12 +99,12 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 bx.memcpy(dst, align, src, align, bytes, crate::MemFlags::empty());
 
                 //RustMeta: copy smart pointers
-                if let ty::RawPtr(_) = dst_val.layout.ty.kind() {
+                /*if let ty::RawPtr(_) = dst_val.layout.ty.kind() {
                     if bx.tcx().sess.opts.unstable_opts.meta_update && 
                         bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit) {
                         bx.copy_smart_pointers(src, src_val.layout.ty, dst, dst_val.layout.ty, align, MemFlags::empty());
                     }
-                }
+                }*/
                 bx
             }
             mir::StatementKind::FakeRead(..)

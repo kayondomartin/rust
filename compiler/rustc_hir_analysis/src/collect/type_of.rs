@@ -571,7 +571,7 @@ pub(super) fn is_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
         let v = FxHashSet::default();
 
         fn is_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool{
-            if visited.contains(&typ) || typ.is_box() || typ.is_closure() || typ.is_fn() || typ.is_fn_ptr() || typ.is_dyn_star() || typ.is_trait() {
+            if visited.contains(&typ) || typ.is_box() || typ.is_closure() || typ.is_fn() || typ.is_fn_ptr() || typ.is_dyn_star() || typ.is_trait() || typ.is_fn() || typ.is_generator() {
                 return true;
             }
 
@@ -638,7 +638,7 @@ pub (super) fn contains_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) ->
     } else if tcx.sess.opts.unstable_opts.meta_update {
 
         fn contains_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool {
-            if visited.contains(&typ){
+            if visited.contains(&typ) {
                 return true;
             }
 
@@ -662,16 +662,16 @@ pub (super) fn contains_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) ->
                     }
                 },
                 ty::RawPtr(i) => {
-                    return contains_special(tcx, i.ty, nvisited);
+                    return contains_special(tcx, i.ty.peel_refs(), nvisited);
                 },
                 ty::Ref(_, i, _) => {
-                    return contains_special(tcx, *i, nvisited);
+                    return contains_special(tcx, i.peel_refs(), nvisited);
                 },
                 ty::Array(i, _) => {
-                    return contains_special(tcx, *i, nvisited);
+                    return contains_special(tcx, i.peel_refs(), nvisited);
                 },
                 ty::Slice(i) => {
-                    return contains_special(tcx, *i, nvisited);
+                    return contains_special(tcx, i.peel_refs(), nvisited);
                 },
                 _ => {return false;}
             }
