@@ -34,4 +34,4 @@
 [submodule "src/llvm-project"]
 	path = src/llvm-project
 	url = git@github.com:seccompgeek/rust-llvm-project.git
-	branch = ch-tdi
+	branch = rust-meta-master
