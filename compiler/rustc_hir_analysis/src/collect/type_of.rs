@@ -686,6 +686,31 @@ pub (super) fn contains_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) ->
     return false;
 }
 
+pub(super) fn get_metaupdate_synchronize_fn<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> Option<DefId> {
+    if def_ty.is_adt() && tcx.is_special_ty(def_ty) {
+        if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
+            for impl_id in tcx.all_impls(trait_id) {
+                if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
+                    if let ty::Adt(adt, _) = trait_ref.self_ty().kind() {
+                        if adt.did() == adt.did() {
+                            let assoc_item = tcx.associated_items(trait_ref.def_id).find_by_name_and_kind(
+                                tcx,
+                                Ident::from_str("synchronize"),
+                                ty::AssocKind::Fn,
+                                trait_ref.def_id
+                            );
+                            return Some(assoc_item.unwrap().def_id);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }else{
+        None
+    }
+}
+
 #[instrument(skip(tcx), level = "debug")]
 /// Checks "defining uses" of opaque `impl Trait` types to ensure that they meet the restrictions
 /// laid for "higher-order pattern unification".

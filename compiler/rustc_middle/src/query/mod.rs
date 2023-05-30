@@ -171,6 +171,13 @@ rustc_queries! {
         separate_provide_extern
     }
 
+    /// return the def id of the synchronize function of 
+    /// a given smart pointer ADT.
+    query get_metaupdate_synchronize_fn(key: Ty<'tcx>) -> Option<DefId> {
+        desc {"given a defId , return the synchronize function defId"}
+        separate_provide_extern
+    }
+
     /// Whether a given type contains a special field (a field which is a smart pointer)\
     query contains_special_ty(key: Ty<'tcx>) -> bool {
         desc {"check whether a given type houses a smart pointer"}

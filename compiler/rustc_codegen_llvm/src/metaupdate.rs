@@ -22,7 +22,7 @@ pub(super) fn get_smart_pointer_shadow<'ll>(
     let addr_masked = bx.and(addr_to_int, bx.const_u64(u64::MAX)); 
     //mask this for soon comming dummy load from llvm pass. we need to maintain the performance overhead
     // putting the volatile load here may affect optimizations such as DCE before reaching LLVm pass.
-    let addr = bx.inttoptr(dummy_mask, bx.type_ptr_to(bx.type_i8p()));
+    let addr = bx.inttoptr(addr_masked, bx.type_ptr_to(bx.type_i8p()));
     bx.mark_field_projection(addr, 0); //mark this for further optimizatoin in LLVM pass.
     addr
 
