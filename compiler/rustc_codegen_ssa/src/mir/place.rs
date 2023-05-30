@@ -50,7 +50,13 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
     ) -> Self {
         assert!(!layout.is_unsized(), "tried to statically allocate unsized place");
         let is_special = if bx.tcx().is_special_ty(layout.ty){AllocaSpecial::SmartPointer} else
-                         if bx.tcx().contains_special_ty(layout.ty){AllocaSpecial::SmartPointerHouse} else{
+                         if bx.tcx().contains_special_ty(layout.ty){
+                            if bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Implicit){
+                                AllocaSpecial::SmartPointer
+                            }else{
+                                AllocaSpecial::SmartPointerHouse
+                            }
+                         } else{
                             AllocaSpecial::None
                          }; // TODO: @kayondomartin ==> SORLAB:
                                                             // RustMeta
@@ -69,8 +75,10 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         let ptr_ty = bx.cx().tcx().mk_mut_ptr(layout.ty);
         let ptr_layout = bx.cx().layout_of(ptr_ty);
         let alloced = Self::alloca(bx, ptr_layout);
-        if bx.tcx().is_special_ty(layout.ty) || bx.tcx().contains_special_ty(layout.ty){
-            bx.mark_special_ty_alloca(alloced.llval);
+        if bx.tcx().is_special_ty(layout.ty) {
+            bx.mark_special_ty_alloca(alloced.llval, true);
+        } else if bx.tcx().contains_special_ty(layout.ty) {
+            bx.mark_special_ty_alloca(alloced.llval, bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Implicit));
         }
         alloced
     }

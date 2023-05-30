@@ -250,7 +250,11 @@ impl<'ll, 'tcx> ArgAbiExt<'ll, 'tcx> for ArgAbi<'tcx, Ty<'tcx>> {
                 let is_special = if bx.tcx.is_special_ty(self.layout.ty) {
                                                     AllocaSpecial::SmartPointer
                                                 } else if bx.tcx.contains_special_ty(self.layout.ty){
-                                                    AllocaSpecial::SmartPointerHouse
+                                                    if bx.tcx.sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&config::MetaUpdateStructKind::Implicit) {
+                                                        AllocaSpecial::SmartPointer
+                                                    } else{
+                                                        AllocaSpecial::SmartPointerHouse
+                                                    }
                                                 }else {
                                                     AllocaSpecial::None
                                                 };

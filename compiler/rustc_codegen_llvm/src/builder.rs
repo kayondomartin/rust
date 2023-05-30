@@ -271,9 +271,13 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     }
 
     //RustMeta - SORLAB: @kayondomartin
-    fn mark_special_ty_alloca(&self, alloca: Self::Value) {
+    fn mark_special_ty_alloca(&self, alloca: Self::Value, pure: bool) {
         unsafe {
-            llvm::LLVMSetSmartPointerMetadata(alloca);
+            if pure {
+                llvm::LLVMSetSmartPointerMetadata(alloca);
+            } else {
+                llvm::LLVMSetSmartPointerHouseMetadata(alloca);
+            }
         }
     }
 
