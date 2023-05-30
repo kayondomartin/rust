@@ -10,6 +10,7 @@ use rustc_middle::ty::util::IntTypeExt;
 use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFolder, TypeSuperFoldable, TypeVisitable};
 use rustc_span::symbol::Ident;
 use rustc_span::{Span, DUMMY_SP};
+use rustc_data_structures::fx::FxHashSet;
 
 use super::ItemCtxt;
 use super::{bad_placeholder, is_suggestable_infer_ty};
@@ -241,7 +242,7 @@ fn get_path_containing_arg_in_pat<'hir>(
     arg_path
 }
 
-pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> { 
+pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
     let def_id = def_id.expect_local();
     use rustc_hir::*;
 
@@ -389,12 +390,24 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
         },
 
         Node::Field(field) => {
-            let ty_ = icx.to_ty(field.ty);
-            if tcx.sess.opts.unstable_opts.meta_update && tcx.special_types.fields.contains(&field.hir_id) {
-                tcx.mk_box(ty_)
-            }else{
-                ty_
+            let mut ty_ = icx.to_ty(field.ty);
+            let parent_id = tcx.hir().get_parent_node(field.hir_id);
+            let parent_node = tcx.hir().get(parent_id);
+            match parent_node {
+                Node::Item(item) => {
+                    match item.kind {
+                        ItemKind::Struct(_, _) => {
+                            if tcx.sess.opts.unstable_opts.meta_update && tcx.special_types.fields.contains(&field.hir_id) {
+                                ty_ = tcx.mk_box(ty_)
+                            }
+                        },
+
+                        _ => {}
+                    }
+                },
+                _ => {}
             }
+            ty_
         },
 
         Node::Expr(&Expr { kind: ExprKind::Closure { .. }, .. }) => {
@@ -550,29 +563,152 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 /// A complex ADT whose all fields are smart pointers is simply a smart pointer.
 /// TODO: add this to notes && to the paper. perhaps to implementation & design
 /// TODO: define an enum to differentiate the kind of special type if is: ie. is it entirely special or is it inherently special(specify which field)
-pub(super) fn is_special_ty(tcx: TyCtxt<'_>, def_ty: Ty<'_>) -> bool {
+pub(super) fn is_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
     // TODO: check the path of the metaupdate trait, there could be another trait with the same name but from a different crate.
     if tcx.sess.opts.unstable_opts.meta_update {
-        match def_ty.kind() {
-            ty::Adt(adt_def, _) => {
-                                        
-                if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
-                    for impl_id in tcx.all_impls(trait_id) {
-                        if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
-                            if let ty::Adt(adt, _) = trait_ref.self_ty().kind() {
-                                if adt.did() == adt_def.did() {
-                                    return true;
+        //if def_ty.is_box() || def_ty.is_fn_ptr() {return true;}
+
+        let v = FxHashSet::default();
+
+        fn is_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool{
+            if visited.contains(&typ) || typ.is_box() || typ.is_closure() || typ.is_fn() || typ.is_fn_ptr() || typ.is_dyn_star() || typ.is_trait() || typ.is_fn() || typ.is_generator() {
+                return true;
+            }
+
+            let mut nvisited = visited.clone();
+            nvisited.insert(typ);
+            match typ.kind() {
+                ty::Adt(adt_def, substs) => {
+                                            
+                    if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
+                        for impl_id in tcx.all_impls(trait_id) {
+                            if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
+                                if let ty::Adt(adt, _) = trait_ref.self_ty().kind() {
+                                    if adt.did() == adt_def.did() {
+                                        return true;
+                                    }
                                 }
                             }
                         }
                     }
-                }
+    
+                    if adt_def.all_fields().count() > 0 {
+                        for field in adt_def.all_fields() {
+                            let field_ty = field.ty(tcx, &substs);
+                            if !is_special(tcx, field_ty, nvisited.clone()){
+                                return false;
+                            }
+                        }
+                        return true;
+                    }
+                },
+                ty::Ref(_, ref_ty, _) => {
+                    return is_special(tcx, *ref_ty, nvisited.clone());
+                },
+                ty::RawPtr(i) => {
+                    return is_special(tcx, i.ty, nvisited.clone());
+                },
+                ty::Array(elem_ty, _) => {
+                    return is_special(tcx, *elem_ty, nvisited.clone());
+                },
+                ty::Slice(elem_ty) => {
+                    return is_special(tcx, *elem_ty, nvisited.clone());
+                },
+                ty::Closure(_, _) | ty::Generator(_, _, _) | ty::Dynamic(_, _, _)=> {
+                    return true;
+                },
+    
+                _ => {return false;}
+            };
 
-            },
-            _ => return false            
+            return false;
         }
+
+        return is_special(tcx, def_ty, v.clone());
+        
     }
+    false
+}
+
+/// Given a type, this function checks whether any of its fields is a smart pointer
+/// Recursively checks if any of its fields houses a smart pointer either way
+pub (super) fn contains_special_ty<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> bool {
+    if is_special_ty(tcx, def_ty){
+        return false;
+    } else if tcx.sess.opts.unstable_opts.meta_update {
+
+        fn contains_special<'t>(tcx: TyCtxt<'t>, typ: Ty<'t>, visited: FxHashSet<Ty<'t>>) -> bool {
+            if visited.contains(&typ) {
+                return true;
+            }
+
+            let mut nvisited = visited.clone();
+            nvisited.insert(typ);
+
+            match typ.kind() {
+                ty::Adt(adt_def, _) => {
+                    for field in adt_def.all_fields() {
+                        let field_ty = tcx.type_of(field.did);
+                        if tcx.is_special_ty(field_ty) || contains_special(tcx, field_ty, nvisited.clone()) {
+                            return true;
+                        }
+                    }
+                },
+                ty::Tuple(tys) => {
+                    for typ in *tys {
+                        if contains_special(tcx,typ,nvisited.clone()) {
+                            return true;
+                        } 
+                    }
+                },
+                ty::RawPtr(i) => {
+                    return contains_special(tcx, i.ty.peel_refs(), nvisited);
+                },
+                ty::Ref(_, i, _) => {
+                    return contains_special(tcx, i.peel_refs(), nvisited);
+                },
+                ty::Array(i, _) => {
+                    return contains_special(tcx, i.peel_refs(), nvisited);
+                },
+                ty::Slice(i) => {
+                    return contains_special(tcx, i.peel_refs(), nvisited);
+                },
+                _ => {return false;}
+            }
+
+            return false;
+        }
+
+        return contains_special(tcx, def_ty, FxHashSet::default());
+        
+    }
+
     return false;
+}
+
+pub(super) fn get_metaupdate_synchronize_fn<'tcx>(tcx: TyCtxt<'tcx>, def_ty: Ty<'tcx>) -> Option<DefId> {
+    if def_ty.is_adt() && tcx.is_special_ty(def_ty) {
+        if let Some(trait_id) = tcx.rust_metaupdate_trait_id(()) {
+            for impl_id in tcx.all_impls(trait_id) {
+                if let Some(trait_ref) = tcx.impl_trait_ref(impl_id){
+                    if let ty::Adt(adt, _) = trait_ref.self_ty().kind() {
+                        if adt.did() == adt.did() {
+                            let assoc_item = tcx.associated_items(trait_ref.def_id).find_by_name_and_kind(
+                                tcx,
+                                Ident::from_str("synchronize"),
+                                ty::AssocKind::Fn,
+                                trait_ref.def_id
+                            );
+                            return Some(assoc_item.unwrap().def_id);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }else{
+        None
+    }
 }
 
 #[instrument(skip(tcx), level = "debug")]

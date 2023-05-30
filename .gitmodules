@@ -31,3 +31,7 @@
 [submodule "library/backtrace"]
 	path = library/backtrace
 	url = https://github.com/rust-lang/backtrace-rs.git
+[submodule "src/llvm-project"]
+	path = src/llvm-project
+	url = git@github.com:seccompgeek/rust-llvm-project.git
+	branch = ch-tdi

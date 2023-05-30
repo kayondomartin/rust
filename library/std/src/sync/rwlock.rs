@@ -1,6 +1,8 @@
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests;
 
+use core::ptr::metadata_update::MetaUpdate;
+
 use crate::cell::UnsafeCell;
 use crate::fmt;
 use crate::ops::{Deref, DerefMut};
@@ -88,6 +90,26 @@ unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for RwLock<T> {
+    fn synchronize(&self) -> bool {
+        true
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for RwLockReadGuard<'_, T>{
+    fn synchronize(&self) -> bool {
+        true
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for RwLockWriteGuard<'_, T>{
+    fn synchronize(&self) -> bool {
+        true
+    }
+}
 /// RAII structure used to release the shared read access of a lock when
 /// dropped.
 ///

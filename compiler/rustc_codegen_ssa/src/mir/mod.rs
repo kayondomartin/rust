@@ -20,6 +20,8 @@ use self::operand::{OperandRef, OperandValue};
 pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     instance: Instance<'tcx>,
 
+    is_special: bool,
+
     mir: &'tcx mir::Body<'tcx>,
 
     debug_context: Option<FunctionDebugContext<Bx::DIScope, Bx::DILocation>>,
@@ -87,6 +89,14 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
 
     /// Caller location propagated if this function has `#[track_caller]`.
     caller_location: Option<OperandRef<'tcx, Bx::Value>>,
+
+    /// cached exchange_malloc call
+    cached_exchange_malloc: Vec<Bx::Value>,
+
+    /// generating exchange_malloc
+    generating_exchange_malloc: bool,
+
+    smart_pointer_inner_ty: Option<u64>,
 }
 
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
@@ -161,8 +171,19 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         .map(|bb| if bb == mir::START_BLOCK { Some(start_llbb) } else { None })
         .collect();
 
+    let is_special = if let Some(impl_did) = cx.tcx().impl_of_method(instance.def_id()){
+        let impl_type =   match cx.tcx().try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), cx.tcx().type_of(impl_did)) {
+            Ok(t) => t,
+            _ => cx.tcx().type_of(impl_did)
+        };
+        impl_type.is_adt() && cx.tcx().is_special_ty(impl_type)
+    }else{
+        false
+    };
+
     let mut fx = FunctionCx {
         instance,
+        is_special,
         mir,
         llfn,
         fn_abi,
@@ -178,6 +199,9 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         debug_context,
         per_local_var_debug_info: None,
         caller_location: None,
+        cached_exchange_malloc: Vec::new(),
+        generating_exchange_malloc: false,
+        smart_pointer_inner_ty: None,
     };
 
     fx.per_local_var_debug_info = fx.compute_per_local_var_debug_info(&mut start_bx);

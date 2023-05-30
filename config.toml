@@ -389,7 +389,7 @@ prefix = "build"
 #       "maximally debuggable" environment (notably libstd) takes
 #       hours to build.
 #
-#debug = false
+#debug = true
 
 # Whether to download the stage 1 and 2 compilers from CI.
 # This is mostly useful for tools; if you have changes to `compiler/` they will be ignored.
@@ -460,7 +460,7 @@ prefix = "build"
 # and will slow down the linking process significantly.
 #
 # Defaults to 1 if debug is true
-#debuginfo-level = 0
+#debuginfo-level = 2
 
 # Debuginfo level for the compiler.
 #debuginfo-level-rustc = debuginfo-level
@@ -494,7 +494,7 @@ prefix = "build"
 #split-debuginfo = if linux { off } else if windows { packed } else if apple { unpacked }
 
 # Whether or not `panic!`s generate backtraces (RUST_BACKTRACE)
-#backtrace = true
+backtrace = true
 
 # Whether to always use incremental compilation when building rustc
 #incremental = false

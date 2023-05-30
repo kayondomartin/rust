@@ -18,7 +18,7 @@ use rustc_middle::ty::layout::{HasParamEnv, TyAndLayout};
 use rustc_middle::ty::Ty;
 use rustc_span::Span;
 use rustc_target::abi::call::FnAbi;
-use rustc_target::abi::{Abi, Align, Scalar, Size, WrappingRange};
+use rustc_target::abi::{Abi, Align, Scalar, Size, WrappingRange, AllocaSpecial};
 use rustc_target::spec::HasTargetSpec;
 
 #[derive(Copy, Clone)]
@@ -134,7 +134,7 @@ pub trait BuilderMethods<'a, 'tcx>:
     }
     fn to_immediate_scalar(&mut self, val: Self::Value, scalar: Scalar) -> Self::Value;
 
-    fn alloca(&mut self, ty: Self::Type, align: Align, is_special: bool) -> Self::Value;
+    fn alloca(&mut self, ty: Self::Type, align: Align, is_special: AllocaSpecial) -> Self::Value;
     fn byte_array_alloca(&mut self, len: Self::Value, align: Align) -> Self::Value;
 
     fn load(&mut self, ty: Self::Type, ptr: Self::Value, align: Align) -> Self::Value;
@@ -156,6 +156,16 @@ pub trait BuilderMethods<'a, 'tcx>:
         count: u64,
         dest: PlaceRef<'tcx, Self::Value>,
     ) -> Self;
+
+    //RustMeta => setting metadata
+    fn mark_cached_exchange_malloc(&self, exchange_malloc: Self::Value,  inner_ty_id: u64);
+    //fn mark_need_safe_house_copy(&self, intrinsic_inst: Self::Value);
+    fn mark_field_projection(&self, inst: Self::Value, field_idx: usize);
+    fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64);
+    fn mark_special_ty_alloca(&self, alloca: Self::Value);
+    fn project_smart_pointer_field(&self, val: Self::Value) -> Self::Value;
+    fn get_smart_pointer_shadow(&mut self, val: Self::Value) -> Self::Value;
+    fn copy_smart_pointers(&mut self, src: Self::Value, src_ty: Ty<'tcx>, dst: Self::Value, dst_ty: Ty<'tcx>, align: Align, flags: MemFlags);
 
     fn range_metadata(&mut self, load: Self::Value, range: WrappingRange);
     fn nonnull_metadata(&mut self, load: Self::Value);

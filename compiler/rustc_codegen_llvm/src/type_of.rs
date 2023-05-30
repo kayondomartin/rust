@@ -1,5 +1,6 @@
 use crate::common::*;
 use crate::context::TypeLowering;
+use crate::llvm_::LLVMRustMarkSpecialType;
 use crate::llvm_util::get_version;
 use crate::type_::Type;
 use rustc_codegen_ssa::traits::*;
@@ -69,7 +70,7 @@ fn uncached_llvm_type<'a, 'tcx>(
         _ => None,
     };
 
-    match layout.fields {
+    let typ = match layout.fields {
         FieldsShape::Primitive | FieldsShape::Union(_) => {
             let fill = cx.type_padding_filler(layout.size, layout.align.abi);
             let packed = false;
@@ -95,7 +96,15 @@ fn uncached_llvm_type<'a, 'tcx>(
                 llty
             }
         },
+    };
+
+    if cx.tcx.is_special_ty(layout.ty) {
+        unsafe {
+            LLVMRustMarkSpecialType(cx.llmod, typ);
+        }
     }
+
+    typ
 }
 
 fn struct_llfields<'a, 'tcx>(

@@ -14,10 +14,12 @@ use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_hir as hir;
 use rustc_hir::def::Res;
 use rustc_hir::definitions::DefPathData;
+use rustc_index::vec::Idx;
 use rustc_span::source_map::{respan, DesugaringKind, Span, Spanned};
 use rustc_span::symbol::{sym, Ident};
 use rustc_span::DUMMY_SP;
 use thin_vec::thin_vec;
+use crate::hir::def_id::LOCAL_CRATE;
 
 impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_exprs(&mut self, exprs: &[AstP<Expr>]) -> &'hir [hir::Expr<'hir>] {
@@ -302,7 +304,25 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
             let hir_id = self.lower_node_id(e.id);
             self.lower_attrs(hir_id, &e.attrs);
-            hir::Expr { hir_id, kind, span: self.lower_span(e.span) }
+            let mut expr = hir::Expr { hir_id, kind, span: self.lower_span(e.span) };
+            if self.tcx.sess.opts.unstable_opts.meta_update && !self.tcx.sess.opts.unstable_opts.meta_update_analysis{
+                if let Some(set) = self.tcx.special_types.need_unbox.get(&hir_id.owner){
+                    let local_id: u32 = hir_id.local_id.as_u32();
+                    let mut offset_id = local_id;
+                    if let Some(saved_offset) = self.metaupdate_id_offset_map.get(&hir_id.owner) {
+                        offset_id -= saved_offset;
+                    }else{
+                        self.metaupdate_id_offset_map.insert(hir_id.owner, 0);
+                    }
+
+                    if set.contains(&offset_id) {
+                        println!("Found unboxable, crate: {}, owner: {}, local: {}",self.tcx.crate_name(LOCAL_CRATE).to_string(), hir_id.owner.def_id.index(), offset_id);
+                        expr = hir::Expr{hir_id: self.next_id(), kind: hir::ExprKind::Unary(hir::UnOp::Deref, self.arena.alloc(expr)), span: DUMMY_SP};
+                        *self.metaupdate_id_offset_map.get_mut(&expr.hir_id.owner).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
+                    }
+                }
+            }
+            expr
         })
     }
 
@@ -1042,6 +1062,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                             }
 
                             if set.contains(&offset_id) {
+                                println!("Found boxable, crate: {}, owner: {}, local: {}", self.tcx.crate_name(LOCAL_CRATE).to_string(), expr.hir_id.owner.def_id.index(), offset_id);
                                 expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
                                 *self.metaupdate_id_offset_map.get_mut(&expr.hir_id.owner).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
                             }
@@ -1412,7 +1433,6 @@ impl<'hir> LoweringContext<'_, 'hir> {
             hir_id,
             ident: self.lower_ident(f.ident),
             expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains_key(&hir_id.owner) {
-                    let mut expr = self.lower_expr(&f.expr);
                     let set = self.tcx.special_types.field_exprs.get(&hir_id.owner).unwrap();
                     let mut local_id = hir_id.local_id.as_u32();
                     if let Some(offset) = self.metaupdate_id_offset_map.get_mut(&hir_id.owner) {
@@ -1421,6 +1441,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         self.metaupdate_id_offset_map.insert(hir_id.owner, 0);
                     }
 
+                    let mut expr = self.lower_expr(&f.expr);
                     if set.contains(&local_id){
                         let mut offset = expr.hir_id.local_id.as_u32();
                         expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));

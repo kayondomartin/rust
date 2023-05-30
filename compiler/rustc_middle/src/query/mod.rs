@@ -170,6 +170,19 @@ rustc_queries! {
         desc {"check whether a given type is special or not"}
         separate_provide_extern
     }
+
+    /// return the def id of the synchronize function of 
+    /// a given smart pointer ADT.
+    query get_metaupdate_synchronize_fn(key: Ty<'tcx>) -> Option<DefId> {
+        desc {"given a defId , return the synchronize function defId"}
+        separate_provide_extern
+    }
+
+    /// Whether a given type contains a special field (a field which is a smart pointer)\
+    query contains_special_ty(key: Ty<'tcx>) -> bool {
+        desc {"check whether a given type houses a smart pointer"}
+        separate_provide_extern
+    }
     
     query rust_metaupdate_trait_id(_:()) -> Option<DefId> {
         desc {"collect ll special types according to rust_meta"}    
@@ -626,6 +639,7 @@ rustc_queries! {
         cache_on_disk_if { key.is_local() }
         separate_provide_extern
     }
+    
     query adt_destructor(key: DefId) -> Option<ty::Destructor> {
         desc { |tcx| "computing `Drop` impl for `{}`", tcx.def_path_str(key) }
         cache_on_disk_if { key.is_local() }

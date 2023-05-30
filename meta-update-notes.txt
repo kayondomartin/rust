@@ -8,7 +8,7 @@ Box:
     Box is the basic pointer in Rust. It has no metadata, and its creation is
 similar to C++'s new. The difference is that Box conforms to Rust's ownership
 rules. It is still a smart pointer, it suffers from the repacking vulnerability,
-which may result in double free/drop or even UAF. However, we will not be storing Boxes in a special region. Because we would like to use them to hold housed smart pointers. 
+which may result in double free/drop or even UAF. However, we will not be storing Boxes in a special region. Because we would like to use them to hold housed smart pointers.
 
 Vec:
     This is the basic heap array in Rust. It can be seen as similar to C++'s vector,
@@ -55,7 +55,7 @@ Type IDs:
 HIR Editing:
     Because the HIR has no MutVisitor, it appears to be hard to modify HIR using a pass.
     The idea is to run HIR analysis in the first pass of the compiler. After this analysis, we save the analysis results in a json file and terminate that pass. We then re-run the compiler and use the analysis results to lower a modified HIR during the ast-to-hir lowering stage. We are currently saving HIR Ids but it would be better convert HirId's to NodeIds and then use those.
-    
+
 Generics:
     It is challenging to deal with generics. However, if can prove the covariance of all Box<T> and T for generic type T where T can be a smart pointer, then we should have no problem replacing T's with Box<T>'s in housing structures. In otherwords, we don't expect a generic field of a struct to take a smart pointer and another type such as an integer, and yet have cases where operations on integers can't happen for the smart pointer. Of course, this will require some analysis and mathematic proofs.
 
@@ -78,4 +78,7 @@ the branch to use is rust-meta-master
  ./x.py build && ./x.py install
  rustup toolchain link meta-rust ~/project-home/build/x86_64-unknown-linux-gnu/stage2/
  rustup default meta-rust
+
+linking mimalloc for mimalloc:
+RUSTFLAGS="-C passes=metaupdate --emit=llvm-ir -Z meta-update -C link-args=-Wl,-rpath-link,/home/martin/projects/metaupdate/allocators/mimalloc/out/release -L /home/martin/projects/metaupdate/allocators/mimalloc/out/release -lmimalloc" cargo rustc -- -C link-args="-Wl,-rpath,/home/martin/projects/metaupdate/allocators/mimalloc/out/release"
 

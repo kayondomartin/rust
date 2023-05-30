@@ -197,6 +197,7 @@ use crate::fmt::{self, Debug, Display};
 use crate::marker::{PhantomData, Unsize};
 use crate::mem;
 use crate::ops::{CoerceUnsized, Deref, DerefMut};
+use crate::ptr::metadata_update::MetaUpdate;
 use crate::ptr::{self, NonNull};
 
 mod lazy;
@@ -634,6 +635,13 @@ pub struct RefCell<T: ?Sized> {
 pub struct BorrowError {
     #[cfg(feature = "debug_refcell")]
     location: &'static crate::panic::Location<'static>,
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for RefCell<T> {
+    fn synchronize(&self) -> bool {
+        true
+    }
 }
 
 #[stable(feature = "try_borrow", since = "1.13.0")]

@@ -1,6 +1,8 @@
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests;
 
+use core::ptr::metadata_update::MetaUpdate;
+
 use crate::cell::UnsafeCell;
 use crate::fmt;
 use crate::ops::{Deref, DerefMut};
@@ -495,6 +497,20 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
         }
         d.field("poisoned", &self.poison.get());
         d.finish_non_exhaustive()
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for Mutex<T>{
+    fn synchronize(&self) -> bool {
+        true
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<'mutex, T: ?Sized> MetaUpdate for MutexGuard<'mutex, T> {
+    fn synchronize(&self) -> bool {
+        true
     }
 }
 

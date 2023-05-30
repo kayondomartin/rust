@@ -9,7 +9,7 @@ use rustc_middle::mir;
 use rustc_middle::mir::tcx::PlaceTy;
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutOf, TyAndLayout};
 use rustc_middle::ty::{self, Ty};
-use rustc_target::abi::{Abi, Align, FieldsShape, Int, TagEncoding};
+use rustc_target::abi::{Abi, Align, FieldsShape, Int, TagEncoding, AllocaSpecial};
 use rustc_target::abi::{VariantIdx, Variants};
 
 #[derive(Copy, Clone, Debug)]
@@ -49,7 +49,10 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         layout: TyAndLayout<'tcx>,
     ) -> Self {
         assert!(!layout.is_unsized(), "tried to statically allocate unsized place");
-        let is_special = bx.tcx().is_special_ty(layout.ty); // TODO: @kayondomartin ==> SORLAB:
+        let is_special = if bx.tcx().is_special_ty(layout.ty){AllocaSpecial::SmartPointer} else
+                         if bx.tcx().contains_special_ty(layout.ty){AllocaSpecial::SmartPointerHouse} else{
+                            AllocaSpecial::None
+                         }; // TODO: @kayondomartin ==> SORLAB:
                                                             // RustMeta
         let tmp = bx.alloca(bx.cx().backend_type(layout), layout.align.abi, is_special);
         Self::new_sized(tmp, layout)
@@ -65,7 +68,11 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         assert!(layout.is_unsized(), "tried to allocate indirect place for sized values");
         let ptr_ty = bx.cx().tcx().mk_mut_ptr(layout.ty);
         let ptr_layout = bx.cx().layout_of(ptr_ty);
-        Self::alloca(bx, ptr_layout)
+        let alloced = Self::alloca(bx, ptr_layout);
+        if bx.tcx().is_special_ty(layout.ty) || bx.tcx().contains_special_ty(layout.ty){
+            bx.mark_special_ty_alloca(alloced.llval);
+        }
+        alloced
     }
 
     pub fn len<Cx: ConstMethods<'tcx, Value = V>>(&self, cx: &Cx) -> V {
@@ -94,38 +101,72 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         let effective_field_align = self.align.restrict_for_offset(offset);
 
         let mut simple = || {
-            let llval = match self.layout.abi {
-                _ if offset.bytes() == 0 => {
-                    // Unions and newtypes only use an offset of 0.
-                    // Also handles the first field of Scalar, ScalarPair, and Vector layouts.
-                    self.llval
+            let llval = if bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit) &&
+                bx.tcx().is_special_ty(field.ty) && !bx.tcx().is_special_ty(self.layout.ty) {
+                    
+                let shadow = bx.get_smart_pointer_shadow(self.llval);
+
+                match self.layout.abi {
+                    _ if offset.bytes() == 0 => {
+                        shadow
+                    }
+                    Abi::ScalarPair(a, b)
+                        if offset == a.size(bx.cx()).align_to(b.align(bx.cx()).abi) => 
+                    {
+                        let ty = bx.backend_type(self.layout);
+                        bx.struct_gep(ty, shadow, 1)
+                    }
+                    Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } if field.is_zst() => {
+                        let byte_ptr = bx.pointercast(shadow, bx.cx().type_i8p());
+                        bx.gep(bx.cx().type_i8(), byte_ptr, &[bx.const_usize(offset.bytes())])
+                    }
+                    Abi::Scalar(_) | Abi::ScalarPair(..) => {
+                        bug!(
+                            "offset of non-ZST field `{:?}` does not match layout `{:#?}`",
+                            field,
+                            self.layout
+                        );
+                    }
+                    _ => {
+                        let ty = bx.backend_type(self.layout);
+                        bx.struct_gep(ty, shadow, bx.cx().backend_field_index(self.layout, ix))
+                    }
                 }
-                Abi::ScalarPair(a, b)
-                    if offset == a.size(bx.cx()).align_to(b.align(bx.cx()).abi) =>
-                {
-                    // Offset matches second field.
-                    let ty = bx.backend_type(self.layout);
-                    bx.struct_gep(ty, self.llval, 1)
-                }
-                Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } if field.is_zst() => {
-                    // ZST fields are not included in Scalar, ScalarPair, and Vector layouts, so manually offset the pointer.
-                    let byte_ptr = bx.pointercast(self.llval, bx.cx().type_i8p());
-                    bx.gep(bx.cx().type_i8(), byte_ptr, &[bx.const_usize(offset.bytes())])
-                }
-                Abi::Scalar(_) | Abi::ScalarPair(..) => {
-                    // All fields of Scalar and ScalarPair layouts must have been handled by this point.
-                    // Vector layouts have additional fields for each element of the vector, so don't panic in that case.
-                    bug!(
-                        "offset of non-ZST field `{:?}` does not match layout `{:#?}`",
-                        field,
-                        self.layout
-                    );
-                }
-                _ => {
-                    let ty = bx.backend_type(self.layout);
-                    bx.struct_gep(ty, self.llval, bx.cx().backend_field_index(self.layout, ix))
+            } else {
+                match self.layout.abi {
+                    _ if offset.bytes() == 0 => {
+                        // Unions and newtypes only use an offset of 0.
+                        // Also handles the first field of Scalar, ScalarPair, and Vector layouts.
+                        self.llval
+                    }
+                    Abi::ScalarPair(a, b)
+                        if offset == a.size(bx.cx()).align_to(b.align(bx.cx()).abi) =>
+                    {
+                        // Offset matches second field.
+                        let ty = bx.backend_type(self.layout);
+                        bx.struct_gep(ty, self.llval, 1)
+                    }
+                    Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } if field.is_zst() => {
+                        // ZST fields are not included in Scalar, ScalarPair, and Vector layouts, so manually offset the pointer.
+                        let byte_ptr = bx.pointercast(self.llval, bx.cx().type_i8p());
+                        bx.gep(bx.cx().type_i8(), byte_ptr, &[bx.const_usize(offset.bytes())])
+                    }
+                    Abi::Scalar(_) | Abi::ScalarPair(..) => {
+                        // All fields of Scalar and ScalarPair layouts must have been handled by this point.
+                        // Vector layouts have additional fields for each element of the vector, so don't panic in that case.
+                        bug!(
+                            "offset of non-ZST field `{:?}` does not match layout `{:#?}`",
+                            field,
+                            self.layout
+                        );
+                    }
+                    _ => {
+                        let ty = bx.backend_type(self.layout);
+                        bx.struct_gep(ty, self.llval, bx.cx().backend_field_index(self.layout, ix))
+                    }
                 }
             };
+            //bx.mark_field_projection(llval, ix);
             PlaceRef {
                 // HACK(eddyb): have to bitcast pointers until LLVM removes pointee types.
                 llval: bx.pointercast(llval, bx.cx().type_ptr_to(bx.cx().backend_type(field))),

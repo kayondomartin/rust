@@ -510,6 +510,13 @@ pub struct Align {
     pow2: u8,
 }
 
+
+pub enum AllocaSpecial {
+    SmartPointer,
+    SmartPointerHouse,
+    None
+}
+
 // This is debug-printed a lot in larger structs, don't waste too much space there
 impl fmt::Debug for Align {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

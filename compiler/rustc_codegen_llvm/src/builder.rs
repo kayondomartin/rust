@@ -2,7 +2,8 @@ use crate::abi::FnAbiLlvmExt;
 use crate::attributes;
 use crate::common::Funclet;
 use crate::context::CodegenCx;
-use crate::llvm::{self, AtomicOrdering, AtomicRmwBinOp, BasicBlock, LLVMSetSmartPointerMetadata};
+use crate::llvm::{self, AtomicOrdering, AtomicRmwBinOp, BasicBlock, LLVMSetSmartPointerMetadata, LLVMSetSmartPointerHouseMetadata};
+use crate::metaupdate::{get_smart_pointer_shadow, self};
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
@@ -20,6 +21,7 @@ use rustc_middle::ty::layout::{
 };
 use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_span::Span;
+use rustc_target::abi::AllocaSpecial;
 use rustc_target::abi::{self, call::FnAbi, Align, Size, WrappingRange};
 use rustc_target::spec::{HasTargetSpec, Target};
 use std::borrow::Cow;
@@ -253,6 +255,65 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
+    //RustMeta - SORLAB: @kayondomartin
+    fn mark_cached_exchange_malloc(&self, exchange_malloc: &'ll Value,  inner_ty_id: u64) {
+        unsafe{
+            llvm::LLVMMarkExchangeMallocCall(exchange_malloc, inner_ty_id);
+            match self.tcx.sess.opts.cg.opt_level.as_ref() {
+                "0"|"1" => {},
+                _ => {
+                    if self.tcx.sess.opts.unstable_opts.meta_update {
+                        llvm::LLVMStoreTDIIndex(exchange_malloc, inner_ty_id);
+                    }
+                }
+            }
+        }
+    }
+
+    //RustMeta - SORLAB: @kayondomartin
+    fn mark_special_ty_alloca(&self, alloca: Self::Value) {
+        unsafe {
+            llvm::LLVMSetSmartPointerMetadata(alloca);
+        }
+    }
+
+    //RustMeta - SORLAB: @kayondomartin
+    fn project_smart_pointer_field(&self, val: Self::Value) -> Self::Value{
+        unsafe {
+            llvm::LLVMRustMetaGetSmartPointerProjection(val)
+        }
+    }
+
+    fn get_smart_pointer_shadow(&mut self, val: Self::Value) -> Self::Value {
+        get_smart_pointer_shadow(self, val)
+    }
+
+    fn copy_smart_pointers(&mut self, src: Self::Value, src_ty: Ty<'tcx>, dst: Self::Value, dst_ty: Ty<'tcx>, align: Align, flags: MemFlags) {
+        metaupdate::copy_smart_pointers(src, src_ty, dst, dst_ty, self, align, flags);
+    }
+
+    //RustMeta - SORLAB: @kayondomartin
+    fn mark_field_projection(&self, inst: Self::Value, field_idx: usize) {
+        unsafe {
+            llvm::LLVMMarkFieldProjection(inst, field_idx);
+        }
+    }
+
+    fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64) {
+        unsafe {
+            llvm::LLVMMarkExchangeMallocCall(smp_api_call, inner_ty_id);
+            match self.tcx.sess.opts.cg.opt_level.as_ref() {
+                "0"|"1" => {},
+                _ => {
+                    if self.tcx.sess.opts.unstable_opts.meta_update {
+                        llvm::LLVMStoreTDIIndex(smp_api_call, inner_ty_id);
+                    }
+                }
+            }
+
+        }
+    }
+
     builder_methods_for_value_instructions! {
         add(a, b) => LLVMBuildAdd,
         fadd(a, b) => LLVMBuildFAdd,
@@ -412,14 +473,21 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     }
 
     // TODO: @rust-meta: mark special allocas
-    fn alloca(&mut self, ty: &'ll Type, align: Align, is_special: bool) -> &'ll Value {
+    fn alloca(&mut self, ty: &'ll Type, align: Align, is_special: AllocaSpecial ) -> &'ll Value {
         let mut bx = Builder::with_cx(self.cx);
         bx.position_at_start(unsafe { llvm::LLVMGetFirstBasicBlock(self.llfn()) });
         unsafe {
             let alloca = llvm::LLVMBuildAlloca(bx.llbuilder, ty, UNNAMED);
             llvm::LLVMSetAlignment(alloca, align.bytes() as c_uint);
-            if is_special {
-                LLVMSetSmartPointerMetadata(alloca);
+
+            match is_special {
+                AllocaSpecial::SmartPointer => {
+                    LLVMSetSmartPointerMetadata(alloca);
+                },
+                AllocaSpecial::SmartPointerHouse => {
+                    LLVMSetSmartPointerHouseMetadata(alloca);
+                },
+                _ => {}
             }
             alloca
         }

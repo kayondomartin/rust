@@ -14,6 +14,7 @@ use rustc_codegen_ssa::traits::*;
 
 use rustc_middle::ty::layout::{FnAbiOf, HasTyCtxt};
 use rustc_middle::ty::{self, Instance, TypeVisitable};
+use rustc_target::abi::call::Conv;
 
 /// Codegens a reference to a fn/method item, monomorphizing and
 /// inlining as it goes.
@@ -196,5 +197,10 @@ pub fn get_fn<'ll, 'tcx>(cx: &CodegenCx<'ll, 'tcx>, instance: Instance<'tcx>) ->
 
     cx.instances.borrow_mut().insert(instance, llfn);
 
+    if fn_abi.conv != Conv::Rust {
+        unsafe {
+            llvm::LLVMRustMarkExternFunc(llfn);
+        }
+    }
     llfn
 }

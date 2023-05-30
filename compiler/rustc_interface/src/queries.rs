@@ -130,10 +130,10 @@ impl<'tcx> Queries<'tcx> {
         })
     }
     
-    pub fn special_types(&self) -> Result<&Query<SpecialTypes>>{
+    pub fn special_types(&self, crate_name: &str) -> Result<&Query<SpecialTypes>>{
         self.special_types.compute(||{
-            let special_types = load_metaupdate_analysis();
-            Ok(SpecialTypes { fields: special_types.fields.clone(), field_exprs: special_types.field_exprs.clone() })
+            let special_types = load_metaupdate_analysis(crate_name);
+            Ok(SpecialTypes { fields: special_types.fields.clone(), field_exprs: special_types.field_exprs.clone(), need_unbox: special_types.unbox_exprs.clone()})
         })
     }
 
@@ -232,7 +232,7 @@ impl<'tcx> Queries<'tcx> {
             let dep_graph = self.dep_graph()?.peek().clone();
             let (krate, resolver, lint_store) = self.expansion()?.take();
             let special_types = if self.compiler.session().opts.unstable_opts.meta_update && !self.compiler.session().opts.unstable_opts.meta_update_analysis {
-                Some(Lrc::new(self.special_types()?.peek().clone()))
+                Some(Lrc::new(self.special_types(crate_name.as_str())?.peek().clone()))
             }else{
                 None
             };
