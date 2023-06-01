@@ -14,7 +14,6 @@ use libc::{c_char, c_int, c_uint, size_t};
 use libc::{c_ulonglong, c_void};
 
 use std::marker::PhantomData;
-use std::os::raw::c_uint;
 
 use super::RustString;
 

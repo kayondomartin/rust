@@ -258,8 +258,8 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     //RustMeta - SORLAB: @kayondomartin
     fn mark_cached_exchange_malloc(&self, exchange_malloc: &'ll Value,  inner_ty_id: u64) {
         unsafe{
-            let enableMPK = if self.tcx.sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit){1}else{0};
-            llvm::LLVMMarkExchangeMallocCall(exchange_malloc, inner_ty_id, enableMPK);
+            let enable_mpk = if self.tcx.sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit){1}else{0};
+            llvm::LLVMMarkExchangeMallocCall(exchange_malloc, inner_ty_id, enable_mpk);
             match self.tcx.sess.opts.cg.opt_level.as_ref() {
                 "0"|"1" => {},
                 _ => {
@@ -306,8 +306,8 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
 
     fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64) {
         unsafe {
-            let enableMPK = if self.tcx.sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit){1}else{0};
-            llvm::LLVMMarkExchangeMallocCall(smp_api_call, inner_ty_id, enableMPK);
+            let enable_mpk = if self.tcx.sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit){1}else{0};
+            llvm::LLVMMarkExchangeMallocCall(smp_api_call, inner_ty_id, enable_mpk);
             match self.tcx.sess.opts.cg.opt_level.as_ref() {
                 "0"|"1" => {},
                 _ => {
