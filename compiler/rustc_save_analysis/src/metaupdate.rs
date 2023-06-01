@@ -210,7 +210,7 @@ impl<'tcx> DumpVisitor<'tcx> {
     }
 
     pub fn dump_metaupdate_special_types(&mut self){
-        self.tcx.hir().visit_all_item_likes_in_crate(self);
+        //self.tcx.hir().visit_all_item_likes_in_crate(self);
         self.save();
     }
 
