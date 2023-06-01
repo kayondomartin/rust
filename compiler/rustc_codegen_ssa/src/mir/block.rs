@@ -183,11 +183,13 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
             // RustMeta - SORLAB @kayondomartin
             if fx.generating_exchange_malloc {
                 fx.cached_exchange_malloc.push(invokeret);
+                bx.do_not_inline(invokeret);
                 fx.generating_exchange_malloc = false;
             }
 
             if let Some(inner_ty_id) = fx.smart_pointer_inner_ty {
                 bx.set_smart_pointer_type_on_call(invokeret, inner_ty_id);
+                bx.do_not_inline(invokeret);
                 fx.smart_pointer_inner_ty = None;
             }
 
@@ -215,11 +217,13 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
 
             if fx.generating_exchange_malloc {
                 fx.cached_exchange_malloc.push(llret);
+                bx.do_not_inline(llret);
                 fx.generating_exchange_malloc = false;
             }
 
             if let Some(inner_ty_id) = fx.smart_pointer_inner_ty {
                 bx.set_smart_pointer_type_on_call(llret, inner_ty_id);
+                bx.do_not_inline(llret);
                 fx.smart_pointer_inner_ty = None;
             }
 
@@ -762,27 +766,41 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         // RustMeta - SORLAB@kayondomartin
         if !self.is_special {
-            if let Some(id) = def {
-                if let Some(ex_id) = bx.tcx().lang_items().exchange_malloc_fn(){
-                    if id.def_id() == ex_id {
-                        self.generating_exchange_malloc = true;
-                    }
-                }
-                
-                if let Some(impl_did) = bx.tcx().impl_of_method(id.def_id()){
+            let mut inlined_from_special = false;
+            if let Some(inlined_from) = terminator.source_info.scope.inlined_instance(&self.mir.source_scopes){
+                if let Some(impl_did) = bx.tcx().impl_of_method(inlined_from.def.def_id()){
                     let impl_type =   match bx.tcx().try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), bx.tcx().type_of(impl_did)) {
                         Ok(t) => t,
                         _ => bx.tcx().type_of(impl_did)
                     };
                     //let owner_ty = self.monomorphize(impl_type);
-                    if impl_type.is_adt() && bx.tcx().is_special_ty(impl_type) {
-                        for type_ in instance.unwrap().substs.types() {
-                            let inner_ty = self.monomorphize(type_);
-                            let type_id = if bx.tcx().is_special_ty(inner_ty) ||
-                            (bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Implicit) &&
-                             bx.tcx().contains_special_ty(inner_ty)){ 1 }else{bx.tcx().type_id_hash(inner_ty)};
-                            self.smart_pointer_inner_ty = Some(type_id);
-                            break;
+                    inlined_from_special = impl_type.is_adt() && bx.tcx().is_special_ty(impl_type);
+                }
+            }
+
+            if !inlined_from_special {
+                if let Some(id) = def {
+                    if let Some(ex_id) = bx.tcx().lang_items().exchange_malloc_fn(){
+                        if id.def_id() == ex_id {
+                            self.generating_exchange_malloc = true;
+                        }
+                    }
+                    
+                    if let Some(impl_did) = bx.tcx().impl_of_method(id.def_id()){
+                        let impl_type =   match bx.tcx().try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), bx.tcx().type_of(impl_did)) {
+                            Ok(t) => t,
+                            _ => bx.tcx().type_of(impl_did)
+                        };
+                        //let owner_ty = self.monomorphize(impl_type);
+                        if impl_type.is_adt() && bx.tcx().is_special_ty(impl_type) {
+                            for type_ in instance.unwrap().substs.types() {
+                                let inner_ty = self.monomorphize(type_);
+                                let type_id = if bx.tcx().is_special_ty(inner_ty) ||
+                                (bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Implicit) &&
+                                bx.tcx().contains_special_ty(inner_ty)){ 1 }else{bx.tcx().type_id_hash(inner_ty)};
+                                self.smart_pointer_inner_ty = Some(type_id);
+                                break;
+                            }
                         }
                     }
                 }

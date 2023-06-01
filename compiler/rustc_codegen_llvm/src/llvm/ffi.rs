@@ -14,6 +14,7 @@ use libc::{c_char, c_int, c_uint, size_t};
 use libc::{c_ulonglong, c_void};
 
 use std::marker::PhantomData;
+use std::os::raw::c_uint;
 
 use super::RustString;
 
@@ -1073,7 +1074,7 @@ extern "C" {
         // RustMeta: SORLAB@kayondomartin: exchange malloc api function
         pub fn LLVMMarkExchangeMallocFunc(Val: &Value);
         // RustMeta: SORLAB@kayondomartin: exchange malloc call
-        pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeID: c_ulonglong);
+        pub fn LLVMMarkExchangeMallocCall(Val: &Value, TypeID: c_ulonglong, EnableMPK: c_uint);
         // RustMeta: SORLAB@kayondomartin: set smart pointer inner type on call
         //pub fn LLVMSetSmartPointerTypeOnCall(Val: &Value, TypeName: &Type, Is)
         // RustMeta: SORLAB@kayondomartin: mark extern functions with appropriate metadata.
