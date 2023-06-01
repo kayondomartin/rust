@@ -1,6 +1,6 @@
 use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_hir as hir;
-use std::{path::Path, io::{Write, Read}, fs::{OpenOptions, File}};
+use std::{path::Path, io::{Write}, fs::{OpenOptions}};
 use serde::{Serialize, Deserialize};
 use rustc_middle::{ty::{TyCtxt, List, ParamEnv, self}};
 use hir::{intravisit::Visitor, def_id::{DefId, LocalDefId, LOCAL_CRATE}, Expr, ExprKind, Node};
@@ -78,7 +78,7 @@ impl ExternStructField {
     }
 }
 
-impl JsonExternStructField {
+/*impl JsonExternStructField {
     fn to_extern_struct_field(&self) -> ExternStructField {
         ExternStructField {
             field_hir_id: hir::HirId {owner: hir::OwnerId{def_id: LocalDefId::new(self.field_owner)}, local_id: hir::ItemLocalId::from(self.field_local_idx)},
@@ -98,7 +98,7 @@ impl JsonExternStructField {
             }).collect(),
         }
     }
-}
+}*/
 
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonObject {
@@ -383,7 +383,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
     }
 }
 
-pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
+pub fn load_metaupdate_analysis(_crate_name: &str) -> SpecialTypes{
     /*if !Path::new("/tmp/metaupdate").exists() {
         panic!("No metaupdate folder for loading analysis results!");
     }
@@ -437,5 +437,5 @@ pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
             }
         }
     }*/
-    SpecialTypes::default();
+    SpecialTypes::default()
 }
