@@ -180,7 +180,7 @@ impl<'tcx> DumpVisitor<'tcx> {
             trait_id: None
         };
 
-        if Path::new("/tmp/metaupdate").exists() {
+        /*if Path::new("/tmp/metaupdate").exists() {
             let file_path = Path::new("/tmp/metaupdate").join("special_types.json");
             let mut buffer = String::new();
             match File::open(file_path) {
@@ -197,7 +197,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                 }
                 _ => {}
             }
-        }
+        }*/
 
         for trait_id in tcx.all_traits(){
             if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
@@ -384,7 +384,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx>{
 }
 
 pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
-    if !Path::new("/tmp/metaupdate").exists() {
+    /*if !Path::new("/tmp/metaupdate").exists() {
         panic!("No metaupdate folder for loading analysis results!");
     }
 
@@ -436,6 +436,6 @@ pub fn load_metaupdate_analysis(crate_name: &str) -> SpecialTypes{
                 }
             }
         }
-    }
-    special_types
+    }*/
+    SpecialTypes::default();
 }
