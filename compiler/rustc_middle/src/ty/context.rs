@@ -575,6 +575,8 @@ pub struct GlobalCtxt<'tcx> {
 
     /// Stores memory for globals (statics/consts).
     pub(crate) alloc_map: Lock<interpret::AllocMap<'tcx>>,
+
+    pub def_id_to_node_id_table: Lock<IndexVec<LocalDefId, ast::NodeId>>,
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
@@ -721,6 +723,7 @@ impl<'tcx> TyCtxt<'tcx> {
             selection_cache: Default::default(),
             evaluation_cache: Default::default(),
             new_solver_evaluation_cache: Default::default(),
+            def_id_to_node_id_table: Default::default(),
             data_layout,
             alloc_map: Lock::new(interpret::AllocMap::new()),
         }
@@ -859,6 +862,10 @@ impl<'tcx> TyCtxt<'tcx> {
             stable_crate_id.as_u64() >> (8 * 6),
             self.def_path(def_id).to_string_no_crate_verbose()
         )
+    }
+
+    pub fn init_node_id_table(self, table: IndexVec<LocalDefId, ast::NodeId>) {
+        *self.def_id_to_node_id_table.borrow_mut() = table;
     }
 }
 
@@ -2057,4 +2064,7 @@ pub fn provide(providers: &mut Providers) {
         tcx.lang_items().panic_impl().is_some_and(|did| did.is_local())
     };
     providers.source_span = |tcx, def_id| tcx.untracked.source_span.get(def_id).unwrap_or(DUMMY_SP);
+
+    // TODO: is it safe to call `expect_local`?
+    providers.def_id_to_node_id = |tcx, def_id| tcx.def_id_to_node_id_table.borrow().get(def_id.expect_local()).map(|id| *id);
 }

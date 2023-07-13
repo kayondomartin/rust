@@ -2203,6 +2203,10 @@ rustc_queries! {
     query generics_require_sized_self(def_id: DefId) -> bool {
         desc { "check whether the item has a `where Self: Sized` bound" }
     }
+
+    query def_id_to_node_id(def_id: DefId) -> Option<ast::NodeId> {
+        desc { "get ast NodeId from hir DefId" }
+    }
 }
 
 rustc_query_append! { define_callbacks! }

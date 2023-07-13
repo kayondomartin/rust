@@ -205,6 +205,7 @@ trivial! {
     bool,
     Option<(rustc_span::def_id::DefId, rustc_session::config::EntryFnType)>,
     Option<rustc_ast::expand::allocator::AllocatorKind>,
+    Option<rustc_ast::NodeId>,
     Option<rustc_attr::ConstStability>,
     Option<rustc_attr::DefaultBodyStability>,
     Option<rustc_attr::Stability>,
