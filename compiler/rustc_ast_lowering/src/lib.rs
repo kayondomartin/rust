@@ -454,8 +454,11 @@ pub fn lower_to_hir(tcx: TyCtxt<'_>, (): ()) -> hir::Crate<'_> {
         .lower_node(def_id);
     }
 
-    // TODO: clone only necessary ids
+    // MyTodo: clone only necessary ids
     tcx.init_node_id_table(resolver.def_id_to_node_id.clone());
+    
+    // Debug Purpose (MyTodo: remove this line)
+    tcx.dump_node_id_table("dump 1");
 
     // Drop AST to free memory
     drop(ast_index);

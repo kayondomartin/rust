@@ -791,6 +791,10 @@ impl<'tcx> TyCtxt<'tcx> {
         }
     }
 
+    pub fn dump_node_id_table(self, prefix: &str) {
+        eprintln!("{prefix}{:?}", self.def_id_to_node_id_table.borrow());
+    }
+
     #[inline]
     pub fn def_path_hash(self, def_id: DefId) -> rustc_hir::definitions::DefPathHash {
         // Accessing the DefPathHash is ok, it is incr. comp. stable.

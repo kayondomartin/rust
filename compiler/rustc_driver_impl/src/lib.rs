@@ -446,12 +446,18 @@ fn run_compiler(
                 sess.code_stats.print_type_sizes();
             }
 
+            // Debug Purpose (MyTodo: remove this line)
+            queries.global_ctxt()?.enter(|tcx| tcx.dump_node_id_table("dump 2"));
+
             if sess.opts.unstable_opts.print_vtable_sizes {
                 let crate_name =
                     compiler.session().opts.crate_name.as_deref().unwrap_or("<UNKNOWN_CRATE>");
 
                 sess.code_stats.print_vtable_sizes(crate_name);
             }
+
+            // Debug Purpose (MyTodo: remove this line)
+            queries.global_ctxt()?.enter(|tcx| tcx.dump_node_id_table("dump 3"));
 
             let linker = queries.linker(ongoing_codegen)?;
             Ok(Some(linker))
