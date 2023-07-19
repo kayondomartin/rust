@@ -8,6 +8,7 @@ use core::marker::PhantomData;
 use core::mem::{self, ManuallyDrop};
 use core::ops::{Index, RangeBounds};
 use core::ptr;
+use core::ptr::metadata_update::MetaUpdate;
 
 use crate::alloc::{Allocator, Global};
 
@@ -180,6 +181,15 @@ pub struct BTreeMap<
     pub(super) alloc: ManuallyDrop<A>,
     // For dropck; the `Box` avoids making the `Unpin` impl more strict than before
     _marker: PhantomData<crate::boxed::Box<(K, V)>>,
+}
+
+/// BtreeMap is a smart pointer, so implement MetaUpdate for it
+/// for now, this is boilerplate
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<K,V> MetaUpdate for BTreeMap<K,V> {
+    fn synchronize(&self) -> bool {
+        true
+    }
 }
 
 #[stable(feature = "btree_drop", since = "1.7.0")]

@@ -31,7 +31,7 @@ use std::slice;
 /// Note: the `PartialEq`, `Eq` and `Hash` derives are only valid because `Ty`,
 /// `Region` and `Const` are all interned.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct GenericArg<'tcx> {
+pub struct  GenericArg<'tcx> {
     ptr: NonZeroUsize,
     marker: PhantomData<(Ty<'tcx>, ty::Region<'tcx>, ty::Const<'tcx>)>,
 }

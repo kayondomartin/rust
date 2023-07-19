@@ -14,6 +14,7 @@ use crate::ty::{List, ParamEnv};
 use hir::def::DefKind;
 use polonius_engine::Atom;
 use rustc_data_structures::captures::Captures;
+//use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::intern::Interned;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -1910,6 +1911,22 @@ impl<'tcx> Ty<'tcx> {
         let cf = self.visit_with(&mut ContainsTyVisitor(other));
         cf.is_break()
     }
+
+    /*/// Checks whether a type is a smart pointer
+    /// Recursively checks if all fields are smart pointers.
+    pub fn is_special(self) -> bool {
+        if self.is_box() || self.is_fn_ptr() || self.is_dyn_star() || self.is_closure() || self.is_generator() || self.is_trait() {
+            return true;
+        }
+
+        struct SmartPointerTyVisitor<'tcx>(Ty<'tcx>);
+
+        impl<'tcx> TypeVisitor<'tcx> for SmartPointerTyVisitor<'tcx> {
+            fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
+                
+            }
+        }
+    }*/
 
     /// Returns the type and mutability of `*ty`.
     ///

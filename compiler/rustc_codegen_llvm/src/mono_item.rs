@@ -1,3 +1,4 @@
+
 use crate::attributes;
 use crate::base;
 use crate::context::CodegenCx;
@@ -58,6 +59,37 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
         base::set_link_section(lldecl, attrs);
         if linkage == Linkage::LinkOnceODR || linkage == Linkage::WeakODR {
             llvm::SetUniqueComdat(self.llmod, lldecl);
+        }
+
+        // test if this is a special function
+        // Notes: we need to normalize (use normalize erasing regions) the substs types, we need to figure out a way of indexing them types and send the type_index.
+        if let Some(impl_did) = self.tcx.impl_of_method(instance.def_id()) {
+            let impl_type =   match self.tcx.try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), self.tcx.type_of(impl_did)) {
+                Ok(t) => t,
+                _ => self.tcx.type_of(impl_did)
+            };
+
+            if self.tcx.is_special_ty(impl_type) {
+                for type_ in instance.substs.types() {
+                    let inner_ty = self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), type_);
+                    let mut type_id = self.tcx.type_id_hash(inner_ty);
+                    if self.tcx.is_special_ty(inner_ty) {
+                        type_id = 0;
+                    }
+                    unsafe {
+                        llvm::LLVMSetSmartPointerAPIMetadata(lldecl, type_id);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if let Some(fun) = self.tcx.lang_items().exchange_malloc_fn(){
+            if instance.def_id() == fun {
+                unsafe {
+                    llvm::LLVMMarkExchangeMallocFunc(lldecl);
+                }
+            }
         }
 
         // If we're compiling the compiler-builtins crate, e.g., the equivalent of

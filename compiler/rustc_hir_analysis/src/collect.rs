@@ -62,6 +62,10 @@ pub fn provide(providers: &mut Providers) {
     *providers = Providers {
         opt_const_param_of: type_of::opt_const_param_of,
         type_of: type_of::type_of,
+        rust_metaupdate_trait_id,
+        is_special_ty: type_of::is_special_ty,
+        get_metaupdate_synchronize_fn: type_of::get_metaupdate_synchronize_fn,
+        contains_special_ty: type_of::contains_special_ty,
         item_bounds: item_bounds::item_bounds,
         explicit_item_bounds: item_bounds::explicit_item_bounds,
         generics_of: generics_of::generics_of,
@@ -568,7 +572,7 @@ fn get_new_lifetime_name<'tcx>(
     (1..).flat_map(a_to_z_repeat_n).find(|lt| !existing_lifetimes.contains(lt.as_str())).unwrap()
 }
 
-fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) {
+fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) { // TODO: @kayondomartin interested!! what are converting to & from?
     let it = tcx.hir().item(item_id);
     debug!("convert: item {} with id {}", it.ident, it.hir_id());
     let def_id = item_id.owner_id.def_id;
@@ -627,6 +631,7 @@ fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) {
             tcx.at(it.span).super_predicates_of(def_id);
             tcx.ensure().predicates_of(def_id);
         }
+        // TODO: @kayondomartin interested!!!
         hir::ItemKind::Struct(ref struct_def, _) | hir::ItemKind::Union(ref struct_def, _) => {
             tcx.ensure().generics_of(def_id);
             tcx.ensure().type_of(def_id);
@@ -851,7 +856,7 @@ fn convert_variant(
     )
 }
 
-fn adt_def<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> ty::AdtDef<'tcx> {
+fn adt_def<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> ty::AdtDef<'tcx> {// TODO: @kayondomartin interested!!! how is this different from convert type?
     use rustc_hir::*;
 
     let def_id = def_id.expect_local();
@@ -1402,6 +1407,17 @@ fn predicates_defined_on(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericPredicate
 
     debug!("predicates_defined_on({:?}) = {:?}", def_id, result);
     result
+}
+
+fn rust_metaupdate_trait_id(tcx: TyCtxt<'_>, ():()) -> Option<DefId> {
+    if tcx.sess.opts.unstable_opts.meta_update {
+        for trait_id in tcx.all_traits() {
+            if tcx.item_name(trait_id).as_str() == "MetaUpdate" {
+                return Some(trait_id);
+            }
+        }
+    }
+    None
 }
 
 fn compute_sig_of_foreign_fn_decl<'tcx>(

@@ -800,6 +800,8 @@ fn test_unstable_options_tracking_hash() {
     tracked!(verify_llvm_ir, true);
     tracked!(virtual_function_elimination, true);
     tracked!(wasi_exec_model, Some(WasiExecModel::Reactor));
+    tracked!(meta_update, Some(true));
+    tracked!(meta_update_analysis, Some(false));
     // tidy-alphabetical-end
 
     macro_rules! tracked_no_crate_hash {

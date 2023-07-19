@@ -408,6 +408,8 @@ mod desc {
         "a `,` separated combination of `bti`, `b-key`, `pac-ret`, or `leaf`";
     pub const parse_proc_macro_execution_strategy: &str =
         "one of supported execution strategies (`same-thread`, or `cross-thread`)";
+    pub const parse_meta_update_struct_kind: &str = "one of `explicit` or `implicit'";
+    pub const parse_meta_update_prot_kind: &str = "one of `guard-page`, `mpk` or `mte`";
 }
 
 mod parse {
@@ -688,6 +690,42 @@ mod parse {
         } else {
             false
         }
+    }
+    
+    //RustMeta-SORLAB@kayondomartin
+    pub(crate) fn parse_meta_update_prot_kind(slot: &mut Option<MetaUpdateProtKind>, v: Option<&str>) -> bool {
+        match v {
+            Some("mpk") => {
+                *slot = Some(MetaUpdateProtKind::IntelMPK);
+            },
+            Some("mte") => {
+                *slot = Some(MetaUpdateProtKind::ARMMTE);
+            },
+            Some("guard-page") => {
+                *slot = Some(MetaUpdateProtKind::GaurdPage);
+            },
+            
+            _ => {
+                *slot = Some(MetaUpdateProtKind::GaurdPage);
+            }
+        };
+        true
+    }
+    
+    pub(crate) fn parse_meta_update_struct_kind(slot: &mut Option<MetaUpdateStructKind>, v: Option<&str>) -> bool {
+        match v {
+            Some("explicit") => {
+                * slot = Some(MetaUpdateStructKind::Explicit);
+            },
+            Some("implicit") => {
+                *slot = Some(MetaUpdateStructKind::Implicit);
+            },
+            
+            _ => {
+                *slot  = Some(MetaUpdateStructKind::Implicit);
+            }
+        };
+        true
     }
 
     pub(crate) fn parse_sanitizer_memory_track_origins(slot: &mut usize, v: Option<&str>) -> bool {
@@ -1649,7 +1687,17 @@ options! {
     wasi_exec_model: Option<WasiExecModel> = (None, parse_wasi_exec_model, [TRACKED],
         "whether to build a wasi command or reactor"),
     // tidy-alphabetical-end
-
+    //rust-meta by SORLAB@kayondomartin
+    meta_update: bool = (false, parse_bool, [TRACKED],
+                         "enables rust-metadata update protection by SORLAB"),
+    meta_update_analysis: bool = (true, parse_bool, [TRACKED], "enables rust-medata update analysis by SORLAB"),
+    meta_update_struct_kind: Option<MetaUpdateStructKind> = (Some(MetaUpdateStructKind::Implicit), parse_meta_update_struct_kind, [TRACKED],
+                                                             "how to handle structs housing smart pointers. \
+                                                             Requires `-meta-update[=[on,yes]]`"),
+    meta_update_prot_kind: Option<MetaUpdateProtKind> = (Some(MetaUpdateProtKind::GaurdPage), parse_meta_update_prot_kind, [TRACKED],
+                                                         "how to protect the smart pointer region. \
+                                                         Requires `-meta-update[=[on,yes]]`"),
+    // TODO: add tests for the above three @kayondomartin
     // If you add a new option, please update:
     // - compiler/rustc_interface/src/tests.rs
 }

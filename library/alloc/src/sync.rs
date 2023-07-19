@@ -25,6 +25,7 @@ use core::mem::{self, align_of_val_raw};
 use core::ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver};
 use core::panic::{RefUnwindSafe, UnwindSafe};
 use core::pin::Pin;
+use core::ptr::metadata_update::MetaUpdate;
 use core::ptr::{self, NonNull};
 #[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
@@ -1710,6 +1711,13 @@ unsafe impl<#[may_dangle] T: ?Sized> Drop for Arc<T> {
         unsafe {
             self.drop_slow();
         }
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T> MetaUpdate for Arc<T>{
+    fn synchronize(&self) -> bool {
+        true
     }
 }
 

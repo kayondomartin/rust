@@ -297,7 +297,12 @@ impl<'a, 'tcx, V: CodegenObject> OperandValue<V> {
                     bx.store_with_flags(val, dest.llval, dest.align, flags);
                     return;
                 }
-                base::memcpy_ty(bx, dest.llval, dest.align, r, source_align, dest.layout, flags)
+                base::memcpy_ty(bx, dest.llval, dest.align, r, source_align, dest.layout, flags);
+                if  bx.tcx().sess.opts.unstable_opts.meta_update && bx.tcx().sess.opts.unstable_opts.meta_update_struct_kind.unwrap().eq(&rustc_session::config::MetaUpdateStructKind::Explicit) {
+                    if dest.layout.size.bytes() != 0 {
+                        bx.copy_smart_pointers(r, bx.tcx().mk_mut_ptr(dest.layout.ty), dest.llval, dest.layout.ty, dest.align, flags);
+                    }
+                }
             }
             OperandValue::Ref(_, Some(_), _) => {
                 bug!("cannot directly store unsized values");
@@ -314,11 +319,13 @@ impl<'a, 'tcx, V: CodegenObject> OperandValue<V> {
                 let b_offset = a_scalar.size(bx).align_to(b_scalar.align(bx).abi);
 
                 let llptr = bx.struct_gep(ty, dest.llval, 0);
+                //bx.mark_field_projection(llptr, 0); //RustMeta
                 let val = bx.from_immediate(a);
                 let align = dest.align;
                 bx.store_with_flags(val, llptr, align, flags);
 
                 let llptr = bx.struct_gep(ty, dest.llval, 1);
+                //bx.mark_field_projection(llptr, 1); //RustMeta
                 let val = bx.from_immediate(b);
                 let align = dest.align.restrict_for_offset(b_offset);
                 bx.store_with_flags(val, llptr, align, flags);

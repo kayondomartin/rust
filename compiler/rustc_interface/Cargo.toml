@@ -47,6 +47,7 @@ rustc_query_impl = { path = "../rustc_query_impl" }
 rustc_resolve = { path = "../rustc_resolve" }
 rustc_trait_selection = { path = "../rustc_trait_selection" }
 rustc_ty_utils = { path = "../rustc_ty_utils" }
+rustc_save_analysis ={ path = "../rustc_save_analysis"}
 
 [dev-dependencies]
 rustc_target = { path = "../rustc_target" }

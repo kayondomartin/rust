@@ -314,6 +314,8 @@
 #![feature(maybe_uninit_uninit_array)]
 #![feature(const_maybe_uninit_uninit_array)]
 #![feature(const_waker)]
+// RustMeta - SORLAB@kayondomartin
+#![feature(metadata_update)]
 //
 // Library features (alloc):
 #![feature(alloc_layout_extra)]

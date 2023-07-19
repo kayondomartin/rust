@@ -1031,6 +1031,19 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
     }
 }
 
+#[derive(Default)]
+pub struct SpecialTypes {
+    pub fields: FxHashSet<HirId>,
+    pub field_exprs: FxHashMap<hir::OwnerId, FxHashSet<u32>>,
+    pub need_unbox: FxHashMap<hir::OwnerId, FxHashSet<u32>>
+}
+
+impl Clone for SpecialTypes{
+    fn clone(&self) -> Self {
+        Self { fields: self.fields.clone(), field_exprs: self.field_exprs.clone(), need_unbox: self.need_unbox.clone() }
+    }
+}
+
 pub struct GlobalCtxt<'tcx> {
     pub arena: &'tcx WorkerLocal<Arena<'tcx>>,
     pub hir_arena: &'tcx WorkerLocal<hir::Arena<'tcx>>,
@@ -1066,6 +1079,7 @@ pub struct GlobalCtxt<'tcx> {
     /// The entire crate as AST. This field serves as the input for the hir_crate query,
     /// which lowers it from AST to HIR. It must not be read or used by anything else.
     pub untracked_crate: Steal<Lrc<ast::Crate>>,
+    pub special_types: Lrc<SpecialTypes>,
 
     /// This provides access to the incremental compilation on-disk cache for query results.
     /// Do not access this directly. It is only meant to be used by
@@ -1232,6 +1246,7 @@ impl<'tcx> TyCtxt<'tcx> {
         query_kinds: &'tcx [DepKindStruct<'tcx>],
         crate_name: &str,
         output_filenames: OutputFilenames,
+        special_types: Option<Lrc<SpecialTypes>>
     ) -> GlobalCtxt<'tcx> {
         let ResolverOutputs {
             definitions,
@@ -1252,7 +1267,7 @@ impl<'tcx> TyCtxt<'tcx> {
         );
         let common_lifetimes = CommonLifetimes::new(&interners);
         let common_consts = CommonConsts::new(&interners, &common_types);
-
+        let special_types = if special_types.is_none() { Lrc::new(SpecialTypes::default())}else{special_types.unwrap()};
         GlobalCtxt {
             sess: s,
             lint_store,
@@ -1280,6 +1295,7 @@ impl<'tcx> TyCtxt<'tcx> {
             data_layout,
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames),
+            special_types
         }
     }
 

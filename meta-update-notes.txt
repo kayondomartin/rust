@@ -8,42 +8,77 @@ Box:
     Box is the basic pointer in Rust. It has no metadata, and its creation is
 similar to C++'s new. The difference is that Box conforms to Rust's ownership
 rules. It is still a smart pointer, it suffers from the repacking vulnerability,
-which may result in double free/drop or even UAF.
+which may result in double free/drop or even UAF. However, we will not be storing Boxes in a special region. Because we would like to use them to hold housed smart pointers.
 
 Vec:
     This is the basic heap array in Rust. It can be seen as similar to C++'s vector,
 but it does more to prevent memory corruption. It's inherits the RawVec type which in
 turn stores the heap pointer to which data is store, and the capacity of the allocated
-pointer. Vec then adds an additional metadata - len, to keep track of the number of 
-elements stored in the container, hence preventing buffer overflows. Corrupting the 
+pointer. Vec then adds an additional metadata - len, to keep track of the number of
+elements stored in the container, hence preventing buffer overflows. Corrupting the
 capacity or len of this pointer opens the door for buffer overflow attacks, while overwriting
 the pointer may result in CFI problems at worst. This pointer also suffers from the repacking problem as do many
 of the rest of the pointers explored here. Reported CVEs on problems with Vec include:
-CVE-2021-28875 resulting from String type using Vec, CVE-2018-1000657, CVE-2019-1010299, 
+CVE-2021-28875 resulting from String type using Vec, CVE-2018-1000657, CVE-2019-1010299,
 CVE-2019-16138, CVE-2020-35890, CVE-2020-35891 etc.
-Sadly, even preventing illegal metadata modifications on Vec is insufficient as 
+Sadly, even preventing illegal metadata modifications on Vec is insufficient as
 programmers may legally write incorrect metadata through the unsafe provided methods.
 
 Rc:
-    This pointer attempts to counter UAF attacks through reference counting. It maintains two reference counters, Weak and Strong as metadata. Why Weak and Strong? Consider a case in which two pointers own each other: say a DLL. A node in a DLL head prev and next, where 
+    This pointer attempts to counter UAF attacks through reference counting. It maintains two reference counters, Weak and Strong as metadata. Why Weak and Strong? Consider a case in which two pointers own each other: say a DLL. A node in a DLL head prev and next, where
     prev points to next and next points to prev, hence under Rust ownership, the two own each other, and therefore each has a reference count of 2. If, say, next is dropped, then its counter becomes 1 because prev still owns it. Now, suppose prev is also dropped, then also its counter becomes 1, yet no handle exists for either pointer. The result is two pointers to memory with no handle, and in turn memory leakage at best. In worse cases, this miscount may result in security issues.
     Tamparing with the reference counters is catastropic as observed, and so they must be protected in any way, to prevent UAF problems especially, but also memory leaks.
-    Related CVEs: 
+    Related CVEs:
 
 
 Cell/RefCell:
     ... more on smart pointers later
-    
-    
-    
+
+
+Arc (Atomic RC):
+    ... more on this later
+
+
 
 Type IDs:
     Currently, RustMeta assumes all types will have unique Identifies, which we will in tern use to allocate on the TDI basis. There are several challenges with this:
         ** Generic types have unique IDs, where, say, Type1<i32> is different from Type1<f32>. By our assumption so far, these two kinds, although both of the same descent - Type1, will be allocated in different Heaps. Whereas this seems good for our idea of countering temporal safety problems in the repacking problem, our worry is memory usage. Recall that mimalloc - our current allocator of focus allocated 4MiB. If this is done for each type, we risk fragmentation, hence high memory overhead.
         ** Smart pointers as member fields. Our basic plan is to allocate smart pointers in a separate secure compartment. If, however, a custom struct encloses a smart pointer as a member field, then we are left with two options:
             *** consider the whole struct as belonging to the smart pointers, hence save it to the safe region:
-            this of course brings issues. We don't want to be allowing any type, this will contaminate the safe region. 
-            *** wrap the enclosed smart pointer in a Box<T>. This seems like a good idea, but then we will have to load the smart pointer each time we need to access it. 
-            Ultimately, we need to discuss whether it's better to load from a Box<T> to access such member fields or to have the whole struct considered as deserving special protection. 
+            this of course brings issues. We don't want to be allowing any type, this will contaminate the safe region.
+            *** wrap the enclosed smart pointer in a Box<T>. This seems like a good idea, but then we will have to load the smart pointer each time we need to access it.
+            Ultimately, we need to discuss whether it's better to load from a Box<T> to access such member fields or to have the whole struct considered as deserving special protection.
             Of course, based on the method of protection, one is better than the other. Currently, we are considering Guard Pages vs MPK. With Guard Pages, we will consider simply having a guard page protecting the regions. As such, considering the whole type as a special doesn't seem to incur more performance overhead. If we use MPK on the other hand, writing the any object field (be it the smart pointer or not) will require enabling write access for the whole smart pointer region. This will flood the binary with so many MPK access instructions making it risky.
             WE WILL NEED TO TRADE CAREFULLY!!
+
+
+HIR Editing:
+    Because the HIR has no MutVisitor, it appears to be hard to modify HIR using a pass.
+    The idea is to run HIR analysis in the first pass of the compiler. After this analysis, we save the analysis results in a json file and terminate that pass. We then re-run the compiler and use the analysis results to lower a modified HIR during the ast-to-hir lowering stage. We are currently saving HIR Ids but it would be better convert HirId's to NodeIds and then use those.
+
+Generics:
+    It is challenging to deal with generics. However, if can prove the covariance of all Box<T> and T for generic type T where T can be a smart pointer, then we should have no problem replacing T's with Box<T>'s in housing structures. In otherwords, we don't expect a generic field of a struct to take a smart pointer and another type such as an integer, and yet have cases where operations on integers can't happen for the smart pointer. Of course, this will require some analysis and mathematic proofs.
+
+
+
+Build notes:
+Note that we are not using the original LLVM from the rust project
+Rather we build our own, on which we add some backend optimizations as required.
+checkout the LLVM we use at:
+https://github.com/seccompgeek/rust-llvm-project.git
+the branch to use is rust-meta-master
+
+
+ Installation:
+ cd ~/project-home
+ git checkout ch-monomorphize-rust-meta
+ cd src/
+ #clone the llvm-project from the rust-meta-llvm-project repo as shown above.
+ #make sure the folder is called llvm-project, otherwise the ./x.py build will fail.
+ ./x.py build && ./x.py install
+ rustup toolchain link meta-rust ~/project-home/build/x86_64-unknown-linux-gnu/stage2/
+ rustup default meta-rust
+
+linking mimalloc for mimalloc:
+RUSTFLAGS="-C passes=metaupdate --emit=llvm-ir -Z meta-update -C link-args=-Wl,-rpath-link,/home/martin/projects/metaupdate/allocators/mimalloc/out/release -L /home/martin/projects/metaupdate/allocators/mimalloc/out/release -lmimalloc" cargo rustc -- -C link-args="-Wl,-rpath,/home/martin/projects/metaupdate/allocators/mimalloc/out/release"
+

@@ -22,6 +22,7 @@ use core::slice;
 // failures in linkchecker even though rustdoc built the docs just fine.
 #[allow(unused_imports)]
 use core::mem;
+use core::ptr::metadata_update::MetaUpdate;
 
 use crate::alloc::{Allocator, Global};
 use crate::collections::TryReserveError;
@@ -113,6 +114,16 @@ pub struct VecDeque<
     tail: usize,
     head: usize,
     buf: RawVec<T, A>,
+}
+
+/// VecDeque is a smart pointer so implement MetaUpdate for it
+/// For now, this is boilerplate
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T> MetaUpdate for VecDeque<T> {
+    /// synchronize function for VecDeque
+    fn synchronize(&self) -> bool {
+        true
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]

@@ -29,7 +29,7 @@ use rustc_lint::LintStore;
 use rustc_log::stdout_isatty;
 use rustc_metadata::locator;
 use rustc_save_analysis as save;
-use rustc_save_analysis::DumpHandler;
+use rustc_save_analysis::{DumpHandler, metaupdate};
 use rustc_session::config::{nightly_options, CG_OPTIONS, Z_OPTIONS};
 use rustc_session::config::{ErrorOutputType, Input, OutputType, PrintRequest, TrimmedDefPaths};
 use rustc_session::cstore::MetadataLoader;
@@ -40,10 +40,15 @@ use rustc_session::{early_error, early_error_no_abort, early_warn};
 use rustc_span::source_map::{FileLoader, FileName};
 use rustc_span::symbol::sym;
 use rustc_target::json::ToJson;
+//use rustc_middle::ty::{List, ParamEnv, TyCtxt};
+//use rustc_hir as hir;
+//use rustc_infer::infer::TyCtxtInferExt;
+//use rustc_trait_selection::infer::InferCtxtExt;
+
 
 use std::borrow::Cow;
 use std::cmp::max;
-use std::default::Default;
+use std::default::{Default};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -285,6 +290,7 @@ fn run_compiler(
         },
     };
 
+
     interface::run_compiler(config, |compiler| {
         let sess = compiler.session();
         let should_stop = print_crate_info(
@@ -303,7 +309,7 @@ fn run_compiler(
         if should_stop == Compilation::Stop {
             return sess.compile_status();
         }
-
+        
         let linker = compiler.enter(|queries| {
             let early_exit = || sess.compile_status().map(|_| None);
             queries.parse()?;
@@ -388,6 +394,10 @@ fn run_compiler(
                             ),
                         )
                     });
+                }
+                
+                if sess.opts.unstable_opts.meta_update && sess.opts.unstable_opts.meta_update_analysis {
+                    metaupdate::DumpVisitor::new(tcx).dump_metaupdate_special_types();
                 }
                 result
             })?;

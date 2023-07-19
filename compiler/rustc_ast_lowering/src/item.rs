@@ -74,6 +74,7 @@ impl<'a, 'hir> ItemLowerer<'a, 'hir> {
             local_id_to_def_id: SortedMap::new(),
             trait_map: Default::default(),
 
+            metaupdate_id_offset_map: FxHashMap::default(),
             // Lowering state.
             catch_scope: None,
             loop_scope: None,
