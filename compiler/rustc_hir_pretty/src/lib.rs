@@ -9,7 +9,9 @@ use rustc_ast_pretty::pp::{self, Breaks};
 use rustc_ast_pretty::pprust::{Comments, PrintState};
 use rustc_hir as hir;
 use rustc_hir::LifetimeParamKind;
-use rustc_hir::{BindingAnnotation, ByRef, GenericArg, GenericParam, GenericParamKind, Node, Term};
+use rustc_hir::{
+    BindingAnnotation, ByRef, GenericArg, GenericParam, GenericParamKind, Mutability, Node, Term,
+};
 use rustc_hir::{GenericBound, PatKind, RangeEnd, TraitBoundModifier};
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::{kw, Ident, IdentPrinter, Symbol};
@@ -84,7 +86,6 @@ impl<'a> State<'a> {
             Node::ImplItem(a) => self.print_impl_item(a),
             Node::Variant(a) => self.print_variant(a),
             Node::AnonConst(a) => self.print_anon_const(a),
-            Node::ConstBlock(a) => self.print_inline_const(a),
             Node::Expr(a) => self.print_expr(a),
             Node::ExprField(a) => self.print_expr_field(&a),
             Node::Stmt(a) => self.print_stmt(a),
@@ -243,7 +244,7 @@ pub fn enum_def_to_string(
 impl<'a> State<'a> {
     pub fn bclose_maybe_open(&mut self, span: rustc_span::Span, close_box: bool) {
         self.maybe_print_comment(span.hi());
-        self.break_offset_if_not_bol(1, -INDENT_UNIT);
+        self.break_offset_if_not_bol(1, -(INDENT_UNIT as isize));
         self.word("}");
         if close_box {
             self.end(); // close the outer-box
@@ -306,7 +307,7 @@ impl<'a> State<'a> {
                 self.word("*");
                 self.print_mt(mt, true);
             }
-            hir::TyKind::Ref(ref lifetime, ref mt) => {
+            hir::TyKind::Rptr(ref lifetime, ref mt) => {
                 self.word("&");
                 self.print_opt_lifetime(lifetime);
                 self.print_mt(mt, false);
@@ -359,7 +360,7 @@ impl<'a> State<'a> {
                 self.print_anon_const(e);
                 self.word(")");
             }
-            hir::TyKind::Err(_) => {
+            hir::TyKind::Err => {
                 self.popen();
                 self.word("/*ERROR*/");
                 self.pclose();
@@ -397,7 +398,7 @@ impl<'a> State<'a> {
             }
             hir::ForeignItemKind::Static(t, m) => {
                 self.head("static");
-                if m.is_mut() {
+                if m == hir::Mutability::Mut {
                     self.word_space("mut");
                 }
                 self.print_ident(item.ident);
@@ -518,7 +519,7 @@ impl<'a> State<'a> {
             }
             hir::ItemKind::Static(ty, m, expr) => {
                 self.head("static");
-                if m.is_mut() {
+                if m == hir::Mutability::Mut {
                     self.word_space("mut");
                 }
                 self.print_ident(item.ident);
@@ -694,8 +695,19 @@ impl<'a> State<'a> {
                 self.head("trait");
                 self.print_ident(item.ident);
                 self.print_generic_params(generics.params);
+                let mut real_bounds = Vec::with_capacity(bounds.len());
+                // FIXME(durka) this seems to be some quite outdated syntax
+                for b in bounds {
+                    if let GenericBound::Trait(ptr, hir::TraitBoundModifier::Maybe) = b {
+                        self.space();
+                        self.word_space("for ?");
+                        self.print_trait_ref(&ptr.trait_ref);
+                    } else {
+                        real_bounds.push(b);
+                    }
+                }
                 self.nbsp();
-                self.print_bounds("=", bounds);
+                self.print_bounds("=", real_bounds);
                 self.print_where_clause(generics);
                 self.word(";");
                 self.end(); // end inner head-block
@@ -742,7 +754,7 @@ impl<'a> State<'a> {
         for v in variants {
             self.space_if_not_bol();
             self.maybe_print_comment(v.span.lo());
-            self.print_outer_attributes(self.attrs(v.hir_id));
+            self.print_outer_attributes(self.attrs(v.id));
             self.ibox(INDENT_UNIT);
             self.print_variant(v);
             self.word(",");
@@ -1096,10 +1108,10 @@ impl<'a> State<'a> {
         self.end()
     }
 
-    fn print_inline_const(&mut self, constant: &hir::ConstBlock) {
+    fn print_expr_anon_const(&mut self, anon_const: &hir::AnonConst) {
         self.ibox(INDENT_UNIT);
         self.word_space("const");
-        self.ann.nested(self, Nested::Body(constant.body));
+        self.print_anon_const(anon_const);
         self.end()
     }
 
@@ -1244,7 +1256,7 @@ impl<'a> State<'a> {
 
     fn print_literal(&mut self, lit: &hir::Lit) {
         self.maybe_print_comment(lit.span.lo());
-        self.word(lit.node.to_string())
+        self.word(lit.node.to_token_lit().to_string())
     }
 
     fn print_inline_asm(&mut self, asm: &hir::InlineAsm<'_>) {
@@ -1267,7 +1279,7 @@ impl<'a> State<'a> {
                 hir::InlineAsmOperand::In { reg, ref expr } => {
                     s.word("in");
                     s.popen();
-                    s.word(format!("{reg}"));
+                    s.word(format!("{}", reg));
                     s.pclose();
                     s.space();
                     s.print_expr(expr);
@@ -1275,7 +1287,7 @@ impl<'a> State<'a> {
                 hir::InlineAsmOperand::Out { reg, late, ref expr } => {
                     s.word(if late { "lateout" } else { "out" });
                     s.popen();
-                    s.word(format!("{reg}"));
+                    s.word(format!("{}", reg));
                     s.pclose();
                     s.space();
                     match expr {
@@ -1286,7 +1298,7 @@ impl<'a> State<'a> {
                 hir::InlineAsmOperand::InOut { reg, late, ref expr } => {
                     s.word(if late { "inlateout" } else { "inout" });
                     s.popen();
-                    s.word(format!("{reg}"));
+                    s.word(format!("{}", reg));
                     s.pclose();
                     s.space();
                     s.print_expr(expr);
@@ -1294,7 +1306,7 @@ impl<'a> State<'a> {
                 hir::InlineAsmOperand::SplitInOut { reg, late, ref in_expr, ref out_expr } => {
                     s.word(if late { "inlateout" } else { "inout" });
                     s.popen();
-                    s.word(format!("{reg}"));
+                    s.word(format!("{}", reg));
                     s.pclose();
                     s.space();
                     s.print_expr(in_expr);
@@ -1367,11 +1379,15 @@ impl<'a> State<'a> {
         self.ibox(INDENT_UNIT);
         self.ann.pre(self, AnnNode::Expr(expr));
         match expr.kind {
+            hir::ExprKind::Box(expr) => {
+                self.word_space("box");
+                self.print_expr_maybe_paren(expr, parser::PREC_PREFIX);
+            }
             hir::ExprKind::Array(exprs) => {
                 self.print_expr_vec(exprs);
             }
             hir::ExprKind::ConstBlock(ref anon_const) => {
-                self.print_inline_const(anon_const);
+                self.print_expr_anon_const(anon_const);
             }
             hir::ExprKind::Repeat(element, ref count) => {
                 self.print_expr_repeat(element, count);
@@ -1408,16 +1424,10 @@ impl<'a> State<'a> {
                 self.print_type(ty);
             }
             hir::ExprKind::Type(expr, ty) => {
-                self.word("type_ascribe!(");
-                self.ibox(0);
-                self.print_expr(expr);
-
-                self.word(",");
-                self.space_if_not_bol();
+                let prec = AssocOp::Colon.precedence() as i8;
+                self.print_expr_maybe_paren(expr, prec);
+                self.word_space(":");
                 self.print_type(ty);
-
-                self.end();
-                self.word(")");
             }
             hir::ExprKind::DropTemps(init) => {
                 // Print `{`:
@@ -1465,18 +1475,14 @@ impl<'a> State<'a> {
             }
             hir::ExprKind::Closure(&hir::Closure {
                 binder,
-                constness,
                 capture_clause,
                 bound_generic_params,
                 fn_decl,
                 body,
                 fn_decl_span: _,
-                fn_arg_span: _,
                 movability: _,
-                def_id: _,
             }) => {
                 self.print_closure_binder(binder, bound_generic_params);
-                self.print_constness(constness);
                 self.print_capture_clause(capture_clause);
 
                 self.print_closure_params(fn_decl, body);
@@ -1554,37 +1560,15 @@ impl<'a> State<'a> {
                     self.print_expr_maybe_paren(expr, parser::PREC_JUMP);
                 }
             }
-            hir::ExprKind::Become(result) => {
-                self.word("become");
-                self.word(" ");
-                self.print_expr_maybe_paren(result, parser::PREC_JUMP);
-            }
             hir::ExprKind::InlineAsm(asm) => {
                 self.word("asm!");
                 self.print_inline_asm(asm);
-            }
-            hir::ExprKind::OffsetOf(container, ref fields) => {
-                self.word("offset_of!(");
-                self.print_type(container);
-                self.word(",");
-                self.space();
-
-                if let Some((&first, rest)) = fields.split_first() {
-                    self.print_ident(first);
-
-                    for &field in rest {
-                        self.word(".");
-                        self.print_ident(field);
-                    }
-                }
-
-                self.word(")");
             }
             hir::ExprKind::Yield(expr, _) => {
                 self.word_space("yield");
                 self.print_expr_maybe_paren(expr, parser::PREC_JUMP);
             }
-            hir::ExprKind::Err(_) => {
+            hir::ExprKind::Err => {
                 self.popen();
                 self.word("/*ERROR*/");
                 self.pclose();
@@ -1606,7 +1590,7 @@ impl<'a> State<'a> {
         self.print_ident(Ident::with_dummy_span(name))
     }
 
-    pub fn print_path<R>(&mut self, path: &hir::Path<'_, R>, colons_before_params: bool) {
+    pub fn print_path(&mut self, path: &hir::Path<'_>, colons_before_params: bool) {
         self.maybe_print_comment(path.span.lo());
 
         for (i, segment) in path.segments.iter().enumerate() {
@@ -1681,65 +1665,61 @@ impl<'a> State<'a> {
         generic_args: &hir::GenericArgs<'_>,
         colons_before_params: bool,
     ) {
-        match generic_args.parenthesized {
-            hir::GenericArgsParentheses::No => {
-                let start = if colons_before_params { "::<" } else { "<" };
-                let empty = Cell::new(true);
-                let start_or_comma = |this: &mut Self| {
-                    if empty.get() {
-                        empty.set(false);
-                        this.word(start)
-                    } else {
-                        this.word_space(",")
-                    }
-                };
+        if generic_args.parenthesized {
+            self.word("(");
+            self.commasep(Inconsistent, generic_args.inputs(), |s, ty| s.print_type(ty));
+            self.word(")");
 
-                let mut nonelided_generic_args: bool = false;
-                let elide_lifetimes = generic_args.args.iter().all(|arg| match arg {
-                    GenericArg::Lifetime(lt) if lt.is_elided() => true,
-                    GenericArg::Lifetime(_) => {
-                        nonelided_generic_args = true;
-                        false
-                    }
-                    _ => {
-                        nonelided_generic_args = true;
-                        true
-                    }
-                });
-
-                if nonelided_generic_args {
-                    start_or_comma(self);
-                    self.commasep(Inconsistent, generic_args.args, |s, generic_arg| {
-                        match generic_arg {
-                            GenericArg::Lifetime(lt) if !elide_lifetimes => s.print_lifetime(lt),
-                            GenericArg::Lifetime(_) => {}
-                            GenericArg::Type(ty) => s.print_type(ty),
-                            GenericArg::Const(ct) => s.print_anon_const(&ct.value),
-                            GenericArg::Infer(_inf) => s.word("_"),
-                        }
-                    });
+            self.space_if_not_bol();
+            self.word_space("->");
+            self.print_type(generic_args.bindings[0].ty());
+        } else {
+            let start = if colons_before_params { "::<" } else { "<" };
+            let empty = Cell::new(true);
+            let start_or_comma = |this: &mut Self| {
+                if empty.get() {
+                    empty.set(false);
+                    this.word(start)
+                } else {
+                    this.word_space(",")
                 }
+            };
 
-                for binding in generic_args.bindings {
-                    start_or_comma(self);
-                    self.print_type_binding(binding);
+            let mut nonelided_generic_args: bool = false;
+            let elide_lifetimes = generic_args.args.iter().all(|arg| match arg {
+                GenericArg::Lifetime(lt) if lt.is_elided() => true,
+                GenericArg::Lifetime(_) => {
+                    nonelided_generic_args = true;
+                    false
                 }
+                _ => {
+                    nonelided_generic_args = true;
+                    true
+                }
+            });
 
-                if !empty.get() {
-                    self.word(">")
-                }
+            if nonelided_generic_args {
+                start_or_comma(self);
+                self.commasep(
+                    Inconsistent,
+                    generic_args.args,
+                    |s, generic_arg| match generic_arg {
+                        GenericArg::Lifetime(lt) if !elide_lifetimes => s.print_lifetime(lt),
+                        GenericArg::Lifetime(_) => {}
+                        GenericArg::Type(ty) => s.print_type(ty),
+                        GenericArg::Const(ct) => s.print_anon_const(&ct.value),
+                        GenericArg::Infer(_inf) => s.word("_"),
+                    },
+                );
             }
-            hir::GenericArgsParentheses::ParenSugar => {
-                self.word("(");
-                self.commasep(Inconsistent, generic_args.inputs(), |s, ty| s.print_type(ty));
-                self.word(")");
 
-                self.space_if_not_bol();
-                self.word_space("->");
-                self.print_type(generic_args.bindings[0].ty());
+            for binding in generic_args.bindings {
+                start_or_comma(self);
+                self.print_type_binding(binding);
             }
-            hir::GenericArgsParentheses::ReturnTypeNotation => {
-                self.word("(..)");
+
+            if !empty.get() {
+                self.word(">")
             }
         }
     }
@@ -1773,7 +1753,7 @@ impl<'a> State<'a> {
                 if by_ref == ByRef::Yes {
                     self.word_nbsp("ref");
                 }
-                if mutbl.is_mut() {
+                if mutbl == Mutability::Mut {
                     self.word_nbsp("mut");
                 }
                 self.print_ident(ident);
@@ -1786,6 +1766,7 @@ impl<'a> State<'a> {
                 self.print_qpath(qpath, true);
                 self.popen();
                 if let Some(ddpos) = ddpos.as_opt_usize() {
+                    let ddpos = ddpos as usize;
                     self.commasep(Inconsistent, &elts[..ddpos], |s, p| s.print_pat(p));
                     if ddpos != 0 {
                         self.word_space(",");
@@ -2177,7 +2158,7 @@ impl<'a> State<'a> {
     }
 
     pub fn print_lifetime(&mut self, lifetime: &hir::Lifetime) {
-        self.print_ident(lifetime.ident)
+        self.print_ident(lifetime.name.ident())
     }
 
     pub fn print_where_clause(&mut self, generics: &hir::Generics<'_>) {
@@ -2301,7 +2282,10 @@ impl<'a> State<'a> {
     }
 
     pub fn print_fn_header_info(&mut self, header: hir::FnHeader) {
-        self.print_constness(header.constness);
+        match header.constness {
+            hir::Constness::NotConst => {}
+            hir::Constness::Const => self.word_nbsp("const"),
+        }
 
         match header.asyncness {
             hir::IsAsync::NotAsync => {}
@@ -2316,13 +2300,6 @@ impl<'a> State<'a> {
         }
 
         self.word("fn")
-    }
-
-    pub fn print_constness(&mut self, s: hir::Constness) {
-        match s {
-            hir::Constness::NotConst => {}
-            hir::Constness::Const => self.word_nbsp("const"),
-        }
     }
 
     pub fn print_unsafety(&mut self, s: hir::Unsafety) {

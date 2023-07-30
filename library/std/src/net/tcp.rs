@@ -6,7 +6,7 @@ mod tests;
 use crate::io::prelude::*;
 
 use crate::fmt;
-use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
+use crate::io::{self, IoSlice, IoSliceMut};
 use crate::iter::FusedIterator;
 use crate::net::{Shutdown, SocketAddr, ToSocketAddrs};
 use crate::sys_common::net as net_imp;
@@ -619,10 +619,6 @@ impl Read for TcpStream {
         self.0.read(buf)
     }
 
-    fn read_buf(&mut self, buf: BorrowedCursor<'_>) -> io::Result<()> {
-        self.0.read_buf(buf)
-    }
-
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         self.0.read_vectored(bufs)
     }
@@ -657,10 +653,6 @@ impl Read for &TcpStream {
         self.0.read(buf)
     }
 
-    fn read_buf(&mut self, buf: BorrowedCursor<'_>) -> io::Result<()> {
-        self.0.read_buf(buf)
-    }
-
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         self.0.read_vectored(bufs)
     }
@@ -691,7 +683,6 @@ impl Write for &TcpStream {
 }
 
 impl AsInner<net_imp::TcpStream> for TcpStream {
-    #[inline]
     fn as_inner(&self) -> &net_imp::TcpStream {
         &self.0
     }
@@ -755,15 +746,6 @@ impl TcpListener {
     ///     SocketAddr::from(([127, 0, 0, 1], 443)),
     /// ];
     /// let listener = TcpListener::bind(&addrs[..]).unwrap();
-    /// ```
-    ///
-    /// Creates a TCP listener bound to a port assigned by the operating system
-    /// at `127.0.0.1`.
-    ///
-    /// ```no_run
-    /// use std::net::TcpListener;
-    ///
-    /// let socket = TcpListener::bind("127.0.0.1:0").unwrap();
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
@@ -847,7 +829,7 @@ impl TcpListener {
     /// }
     ///
     /// fn main() -> std::io::Result<()> {
-    ///     let listener = TcpListener::bind("127.0.0.1:80")?;
+    ///     let listener = TcpListener::bind("127.0.0.1:80").unwrap();
     ///
     ///     for stream in listener.incoming() {
     ///         match stream {
@@ -879,7 +861,7 @@ impl TcpListener {
     /// use std::net::{TcpListener, TcpStream};
     ///
     /// fn listen_on(port: u16) -> impl Iterator<Item = TcpStream> {
-    ///     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    ///     let listener = TcpListener::bind("127.0.0.1:80").unwrap();
     ///     listener.into_incoming()
     ///         .filter_map(Result::ok) /* Ignore failed connections */
     /// }
@@ -1043,7 +1025,6 @@ impl Iterator for IntoIncoming {
 impl FusedIterator for IntoIncoming {}
 
 impl AsInner<net_imp::TcpListener> for TcpListener {
-    #[inline]
     fn as_inner(&self) -> &net_imp::TcpListener {
         &self.0
     }

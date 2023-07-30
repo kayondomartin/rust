@@ -1,7 +1,7 @@
 #![unstable(issue = "none", feature = "windows_net")]
 
 use crate::cmp;
-use crate::io::{self, BorrowedBuf, BorrowedCursor, IoSlice, IoSliceMut, Read};
+use crate::io::{self, IoSlice, IoSliceMut, Read};
 use crate::mem;
 use crate::net::{Shutdown, SocketAddr};
 use crate::os::windows::io::{
@@ -159,7 +159,7 @@ impl Socket {
                 }
 
                 let mut timeout = c::timeval {
-                    tv_sec: cmp::min(timeout.as_secs(), c_long::MAX as u64) as c_long,
+                    tv_sec: timeout.as_secs() as c_long,
                     tv_usec: (timeout.subsec_nanos() / 1000) as c_long,
                 };
 
@@ -214,38 +214,28 @@ impl Socket {
         Ok(Self(self.0.try_clone()?))
     }
 
-    fn recv_with_flags(&self, mut buf: BorrowedCursor<'_>, flags: c_int) -> io::Result<()> {
+    fn recv_with_flags(&self, buf: &mut [u8], flags: c_int) -> io::Result<usize> {
         // On unix when a socket is shut down all further reads return 0, so we
         // do the same on windows to map a shut down socket to returning EOF.
-        let length = cmp::min(buf.capacity(), i32::MAX as usize) as i32;
-        let result = unsafe {
-            c::recv(self.as_raw_socket(), buf.as_mut().as_mut_ptr() as *mut _, length, flags)
-        };
+        let length = cmp::min(buf.len(), i32::MAX as usize) as i32;
+        let result =
+            unsafe { c::recv(self.as_raw_socket(), buf.as_mut_ptr() as *mut _, length, flags) };
 
         match result {
             c::SOCKET_ERROR => {
                 let error = unsafe { c::WSAGetLastError() };
 
                 if error == c::WSAESHUTDOWN {
-                    Ok(())
+                    Ok(0)
                 } else {
                     Err(io::Error::from_raw_os_error(error))
                 }
             }
-            _ => {
-                unsafe { buf.advance(result as usize) };
-                Ok(())
-            }
+            _ => Ok(result as usize),
         }
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut buf = BorrowedBuf::from(buf);
-        self.recv_with_flags(buf.unfilled(), 0)?;
-        Ok(buf.len())
-    }
-
-    pub fn read_buf(&self, buf: BorrowedCursor<'_>) -> io::Result<()> {
         self.recv_with_flags(buf, 0)
     }
 
@@ -263,7 +253,7 @@ impl Socket {
                 &mut nread,
                 &mut flags,
                 ptr::null_mut(),
-                None,
+                ptr::null_mut(),
             )
         };
 
@@ -287,9 +277,7 @@ impl Socket {
     }
 
     pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut buf = BorrowedBuf::from(buf);
-        self.recv_with_flags(buf.unfilled(), c::MSG_PEEK)?;
-        Ok(buf.len())
+        self.recv_with_flags(buf, c::MSG_PEEK)
     }
 
     fn recv_from_with_flags(
@@ -347,7 +335,7 @@ impl Socket {
                 &mut nwritten,
                 0,
                 ptr::null_mut(),
-                None,
+                ptr::null_mut(),
             )
         };
         cvt(result).map(|_| nwritten as usize)
@@ -446,7 +434,6 @@ impl<'a> Read for &'a Socket {
 }
 
 impl AsInner<OwnedSocket> for Socket {
-    #[inline]
     fn as_inner(&self) -> &OwnedSocket {
         &self.0
     }

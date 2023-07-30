@@ -888,7 +888,7 @@ impl From<&CStr> for Arc<CStr> {
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
 impl From<CString> for Rc<CStr> {
     /// Converts a [`CString`] into an <code>[Rc]<[CStr]></code> by moving the [`CString`]
-    /// data into a new [`Rc`] buffer.
+    /// data into a new [`Arc`] buffer.
     #[inline]
     fn from(s: CString) -> Rc<CStr> {
         let rc: Rc<[u8]> = Rc::from(s.into_inner());
@@ -990,6 +990,12 @@ impl IntoStringError {
     #[stable(feature = "cstring_into", since = "1.7.0")]
     pub fn utf8_error(&self) -> Utf8Error {
         self.error
+    }
+
+    #[doc(hidden)]
+    #[unstable(feature = "cstr_internals", issue = "none")]
+    pub fn __source(&self) -> &Utf8Error {
+        &self.error
     }
 }
 
@@ -1135,6 +1141,6 @@ impl core::error::Error for IntoStringError {
     }
 
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        Some(&self.error)
+        Some(self.__source())
     }
 }

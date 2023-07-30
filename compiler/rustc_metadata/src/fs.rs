@@ -1,19 +1,18 @@
 use crate::errors::{
-    BinaryOutputToTty, FailedCopyToStdout, FailedCreateEncodedMetadata, FailedCreateFile,
-    FailedCreateTempdir, FailedWriteError,
+    FailedCreateEncodedMetadata, FailedCreateFile, FailedCreateTempdir, FailedWriteError,
 };
 use crate::{encode_metadata, EncodedMetadata};
 
 use rustc_data_structures::temp_dir::MaybeTempDir;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
-use rustc_session::config::{OutFileName, OutputType};
+use rustc_session::config::{CrateType, OutputFilenames, OutputType};
 use rustc_session::output::filename_for_metadata;
-use rustc_session::{MetadataKind, Session};
+use rustc_session::Session;
 use tempfile::Builder as TempFileBuilder;
 
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::{fs, io};
 
 // FIXME(eddyb) maybe include the crate name in this?
 pub const METADATA_FILENAME: &str = "lib.rmeta";
@@ -23,14 +22,9 @@ pub const METADATA_FILENAME: &str = "lib.rmeta";
 /// building an `.rlib` (stomping over one another), or writing an `.rmeta` into a
 /// directory being searched for `extern crate` (observing an incomplete file).
 /// The returned path is the temporary file containing the complete metadata.
-pub fn emit_wrapper_file(
-    sess: &Session,
-    data: &[u8],
-    tmpdir: &MaybeTempDir,
-    name: &str,
-) -> PathBuf {
-    let out_filename = tmpdir.as_ref().join(name);
-    let result = fs::write(&out_filename, data);
+pub fn emit_metadata(sess: &Session, metadata: &[u8], tmpdir: &MaybeTempDir) -> PathBuf {
+    let out_filename = tmpdir.as_ref().join(METADATA_FILENAME);
+    let result = fs::write(&out_filename, metadata);
 
     if let Err(err) = result {
         sess.emit_fatal(FailedWriteError { filename: out_filename, err });
@@ -39,9 +33,33 @@ pub fn emit_wrapper_file(
     out_filename
 }
 
-pub fn encode_and_write_metadata(tcx: TyCtxt<'_>) -> (EncodedMetadata, bool) {
+pub fn encode_and_write_metadata(
+    tcx: TyCtxt<'_>,
+    outputs: &OutputFilenames,
+) -> (EncodedMetadata, bool) {
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum MetadataKind {
+        None,
+        Uncompressed,
+        Compressed,
+    }
+
+    let metadata_kind = tcx
+        .sess
+        .crate_types()
+        .iter()
+        .map(|ty| match *ty {
+            CrateType::Executable | CrateType::Staticlib | CrateType::Cdylib => MetadataKind::None,
+
+            CrateType::Rlib => MetadataKind::Uncompressed,
+
+            CrateType::Dylib | CrateType::ProcMacro => MetadataKind::Compressed,
+        })
+        .max()
+        .unwrap_or(MetadataKind::None);
+
     let crate_name = tcx.crate_name(LOCAL_CRATE);
-    let out_filename = filename_for_metadata(tcx.sess, crate_name, tcx.output_filenames(()));
+    let out_filename = filename_for_metadata(tcx.sess, crate_name.as_str(), outputs);
     // To avoid races with another rustc process scanning the output directory,
     // we need to write the file somewhere else and atomically move it to its
     // final destination, with an `fs::rename` call. In order for the rename to
@@ -56,7 +74,6 @@ pub fn encode_and_write_metadata(tcx: TyCtxt<'_>) -> (EncodedMetadata, bool) {
 
     // Always create a file at `metadata_filename`, even if we have nothing to write to it.
     // This simplifies the creation of the output `out_filename` when requested.
-    let metadata_kind = tcx.sess.metadata_kind();
     match metadata_kind {
         MetadataKind::None => {
             std::fs::File::create(&metadata_filename).unwrap_or_else(|err| {
@@ -71,41 +88,27 @@ pub fn encode_and_write_metadata(tcx: TyCtxt<'_>) -> (EncodedMetadata, bool) {
     let _prof_timer = tcx.sess.prof.generic_activity("write_crate_metadata");
 
     // If the user requests metadata as output, rename `metadata_filename`
-    // to the expected output `out_filename`. The match above should ensure
+    // to the expected output `out_filename`.  The match above should ensure
     // this file always exists.
     let need_metadata_file = tcx.sess.opts.output_types.contains_key(&OutputType::Metadata);
     let (metadata_filename, metadata_tmpdir) = if need_metadata_file {
-        let filename = match out_filename {
-            OutFileName::Real(ref path) => {
-                if let Err(err) = non_durable_rename(&metadata_filename, path) {
-                    tcx.sess.emit_fatal(FailedWriteError { filename: path.to_path_buf(), err });
-                }
-                path.clone()
-            }
-            OutFileName::Stdout => {
-                if out_filename.is_tty() {
-                    tcx.sess.emit_err(BinaryOutputToTty);
-                } else if let Err(err) = copy_to_stdout(&metadata_filename) {
-                    tcx.sess
-                        .emit_err(FailedCopyToStdout { filename: metadata_filename.clone(), err });
-                }
-                metadata_filename
-            }
-        };
+        if let Err(err) = non_durable_rename(&metadata_filename, &out_filename) {
+            tcx.sess.emit_fatal(FailedWriteError { filename: out_filename, err });
+        }
         if tcx.sess.opts.json_artifact_notifications {
             tcx.sess
                 .parse_sess
                 .span_diagnostic
-                .emit_artifact_notification(&out_filename.as_path(), "metadata");
+                .emit_artifact_notification(&out_filename, "metadata");
         }
-        (filename, None)
+        (out_filename, None)
     } else {
         (metadata_filename, Some(metadata_tmpdir))
     };
 
     // Load metadata back to memory: codegen may need to include it in object files.
-    let metadata = EncodedMetadata::from_path(metadata_filename.clone(), metadata_tmpdir)
-        .unwrap_or_else(|err| {
+    let metadata =
+        EncodedMetadata::from_path(metadata_filename, metadata_tmpdir).unwrap_or_else(|err| {
             tcx.sess.emit_fatal(FailedCreateEncodedMetadata { err });
         });
 
@@ -130,12 +133,4 @@ pub fn non_durable_rename(src: &Path, dst: &Path) -> std::io::Result<()> {
 pub fn non_durable_rename(src: &Path, dst: &Path) -> std::io::Result<()> {
     let _ = std::fs::remove_file(dst);
     std::fs::rename(src, dst)
-}
-
-pub fn copy_to_stdout(from: &Path) -> io::Result<()> {
-    let file = fs::File::open(from)?;
-    let mut reader = io::BufReader::new(file);
-    let mut stdout = io::stdout();
-    io::copy(&mut reader, &mut stdout)?;
-    Ok(())
 }

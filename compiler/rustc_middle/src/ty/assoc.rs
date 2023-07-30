@@ -1,6 +1,6 @@
 pub use self::AssocItemContainer::*;
 
-use crate::ty;
+use crate::ty::{self, DefIdTree};
 use rustc_data_structures::sorted_map::SortedIndexMultiMap;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Namespace};
@@ -30,11 +30,6 @@ pub struct AssocItem {
     /// Whether this is a method with an explicit self
     /// as its first parameter, allowing method calls.
     pub fn_has_self_parameter: bool,
-
-    /// `Some` if the associated item (an associated type) comes from the
-    /// return-position `impl Trait` in trait desugaring. The `ImplTraitInTraitData`
-    /// provides additional information about its source.
-    pub opt_rpitit_info: Option<ty::ImplTraitInTraitData>,
 }
 
 impl AssocItem {
@@ -42,13 +37,8 @@ impl AssocItem {
         Ident::new(self.name, tcx.def_ident_span(self.def_id).unwrap())
     }
 
-    /// Gets the defaultness of the associated item.
-    /// To get the default associated type, use the [`type_of`] query on the
-    /// [`DefId`] of the type.
-    ///
-    /// [`type_of`]: crate::ty::TyCtxt::type_of
     pub fn defaultness(&self, tcx: TyCtxt<'_>) -> hir::Defaultness {
-        tcx.defaultness(self.def_id)
+        tcx.impl_defaultness(self.def_id)
     }
 
     #[inline]
@@ -82,13 +72,13 @@ impl AssocItem {
             ty::AssocKind::Fn => {
                 // We skip the binder here because the binder would deanonymize all
                 // late-bound regions, and we don't want method signatures to show up
-                // `as for<'r> fn(&'r MyType)`. Pretty-printing handles late-bound
+                // `as for<'r> fn(&'r MyType)`.  Pretty-printing handles late-bound
                 // regions just fine, showing `fn(&MyType)`.
-                tcx.fn_sig(self.def_id).subst_identity().skip_binder().to_string()
+                tcx.fn_sig(self.def_id).skip_binder().to_string()
             }
             ty::AssocKind::Type => format!("type {};", self.name),
             ty::AssocKind::Const => {
-                format!("const {}: {:?};", self.name, tcx.type_of(self.def_id).subst_identity())
+                format!("const {}: {:?};", self.name, tcx.type_of(self.def_id))
             }
         }
     }
@@ -134,13 +124,13 @@ impl std::fmt::Display for AssocKind {
 /// it is relatively expensive. Instead, items are indexed by `Symbol` and hygienic comparison is
 /// done only on items with the same name.
 #[derive(Debug, Clone, PartialEq, HashStable)]
-pub struct AssocItems {
-    items: SortedIndexMultiMap<u32, Symbol, ty::AssocItem>,
+pub struct AssocItems<'tcx> {
+    pub(super) items: SortedIndexMultiMap<u32, Symbol, &'tcx ty::AssocItem>,
 }
 
-impl AssocItems {
+impl<'tcx> AssocItems<'tcx> {
     /// Constructs an `AssociatedItems` map from a series of `ty::AssocItem`s in definition order.
-    pub fn new(items_in_def_order: impl IntoIterator<Item = ty::AssocItem>) -> Self {
+    pub fn new(items_in_def_order: impl IntoIterator<Item = &'tcx ty::AssocItem>) -> Self {
         let items = items_in_def_order.into_iter().map(|item| (item.name, item)).collect();
         AssocItems { items }
     }
@@ -150,7 +140,7 @@ impl AssocItems {
     /// New code should avoid relying on definition order. If you need a particular associated item
     /// for a known trait, make that trait a lang item instead of indexing this array.
     pub fn in_definition_order(&self) -> impl '_ + Iterator<Item = &ty::AssocItem> {
-        self.items.iter().map(|(_, v)| v)
+        self.items.iter().map(|(_, v)| *v)
     }
 
     pub fn len(&self) -> usize {
@@ -162,7 +152,7 @@ impl AssocItems {
         &self,
         name: Symbol,
     ) -> impl '_ + Iterator<Item = &ty::AssocItem> {
-        self.items.get_by_key(name)
+        self.items.get_by_key(name).copied()
     }
 
     /// Returns the associated item with the given name and `AssocKind`, if one exists.

@@ -1,4 +1,3 @@
-use crate::errors;
 use rustc_ast::tokenstream::{TokenStream, TokenTree};
 use rustc_expand::base::{self, ExtCtxt};
 use rustc_span::symbol::kw;
@@ -9,7 +8,7 @@ pub fn expand_trace_macros(
     sp: Span,
     tt: TokenStream,
 ) -> Box<dyn base::MacResult + 'static> {
-    let mut cursor = tt.trees();
+    let mut cursor = tt.into_trees();
     let mut err = false;
     let value = match &cursor.next() {
         Some(TokenTree::Token(token, _)) if token.is_keyword(kw::True) => true,
@@ -21,7 +20,7 @@ pub fn expand_trace_macros(
     };
     err |= cursor.next().is_some();
     if err {
-        cx.emit_err(errors::TraceMacros { span: sp });
+        cx.span_err(sp, "trace_macros! accepts only `true` or `false`")
     } else {
         cx.set_trace_macros(value);
     }

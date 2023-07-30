@@ -1,4 +1,6 @@
-//! Redundant constants module for the [`isize` primitive type][isize].
+//! Constants for the pointer-sized signed integer type.
+//!
+//! *[See also the `isize` primitive type][isize].*
 //!
 //! New code should use the associated constants directly on the primitive type.
 

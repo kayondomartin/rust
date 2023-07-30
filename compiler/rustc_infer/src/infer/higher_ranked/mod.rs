@@ -6,7 +6,7 @@ use super::{HigherRankedType, InferCtxt};
 use crate::infer::CombinedSnapshot;
 use rustc_middle::ty::fold::FnMutDelegate;
 use rustc_middle::ty::relate::{Relate, RelateResult, TypeRelation};
-use rustc_middle::ty::{self, Binder, Ty, TyCtxt, TypeFoldable};
+use rustc_middle::ty::{self, Binder, TypeFoldable};
 
 impl<'a, 'tcx> CombineFields<'a, 'tcx> {
     /// Checks whether `for<..> sub <: for<..> sup` holds.
@@ -38,13 +38,13 @@ impl<'a, 'tcx> CombineFields<'a, 'tcx> {
         // First, we instantiate each bound region in the supertype with a
         // fresh placeholder region. Note that this automatically creates
         // a new universe if needed.
-        let sup_prime = self.infcx.instantiate_binder_with_placeholders(sup);
+        let sup_prime = self.infcx.replace_bound_vars_with_placeholders(sup);
 
         // Next, we instantiate each bound region in the subtype
         // with a fresh region variable. These region variables --
-        // but no other preexisting region variables -- can name
+        // but no other pre-existing region variables -- can name
         // the placeholders.
-        let sub_prime = self.infcx.instantiate_binder_with_fresh_vars(span, HigherRankedType, sub);
+        let sub_prime = self.infcx.replace_bound_vars_with_fresh_vars(span, HigherRankedType, sub);
 
         debug!("a_prime={:?}", sub_prime);
         debug!("b_prime={:?}", sup_prime);
@@ -70,9 +70,9 @@ impl<'tcx> InferCtxt<'tcx> {
     ///
     /// [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/traits/hrtb.html
     #[instrument(level = "debug", skip(self), ret)]
-    pub fn instantiate_binder_with_placeholders<T>(&self, binder: ty::Binder<'tcx, T>) -> T
+    pub fn replace_bound_vars_with_placeholders<T>(&self, binder: ty::Binder<'tcx, T>) -> T
     where
-        T: TypeFoldable<TyCtxt<'tcx>> + Copy,
+        T: TypeFoldable<'tcx> + Copy,
     {
         if let Some(inner) = binder.no_bound_vars() {
             return inner;
@@ -82,21 +82,23 @@ impl<'tcx> InferCtxt<'tcx> {
 
         let delegate = FnMutDelegate {
             regions: &mut |br: ty::BoundRegion| {
-                ty::Region::new_placeholder(
-                    self.tcx,
-                    ty::PlaceholderRegion { universe: next_universe, bound: br },
-                )
+                self.tcx.mk_region(ty::RePlaceholder(ty::PlaceholderRegion {
+                    universe: next_universe,
+                    name: br.kind,
+                }))
             },
             types: &mut |bound_ty: ty::BoundTy| {
-                Ty::new_placeholder(
-                    self.tcx,
-                    ty::PlaceholderType { universe: next_universe, bound: bound_ty },
-                )
+                self.tcx.mk_ty(ty::Placeholder(ty::PlaceholderType {
+                    universe: next_universe,
+                    name: bound_ty.var,
+                }))
             },
             consts: &mut |bound_var: ty::BoundVar, ty| {
-                ty::Const::new_placeholder(
-                    self.tcx,
-                    ty::PlaceholderConst { universe: next_universe, bound: bound_var },
+                self.tcx.mk_const(
+                    ty::ConstKind::Placeholder(ty::PlaceholderConst {
+                        universe: next_universe,
+                        name: bound_var,
+                    }),
                     ty,
                 )
             },
@@ -106,15 +108,13 @@ impl<'tcx> InferCtxt<'tcx> {
         self.tcx.replace_bound_vars_uncached(binder, delegate)
     }
 
-    /// See [RegionConstraintCollector::leak_check][1]. We only check placeholder
-    /// leaking into `outer_universe`, i.e. placeholders which cannot be named by that
-    /// universe.
+    /// See [RegionConstraintCollector::leak_check][1].
     ///
     /// [1]: crate::infer::region_constraints::RegionConstraintCollector::leak_check
     pub fn leak_check(
         &self,
-        outer_universe: ty::UniverseIndex,
-        only_consider_snapshot: Option<&CombinedSnapshot<'tcx>>,
+        overly_polymorphic: bool,
+        snapshot: &CombinedSnapshot<'tcx>,
     ) -> RelateResult<'tcx, ()> {
         // If the user gave `-Zno-leak-check`, or we have been
         // configured to skip the leak check, then skip the leak check
@@ -122,15 +122,15 @@ impl<'tcx> InferCtxt<'tcx> {
         // subtyping errors that it would have caught will now be
         // caught later on, during region checking. However, we
         // continue to use it for a transition period.
-        if self.tcx.sess.opts.unstable_opts.no_leak_check || self.skip_leak_check {
+        if self.tcx.sess.opts.unstable_opts.no_leak_check || self.skip_leak_check.get() {
             return Ok(());
         }
 
         self.inner.borrow_mut().unwrap_region_constraints().leak_check(
             self.tcx,
-            outer_universe,
+            overly_polymorphic,
             self.universe(),
-            only_consider_snapshot,
+            snapshot,
         )
     }
 }

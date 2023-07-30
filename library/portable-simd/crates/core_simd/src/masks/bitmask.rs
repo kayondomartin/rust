@@ -26,7 +26,6 @@ where
     T: MaskElement,
     LaneCount<LANES>: SupportedLaneCount,
 {
-    #[inline]
     fn clone(&self) -> Self {
         *self
     }
@@ -37,7 +36,6 @@ where
     T: MaskElement,
     LaneCount<LANES>: SupportedLaneCount,
 {
-    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.0.as_ref() == other.0.as_ref()
     }
@@ -48,7 +46,6 @@ where
     T: MaskElement,
     LaneCount<LANES>: SupportedLaneCount,
 {
-    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         self.0.as_ref().partial_cmp(other.0.as_ref())
     }
@@ -66,7 +63,6 @@ where
     T: MaskElement,
     LaneCount<LANES>: SupportedLaneCount,
 {
-    #[inline]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.0.as_ref().cmp(other.0.as_ref())
     }

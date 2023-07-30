@@ -1,4 +1,4 @@
-//! Type Names for Debug Info.
+// Type Names for Debug Info.
 
 // Notes on targeting MSVC:
 // In general, MSVC's debugger attempts to parse all arguments as C++ expressions,
@@ -12,7 +12,7 @@
 // * `"` is treated as the start of a string.
 
 use rustc_data_structures::fx::FxHashSet;
-use rustc_data_structures::stable_hasher::{Hash64, HashStable, StableHasher};
+use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir::def_id::DefId;
 use rustc_hir::definitions::{DefPathData, DefPathDataName, DisambiguatedDefPathData};
 use rustc_hir::{AsyncGeneratorKind, GeneratorKind, Mutability};
@@ -26,10 +26,10 @@ use std::fmt::Write;
 
 use crate::debuginfo::wants_c_like_enum_debuginfo;
 
-/// Compute the name of the type as it should be stored in debuginfo. Does not do
-/// any caching, i.e., calling the function twice with the same type will also do
-/// the work twice. The `qualified` parameter only affects the first level of the
-/// type name, further levels (i.e., type parameters) are always fully qualified.
+// Compute the name of the type as it should be stored in debuginfo. Does not do
+// any caching, i.e., calling the function twice with the same type will also do
+// the work twice. The `qualified` parameter only affects the first level of the
+// type name, further levels (i.e., type parameters) are always fully qualified.
 pub fn compute_debuginfo_type_name<'tcx>(
     tcx: TyCtxt<'tcx>,
     t: Ty<'tcx>,
@@ -93,7 +93,7 @@ fn push_debuginfo_type_name<'tcx>(
                     Err(e) => {
                         // Computing the layout can still fail here, e.g. if the target architecture
                         // cannot represent the type. See https://github.com/rust-lang/rust/issues/94961.
-                        tcx.sess.emit_fatal(e.into_diagnostic());
+                        tcx.sess.fatal(&format!("{}", e));
                     }
                 }
             } else {
@@ -180,24 +180,16 @@ fn push_debuginfo_type_name<'tcx>(
                 push_debuginfo_type_name(tcx, inner_type, true, output, visited);
                 match len.kind() {
                     ty::ConstKind::Param(param) => write!(output, ",{}>", param.name).unwrap(),
-                    _ => write!(
-                        output,
-                        ",{}>",
-                        len.eval_target_usize(tcx, ty::ParamEnv::reveal_all())
-                    )
-                    .unwrap(),
+                    _ => write!(output, ",{}>", len.eval_usize(tcx, ty::ParamEnv::reveal_all()))
+                        .unwrap(),
                 }
             } else {
                 output.push('[');
                 push_debuginfo_type_name(tcx, inner_type, true, output, visited);
                 match len.kind() {
                     ty::ConstKind::Param(param) => write!(output, "; {}]", param.name).unwrap(),
-                    _ => write!(
-                        output,
-                        "; {}]",
-                        len.eval_target_usize(tcx, ty::ParamEnv::reveal_all())
-                    )
-                    .unwrap(),
+                    _ => write!(output, "; {}]", len.eval_usize(tcx, ty::ParamEnv::reveal_all()))
+                        .unwrap(),
                 }
             }
         }
@@ -243,7 +235,7 @@ fn push_debuginfo_type_name<'tcx>(
                 let projection_bounds: SmallVec<[_; 4]> = trait_data
                     .projection_bounds()
                     .map(|bound| {
-                        let ExistentialProjection { def_id: item_def_id, term, .. } =
+                        let ExistentialProjection { item_def_id, term, .. } =
                             tcx.erase_late_bound_regions(bound);
                         // FIXME(associated_const_equality): allow for consts here
                         (item_def_id, term.ty().unwrap())
@@ -419,9 +411,9 @@ fn push_debuginfo_type_name<'tcx>(
         ty::Error(_)
         | ty::Infer(_)
         | ty::Placeholder(..)
-        | ty::Alias(..)
+        | ty::Projection(..)
         | ty::Bound(..)
-        | ty::GeneratorWitnessMIR(..)
+        | ty::Opaque(..)
         | ty::GeneratorWitness(..) => {
             bug!(
                 "debuginfo: Trying to create type name for \
@@ -518,7 +510,7 @@ pub fn compute_debuginfo_vtable_name<'tcx>(
         visited.clear();
         push_generic_params_internal(tcx, trait_ref.substs, &mut vtable_name, &mut visited);
     } else {
-        vtable_name.push('_');
+        vtable_name.push_str("_");
     }
 
     push_close_angle_bracket(cpp_like_debuginfo, &mut vtable_name);
@@ -674,7 +666,8 @@ fn push_const_param<'tcx>(tcx: TyCtxt<'tcx>, ct: ty::Const<'tcx>, output: &mut S
                     hcx.while_hashing_spans(false, |hcx| {
                         ct.to_valtree().hash_stable(hcx, &mut hasher)
                     });
-                    hasher.finish::<Hash64>()
+                    let hash: u64 = hasher.finish();
+                    hash
                 });
 
                 if cpp_like_debuginfo(tcx) {

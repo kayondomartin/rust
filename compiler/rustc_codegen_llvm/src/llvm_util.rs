@@ -1,8 +1,4 @@
 use crate::back::write::create_informational_target_machine;
-use crate::errors::{
-    PossibleFeature, TargetFeatureDisableOrEnable, UnknownCTargetFeature,
-    UnknownCTargetFeaturePrefix,
-};
 use crate::llvm;
 use libc::c_int;
 use rustc_codegen_ssa::target_features::{
@@ -16,6 +12,7 @@ use rustc_session::config::PrintRequest;
 use rustc_session::Session;
 use rustc_span::symbol::Symbol;
 use rustc_target::spec::{MergeFunctions, PanicStrategy};
+use smallvec::{smallvec, SmallVec};
 use std::ffi::{CStr, CString};
 
 use std::path::Path;
@@ -80,10 +77,10 @@ unsafe fn configure_llvm(sess: &Session) {
         };
         // Set the llvm "program name" to make usage and invalid argument messages more clear.
         add("rustc -Cllvm-args=\"...\" with", true);
-        if sess.opts.unstable_opts.time_llvm_passes {
+        if sess.time_llvm_passes() {
             add("-time-passes", false);
         }
-        if sess.opts.unstable_opts.print_llvm_passes {
+        if sess.print_llvm_passes() {
             add("-debug-pass=Structure", false);
         }
         if sess.target.generate_arange_section
@@ -119,6 +116,8 @@ unsafe fn configure_llvm(sess: &Session) {
         llvm::LLVMTimeTraceProfilerInitialize();
     }
 
+    llvm::LLVMInitializePasses();
+
     rustc_llvm::initialize_available_targets();
 
     llvm::LLVMRustSetLLVMOptions(llvm_args.len() as c_int, llvm_args.as_ptr());
@@ -128,60 +127,6 @@ pub fn time_trace_profiler_finish(file_name: &Path) {
     unsafe {
         let file_name = path_to_c_string(file_name);
         llvm::LLVMTimeTraceProfilerFinish(file_name.as_ptr());
-    }
-}
-
-pub enum TargetFeatureFoldStrength<'a> {
-    // The feature is only tied when enabling the feature, disabling
-    // this feature shouldn't disable the tied feature.
-    EnableOnly(&'a str),
-    // The feature is tied for both enabling and disabling this feature.
-    Both(&'a str),
-}
-
-impl<'a> TargetFeatureFoldStrength<'a> {
-    fn as_str(&self) -> &'a str {
-        match self {
-            TargetFeatureFoldStrength::EnableOnly(feat) => feat,
-            TargetFeatureFoldStrength::Both(feat) => feat,
-        }
-    }
-}
-
-pub struct LLVMFeature<'a> {
-    pub llvm_feature_name: &'a str,
-    pub dependency: Option<TargetFeatureFoldStrength<'a>>,
-}
-
-impl<'a> LLVMFeature<'a> {
-    pub fn new(llvm_feature_name: &'a str) -> Self {
-        Self { llvm_feature_name, dependency: None }
-    }
-
-    pub fn with_dependency(
-        llvm_feature_name: &'a str,
-        dependency: TargetFeatureFoldStrength<'a>,
-    ) -> Self {
-        Self { llvm_feature_name, dependency: Some(dependency) }
-    }
-
-    pub fn contains(&self, feat: &str) -> bool {
-        self.iter().any(|dep| dep == feat)
-    }
-
-    pub fn iter(&'a self) -> impl Iterator<Item = &'a str> {
-        let dependencies = self.dependency.iter().map(|feat| feat.as_str());
-        std::iter::once(self.llvm_feature_name).chain(dependencies)
-    }
-}
-
-impl<'a> IntoIterator for LLVMFeature<'a> {
-    type Item = &'a str;
-    type IntoIter = impl Iterator<Item = &'a str>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        let dependencies = self.dependency.into_iter().map(|feat| feat.as_str());
-        std::iter::once(self.llvm_feature_name).chain(dependencies)
     }
 }
 
@@ -200,70 +145,50 @@ impl<'a> IntoIterator for LLVMFeature<'a> {
 // Though note that Rust can also be build with an external precompiled version of LLVM
 // which might lead to failures if the oldest tested / supported LLVM version
 // doesn't yet support the relevant intrinsics
-pub fn to_llvm_features<'a>(sess: &Session, s: &'a str) -> LLVMFeature<'a> {
+pub fn to_llvm_features<'a>(sess: &Session, s: &'a str) -> SmallVec<[&'a str; 2]> {
     let arch = if sess.target.arch == "x86_64" { "x86" } else { &*sess.target.arch };
     match (arch, s) {
         ("x86", "sse4.2") => {
-            LLVMFeature::with_dependency("sse4.2", TargetFeatureFoldStrength::EnableOnly("crc32"))
+            if get_version() >= (14, 0, 0) {
+                smallvec!["sse4.2", "crc32"]
+            } else {
+                smallvec!["sse4.2"]
+            }
         }
-        ("x86", "pclmulqdq") => LLVMFeature::new("pclmul"),
-        ("x86", "rdrand") => LLVMFeature::new("rdrnd"),
-        ("x86", "bmi1") => LLVMFeature::new("bmi"),
-        ("x86", "cmpxchg16b") => LLVMFeature::new("cx16"),
-        ("aarch64", "rcpc2") => LLVMFeature::new("rcpc-immo"),
-        ("aarch64", "dpb") => LLVMFeature::new("ccpp"),
-        ("aarch64", "dpb2") => LLVMFeature::new("ccdp"),
-        ("aarch64", "frintts") => LLVMFeature::new("fptoint"),
-        ("aarch64", "fcma") => LLVMFeature::new("complxnum"),
-        ("aarch64", "pmuv3") => LLVMFeature::new("perfmon"),
-        ("aarch64", "paca") => LLVMFeature::new("pauth"),
-        ("aarch64", "pacg") => LLVMFeature::new("pauth"),
-        // Rust ties fp and neon together.
-        ("aarch64", "neon") => {
-            LLVMFeature::with_dependency("neon", TargetFeatureFoldStrength::Both("fp-armv8"))
-        }
-        // In LLVM neon implicitly enables fp, but we manually enable
-        // neon when a feature only implicitly enables fp
-        ("aarch64", "f32mm") => {
-            LLVMFeature::with_dependency("f32mm", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "f64mm") => {
-            LLVMFeature::with_dependency("f64mm", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "fhm") => {
-            LLVMFeature::with_dependency("fp16fml", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "fp16") => {
-            LLVMFeature::with_dependency("fullfp16", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "jsconv") => {
-            LLVMFeature::with_dependency("jsconv", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "sve") => {
-            LLVMFeature::with_dependency("sve", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "sve2") => {
-            LLVMFeature::with_dependency("sve2", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "sve2-aes") => {
-            LLVMFeature::with_dependency("sve2-aes", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "sve2-sm4") => {
-            LLVMFeature::with_dependency("sve2-sm4", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "sve2-sha3") => {
-            LLVMFeature::with_dependency("sve2-sha3", TargetFeatureFoldStrength::EnableOnly("neon"))
-        }
-        ("aarch64", "sve2-bitperm") => LLVMFeature::with_dependency(
-            "sve2-bitperm",
-            TargetFeatureFoldStrength::EnableOnly("neon"),
-        ),
-        (_, s) => LLVMFeature::new(s),
+        ("x86", "pclmulqdq") => smallvec!["pclmul"],
+        ("x86", "rdrand") => smallvec!["rdrnd"],
+        ("x86", "bmi1") => smallvec!["bmi"],
+        ("x86", "cmpxchg16b") => smallvec!["cx16"],
+        ("x86", "avx512vaes") => smallvec!["vaes"],
+        ("x86", "avx512gfni") => smallvec!["gfni"],
+        ("x86", "avx512vpclmulqdq") => smallvec!["vpclmulqdq"],
+        ("aarch64", "rcpc2") => smallvec!["rcpc-immo"],
+        ("aarch64", "dpb") => smallvec!["ccpp"],
+        ("aarch64", "dpb2") => smallvec!["ccdp"],
+        ("aarch64", "frintts") => smallvec!["fptoint"],
+        ("aarch64", "fcma") => smallvec!["complxnum"],
+        ("aarch64", "pmuv3") => smallvec!["perfmon"],
+        ("aarch64", "paca") => smallvec!["pauth"],
+        ("aarch64", "pacg") => smallvec!["pauth"],
+        // Rust ties fp and neon together. In LLVM neon implicitly enables fp,
+        // but we manually enable neon when a feature only implicitly enables fp
+        ("aarch64", "f32mm") => smallvec!["f32mm", "neon"],
+        ("aarch64", "f64mm") => smallvec!["f64mm", "neon"],
+        ("aarch64", "fhm") => smallvec!["fp16fml", "neon"],
+        ("aarch64", "fp16") => smallvec!["fullfp16", "neon"],
+        ("aarch64", "jsconv") => smallvec!["jsconv", "neon"],
+        ("aarch64", "sve") => smallvec!["sve", "neon"],
+        ("aarch64", "sve2") => smallvec!["sve2", "neon"],
+        ("aarch64", "sve2-aes") => smallvec!["sve2-aes", "neon"],
+        ("aarch64", "sve2-sm4") => smallvec!["sve2-sm4", "neon"],
+        ("aarch64", "sve2-sha3") => smallvec!["sve2-sha3", "neon"],
+        ("aarch64", "sve2-bitperm") => smallvec!["sve2-bitperm", "neon"],
+        (_, s) => smallvec![s],
     }
 }
 
-/// Given a map from target_features to whether they are enabled or disabled,
-/// ensure only valid combinations are allowed.
+// Given a map from target_features to whether they are enabled or disabled,
+// ensure only valid combinations are allowed.
 pub fn check_tied_features(
     sess: &Session,
     features: &FxHashMap<&str, bool>,
@@ -281,11 +206,11 @@ pub fn check_tied_features(
     return None;
 }
 
-/// Used to generate cfg variables and apply features
-/// Must express features in the way Rust understands them
+// Used to generate cfg variables and apply features
+// Must express features in the way Rust understands them
 pub fn target_features(sess: &Session, allow_unstable: bool) -> Vec<Symbol> {
     let target_machine = create_informational_target_machine(sess);
-    supported_target_features(sess)
+    let mut features: Vec<Symbol> = supported_target_features(sess)
         .iter()
         .filter_map(|&(feature, gate)| {
             if sess.is_nightly_build() || allow_unstable || gate.is_none() {
@@ -305,7 +230,16 @@ pub fn target_features(sess: &Session, allow_unstable: bool) -> Vec<Symbol> {
             true
         })
         .map(|feature| Symbol::intern(feature))
-        .collect()
+        .collect();
+
+    // LLVM 14 changed the ABI for i128 arguments to __float/__fix builtins on Win64
+    // (see https://reviews.llvm.org/D110413). This unstable target feature is intended for use
+    // by compiler-builtins, to export the builtins with the expected, LLVM-version-dependent ABI.
+    // The target feature can be dropped once we no longer support older LLVM versions.
+    if sess.is_nightly_build() && get_version() >= (14, 0, 0) {
+        features.push(Symbol::intern("llvm14-builtins-abi"));
+    }
+    features
 }
 
 pub fn print_version() {
@@ -351,32 +285,30 @@ fn llvm_target_features(tm: &llvm::TargetMachine) -> Vec<(&str, &str)> {
 }
 
 fn print_target_features(sess: &Session, tm: &llvm::TargetMachine) {
-    let mut llvm_target_features = llvm_target_features(tm);
-    let mut known_llvm_target_features = FxHashSet::<&'static str>::default();
+    let mut target_features = llvm_target_features(tm);
     let mut rustc_target_features = supported_target_features(sess)
         .iter()
-        .map(|(feature, _gate)| {
-            // LLVM asserts that these are sorted. LLVM and Rust both use byte comparison for these strings.
-            let llvm_feature = to_llvm_features(sess, *feature).llvm_feature_name;
-            let desc =
-                match llvm_target_features.binary_search_by_key(&llvm_feature, |(f, _d)| f).ok() {
-                    Some(index) => {
-                        known_llvm_target_features.insert(llvm_feature);
-                        llvm_target_features[index].1
-                    }
-                    None => "",
-                };
-
-            (*feature, desc)
+        .filter_map(|(feature, _gate)| {
+            for llvm_feature in to_llvm_features(sess, *feature) {
+                // LLVM asserts that these are sorted. LLVM and Rust both use byte comparison for these strings.
+                match target_features.binary_search_by_key(&llvm_feature, |(f, _d)| f).ok().map(
+                    |index| {
+                        let (_f, desc) = target_features.remove(index);
+                        (*feature, desc)
+                    },
+                ) {
+                    Some(v) => return Some(v),
+                    None => {}
+                }
+            }
+            None
         })
         .collect::<Vec<_>>();
     rustc_target_features.extend_from_slice(&[(
         "crt-static",
         "Enables C Run-time Libraries to be statically linked",
     )]);
-    llvm_target_features.retain(|(f, _d)| !known_llvm_target_features.contains(f));
-
-    let max_feature_len = llvm_target_features
+    let max_feature_len = target_features
         .iter()
         .chain(rustc_target_features.iter())
         .map(|(feature, _desc)| feature.len())
@@ -388,10 +320,10 @@ fn print_target_features(sess: &Session, tm: &llvm::TargetMachine) {
         println!("    {1:0$} - {2}.", max_feature_len, feature, desc);
     }
     println!("\nCode-generation features supported by LLVM for this target:");
-    for (feature, desc) in &llvm_target_features {
+    for (feature, desc) in &target_features {
         println!("    {1:0$} - {2}.", max_feature_len, feature, desc);
     }
-    if llvm_target_features.is_empty() {
+    if target_features.is_empty() {
         println!("    Target features listing is not supported by this LLVM version.");
     }
     println!("\nUse +feature to enable a feature, or -feature to disable it.");
@@ -404,14 +336,7 @@ pub(crate) fn print(req: PrintRequest, sess: &Session) {
     require_inited();
     let tm = create_informational_target_machine(sess);
     match req {
-        PrintRequest::TargetCPUs => {
-            // SAFETY generate a C compatible string from a byte slice to pass
-            // the target CPU name into LLVM, the lifetime of the reference is
-            // at least as long as the C function
-            let cpu_cstring = CString::new(handle_native(sess.target.cpu.as_ref()))
-                .unwrap_or_else(|e| bug!("failed to convert to cstring: {}", e));
-            unsafe { llvm::LLVMRustPrintTargetCPUs(tm, cpu_cstring.as_ptr()) };
-        }
+        PrintRequest::TargetCPUs => unsafe { llvm::LLVMRustPrintTargetCPUs(tm) },
         PrintRequest::TargetFeatures => print_target_features(sess, tm),
         _ => bug!("rustc_codegen_llvm can't handle print request: {:?}", req),
     }
@@ -506,10 +431,15 @@ pub(crate) fn global_llvm_features(sess: &Session, diagnostics: bool) -> Vec<Str
         .filter_map(|s| {
             let enable_disable = match s.chars().next() {
                 None => return None,
-                Some(c @ ('+' | '-')) => c,
+                Some(c @ '+' | c @ '-') => c,
                 Some(_) => {
                     if diagnostics {
-                        sess.emit_warning(UnknownCTargetFeaturePrefix { feature: s });
+                        let mut diag = sess.struct_warn(&format!(
+                            "unknown feature specified for `-Ctarget-feature`: `{}`",
+                            s
+                        ));
+                        diag.note("features must begin with a `+` to enable or `-` to disable it");
+                        diag.emit();
                     }
                     return None;
                 }
@@ -526,15 +456,17 @@ pub(crate) fn global_llvm_features(sess: &Session, diagnostics: bool) -> Vec<Str
                         None
                     }
                 });
-                let unknown_feature = if let Some(rust_feature) = rust_feature {
-                    UnknownCTargetFeature {
-                        feature,
-                        rust_feature: PossibleFeature::Some { rust_feature },
-                    }
+                let mut diag = sess.struct_warn(&format!(
+                    "unknown feature specified for `-Ctarget-feature`: `{}`",
+                    feature
+                ));
+                diag.note("it is still passed through to the codegen backend");
+                if let Some(rust_feature) = rust_feature {
+                    diag.help(&format!("you might have meant: `{}`", rust_feature));
                 } else {
-                    UnknownCTargetFeature { feature, rust_feature: PossibleFeature::None }
-                };
-                sess.emit_warning(unknown_feature);
+                    diag.note("consider filing a feature request");
+                }
+                diag.emit();
             }
 
             if diagnostics {
@@ -550,30 +482,20 @@ pub(crate) fn global_llvm_features(sess: &Session, diagnostics: bool) -> Vec<Str
             // passing requests down to LLVM. This means that all in-language
             // features also work on the command line instead of having two
             // different names when the LLVM name and the Rust name differ.
-            let llvm_feature = to_llvm_features(sess, feature);
-
             Some(
-                std::iter::once(format!("{}{}", enable_disable, llvm_feature.llvm_feature_name))
-                    .chain(llvm_feature.dependency.into_iter().filter_map(move |feat| {
-                        match (enable_disable, feat) {
-                            ('-' | '+', TargetFeatureFoldStrength::Both(f))
-                            | ('+', TargetFeatureFoldStrength::EnableOnly(f)) => {
-                                Some(format!("{}{}", enable_disable, f))
-                            }
-                            _ => None,
-                        }
-                    })),
+                to_llvm_features(sess, feature)
+                    .into_iter()
+                    .map(move |f| format!("{}{}", enable_disable, f)),
             )
         })
         .flatten();
     features.extend(feats);
 
     if diagnostics && let Some(f) = check_tied_features(sess, &featsmap) {
-        sess.emit_err(TargetFeatureDisableOrEnable {
-            features: f,
-            span: None,
-            missing_features: None,
-        });
+        sess.err(&format!(
+            "target features {} must all be enabled or disabled together",
+            f.join(", ")
+        ));
     }
 
     features

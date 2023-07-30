@@ -3,7 +3,7 @@ use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
-use rustc_index::IndexVec;
+use rustc_index::vec::IndexVec;
 use rustc_middle::traits::specialization_graph::OverlapMode;
 use rustc_middle::ty::{self, TyCtxt};
 use rustc_span::Symbol;
@@ -27,8 +27,8 @@ impl<'tcx> InherentOverlapChecker<'tcx> {
     /// namespace.
     fn impls_have_common_items(
         &self,
-        impl_items1: &ty::AssocItems,
-        impl_items2: &ty::AssocItems,
+        impl_items1: &ty::AssocItems<'_>,
+        impl_items2: &ty::AssocItems<'_>,
     ) -> bool {
         let mut impl_items1 = &impl_items1;
         let mut impl_items2 = &impl_items2;
@@ -38,10 +38,10 @@ impl<'tcx> InherentOverlapChecker<'tcx> {
             std::mem::swap(&mut impl_items1, &mut impl_items2);
         }
 
-        for &item1 in impl_items1.in_definition_order() {
+        for item1 in impl_items1.in_definition_order() {
             let collision = impl_items2
                 .filter_by_name_unhygienic(item1.name)
-                .any(|&item2| self.compare_hygienically(item1, item2));
+                .any(|item2| self.compare_hygienically(item1, item2));
 
             if collision {
                 return true;
@@ -51,7 +51,7 @@ impl<'tcx> InherentOverlapChecker<'tcx> {
         false
     }
 
-    fn compare_hygienically(&self, item1: ty::AssocItem, item2: ty::AssocItem) -> bool {
+    fn compare_hygienically(&self, item1: &ty::AssocItem, item2: &ty::AssocItem) -> bool {
         // Symbols and namespace match, compare hygienically.
         item1.kind.namespace() == item2.kind.namespace()
             && item1.ident(self.tcx).normalize_to_macros_2_0()
@@ -98,10 +98,10 @@ impl<'tcx> InherentOverlapChecker<'tcx> {
         let impl_items1 = self.tcx.associated_items(impl1);
         let impl_items2 = self.tcx.associated_items(impl2);
 
-        for &item1 in impl_items1.in_definition_order() {
+        for item1 in impl_items1.in_definition_order() {
             let collision = impl_items2
                 .filter_by_name_unhygienic(item1.name)
-                .find(|&&item2| self.compare_hygienically(item1, item2));
+                .find(|item2| self.compare_hygienically(item1, item2));
 
             if let Some(item2) = collision {
                 let name = item1.ident(self.tcx).normalize_to_macros_2_0();
@@ -140,7 +140,7 @@ impl<'tcx> InherentOverlapChecker<'tcx> {
         impl1_def_id: DefId,
         impl2_def_id: DefId,
     ) {
-        let maybe_overlap = traits::overlapping_impls(
+        traits::overlapping_impls(
             self.tcx,
             impl1_def_id,
             impl2_def_id,
@@ -148,11 +148,11 @@ impl<'tcx> InherentOverlapChecker<'tcx> {
             // inherent impls without warning.
             SkipLeakCheck::Yes,
             overlap_mode,
-        );
-
-        if let Some(overlap) = maybe_overlap {
+        )
+        .map_or(true, |overlap| {
             self.check_for_common_items_in_impls(impl1_def_id, impl2_def_id, overlap);
-        }
+            false
+        });
     }
 
     fn check_item(&mut self, id: hir::ItemId) {
@@ -198,10 +198,10 @@ impl<'tcx> InherentOverlapChecker<'tcx> {
             // entire graph when there are many connected regions.
 
             rustc_index::newtype_index! {
-                #[custom_encodable]
-                pub struct RegionId {}
+                pub struct RegionId {
+                    ENCODABLE = custom
+                }
             }
-
             struct ConnectedRegion {
                 idents: SmallVec<[Symbol; 8]>,
                 impl_blocks: FxHashSet<usize>,
@@ -302,7 +302,7 @@ impl<'tcx> InherentOverlapChecker<'tcx> {
                         .iter()
                         .flatten()
                         .map(|r| r.impl_blocks.len() as isize - avg as isize)
-                        .map(|v| v.unsigned_abs())
+                        .map(|v| v.abs() as usize)
                         .sum::<usize>();
                     s / connected_regions.len()
                 },

@@ -15,31 +15,32 @@ use rustc_hir::HirId;
 use rustc_hir::Node;
 use rustc_middle::middle::region;
 use rustc_middle::thir::*;
-use rustc_middle::ty::{self, RvalueScopes, Ty, TyCtxt};
+use rustc_middle::ty::{self, RvalueScopes, TyCtxt};
+use rustc_span::Span;
 
-pub(crate) fn thir_body(
-    tcx: TyCtxt<'_>,
-    owner_def: LocalDefId,
-) -> Result<(&Steal<Thir<'_>>, ExprId), ErrorGuaranteed> {
+pub(crate) fn thir_body<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    owner_def: ty::WithOptConstParam<LocalDefId>,
+) -> Result<(&'tcx Steal<Thir<'tcx>>, ExprId), ErrorGuaranteed> {
     let hir = tcx.hir();
-    let body = hir.body(hir.body_owned_by(owner_def));
+    let body = hir.body(hir.body_owned_by(owner_def.did));
     let mut cx = Cx::new(tcx, owner_def);
     if let Some(reported) = cx.typeck_results.tainted_by_errors {
         return Err(reported);
     }
     let expr = cx.mirror_expr(&body.value);
 
-    let owner_id = hir.local_def_id_to_hir_id(owner_def);
+    let owner_id = hir.local_def_id_to_hir_id(owner_def.did);
     if let Some(ref fn_decl) = hir.fn_decl_by_hir_id(owner_id) {
-        let closure_env_param = cx.closure_env_param(owner_def, owner_id);
+        let closure_env_param = cx.closure_env_param(owner_def.did, owner_id);
         let explicit_params = cx.explicit_params(owner_id, fn_decl, body);
         cx.thir.params = closure_env_param.into_iter().chain(explicit_params).collect();
 
         // The resume argument may be missing, in that case we need to provide it here.
         // It will always be `()` in this case.
-        if tcx.def_kind(owner_def) == DefKind::Generator && body.params.is_empty() {
+        if tcx.def_kind(owner_def.did) == DefKind::Generator && body.params.is_empty() {
             cx.thir.params.push(Param {
-                ty: Ty::new_unit(tcx),
+                ty: tcx.mk_unit(),
                 pat: None,
                 ty_span: None,
                 self_kind: None,
@@ -49,6 +50,16 @@ pub(crate) fn thir_body(
     }
 
     Ok((tcx.alloc_steal_thir(cx.thir), expr))
+}
+
+pub(crate) fn thir_tree<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    owner_def: ty::WithOptConstParam<LocalDefId>,
+) -> String {
+    match thir_body(tcx, owner_def) {
+        Ok((thir, _)) => format!("{:#?}", thir.steal()),
+        Err(_) => "error".into(),
+    }
 }
 
 struct Cx<'tcx> {
@@ -61,50 +72,30 @@ struct Cx<'tcx> {
     typeck_results: &'tcx ty::TypeckResults<'tcx>,
     rvalue_scopes: &'tcx RvalueScopes,
 
-    /// False to indicate that adjustments should not be applied. Only used for `custom_mir`
-    apply_adjustments: bool,
+    /// When applying adjustments to the expression
+    /// with the given `HirId`, use the given `Span`,
+    /// instead of the usual span. This is used to
+    /// assign the span of an overall method call
+    /// (e.g. `my_val.foo()`) to the adjustment expressions
+    /// for the receiver.
+    adjustment_span: Option<(HirId, Span)>,
 
     /// The `DefId` of the owner of this body.
     body_owner: DefId,
 }
 
 impl<'tcx> Cx<'tcx> {
-    fn new(tcx: TyCtxt<'tcx>, def: LocalDefId) -> Cx<'tcx> {
-        let typeck_results = tcx.typeck(def);
-        let hir = tcx.hir();
-        let hir_id = hir.local_def_id_to_hir_id(def);
-
-        let body_type = if hir.body_owner_kind(def).is_fn_or_closure() {
-            // fetch the fully liberated fn signature (that is, all bound
-            // types/lifetimes replaced)
-            BodyTy::Fn(typeck_results.liberated_fn_sigs()[hir_id])
-        } else {
-            // Get the revealed type of this const. This is *not* the adjusted
-            // type of its body, which may be a subtype of this type. For
-            // example:
-            //
-            // fn foo(_: &()) {}
-            // static X: fn(&'static ()) = foo;
-            //
-            // The adjusted type of the body of X is `for<'a> fn(&'a ())` which
-            // is not the same as the type of X. We need the type of the return
-            // place to be the type of the constant because NLL typeck will
-            // equate them.
-            BodyTy::Const(typeck_results.node_type(hir_id))
-        };
-
+    fn new(tcx: TyCtxt<'tcx>, def: ty::WithOptConstParam<LocalDefId>) -> Cx<'tcx> {
+        let typeck_results = tcx.typeck_opt_const_arg(def);
         Cx {
             tcx,
-            thir: Thir::new(body_type),
-            param_env: tcx.param_env(def),
-            region_scope_tree: tcx.region_scope_tree(def),
+            thir: Thir::new(),
+            param_env: tcx.param_env(def.did),
+            region_scope_tree: tcx.region_scope_tree(def.did),
             typeck_results,
             rvalue_scopes: &typeck_results.rvalue_scopes,
-            body_owner: def.to_def_id(),
-            apply_adjustments: hir
-                .attrs(hir_id)
-                .iter()
-                .all(|attr| attr.name_or_empty() != rustc_span::sym::custom_mir),
+            body_owner: def.did.to_def_id(),
+            adjustment_span: None,
         }
     }
 
@@ -126,13 +117,14 @@ impl<'tcx> Cx<'tcx> {
                     bug!("closure expr does not have closure type: {:?}", closure_ty);
                 };
 
-                let bound_vars =
-                    self.tcx.mk_bound_variable_kinds(&[ty::BoundVariableKind::Region(ty::BrEnv)]);
+                let bound_vars = self.tcx.mk_bound_variable_kinds(std::iter::once(
+                    ty::BoundVariableKind::Region(ty::BrEnv),
+                ));
                 let br = ty::BoundRegion {
                     var: ty::BoundVar::from_usize(bound_vars.len() - 1),
                     kind: ty::BrEnv,
                 };
-                let env_region = ty::Region::new_late_bound(self.tcx, ty::INNERMOST, br);
+                let env_region = ty::ReLateBound(ty::INNERMOST, br);
                 let closure_env_ty =
                     self.tcx.closure_env_ty(closure_def_id, closure_substs, env_region).unwrap();
                 let liberated_closure_env_ty = self.tcx.erase_late_bound_regions(
@@ -185,7 +177,7 @@ impl<'tcx> Cx<'tcx> {
                 let va_list_did = self.tcx.require_lang_item(LangItem::VaList, Some(param.span));
 
                 self.tcx
-                    .type_of(va_list_did)
+                    .bound_type_of(va_list_did)
                     .subst(self.tcx, &[self.tcx.lifetimes.re_erased.into()])
             } else {
                 fn_sig.inputs()[index]

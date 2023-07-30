@@ -1,3 +1,5 @@
+use crate::ptr::metadata_update::MetaUpdate;
+
 use crate::convert::From;
 use crate::fmt;
 use crate::marker::{PhantomData, Unsize};
@@ -32,8 +34,6 @@ use crate::ptr::NonNull;
 )]
 #[doc(hidden)]
 #[repr(transparent)]
-// Lang item used experimentally by Miri to define the semantics of `Unique`.
-#[cfg_attr(not(bootstrap), lang = "ptr_unique")]
 pub struct Unique<T: ?Sized> {
     pointer: NonNull<T>,
     // NOTE: this marker has no consequences for variance, but is necessary
@@ -42,6 +42,15 @@ pub struct Unique<T: ?Sized> {
     // For details, see:
     // https://github.com/rust-lang/rfcs/blob/master/text/0769-sound-generic-drop.md#phantom-data
     _marker: PhantomData<T>,
+}
+
+/// consider unique ptr as smart
+/// anyone who stores this 
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for Unique<T> {
+    fn synchronize(&self) -> bool {
+        true
+    }
 }
 
 /// `Unique` pointers are `Send` if `T` is `Send` because the data they
@@ -72,8 +81,7 @@ impl<T: Sized> Unique<T> {
     #[must_use]
     #[inline]
     pub const fn dangling() -> Self {
-        // FIXME(const-hack) replace with `From`
-        Unique { pointer: NonNull::dangling(), _marker: PhantomData }
+        Self::from(NonNull::dangling())
     }
 }
 
@@ -137,14 +145,13 @@ impl<T: ?Sized> Unique<T> {
     #[must_use = "`self` will be dropped if the result is not used"]
     #[inline]
     pub const fn cast<U>(self) -> Unique<U> {
-        // FIXME(const-hack): replace with `From`
-        // SAFETY: is `NonNull`
-        unsafe { Unique::new_unchecked(self.pointer.cast().as_ptr()) }
+        Unique::from(self.pointer.cast())
     }
 }
 
 #[unstable(feature = "ptr_internals", issue = "none")]
-impl<T: ?Sized> Clone for Unique<T> {
+#[rustc_const_unstable(feature = "const_clone", issue = "91805")]
+impl<T: ?Sized> const Clone for Unique<T> {
     #[inline]
     fn clone(&self) -> Self {
         *self
@@ -175,7 +182,7 @@ impl<T: ?Sized> fmt::Pointer for Unique<T> {
 }
 
 #[unstable(feature = "ptr_internals", issue = "none")]
-impl<T: ?Sized> From<&mut T> for Unique<T> {
+impl<T: ?Sized> const From<&mut T> for Unique<T> {
     /// Converts a `&mut T` to a `Unique<T>`.
     ///
     /// This conversion is infallible since references cannot be null.
@@ -186,7 +193,7 @@ impl<T: ?Sized> From<&mut T> for Unique<T> {
 }
 
 #[unstable(feature = "ptr_internals", issue = "none")]
-impl<T: ?Sized> From<NonNull<T>> for Unique<T> {
+impl<T: ?Sized> const From<NonNull<T>> for Unique<T> {
     /// Converts a `NonNull<T>` to a `Unique<T>`.
     ///
     /// This conversion is infallible since `NonNull` cannot be null.

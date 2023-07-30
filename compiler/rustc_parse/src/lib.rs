@@ -3,7 +3,6 @@
 #![feature(array_windows)]
 #![feature(box_patterns)]
 #![feature(if_let_guard)]
-#![feature(iter_intersperse)]
 #![feature(let_chains)]
 #![feature(never_type)]
 #![feature(rustc_attrs)]
@@ -15,12 +14,11 @@ extern crate tracing;
 use rustc_ast as ast;
 use rustc_ast::token;
 use rustc_ast::tokenstream::TokenStream;
-use rustc_ast::{AttrItem, Attribute, MetaItem};
+use rustc_ast::Attribute;
+use rustc_ast::{AttrItem, MetaItem};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::sync::Lrc;
-use rustc_errors::{Diagnostic, FatalError, Level, PResult};
-use rustc_errors::{DiagnosticMessage, SubdiagnosticMessage};
-use rustc_fluent_macro::fluent_messages;
+use rustc_errors::{Applicability, Diagnostic, FatalError, Level, PResult};
 use rustc_session::parse::ParseSess;
 use rustc_span::{FileName, SourceFile, Span};
 
@@ -30,13 +28,11 @@ pub const MACRO_ARGUMENTS: Option<&str> = Some("macro arguments");
 
 #[macro_use]
 pub mod parser;
-use parser::{make_unclosed_delims_error, Parser};
+use parser::{emit_unclosed_delims, make_unclosed_delims_error, Parser};
 pub mod lexer;
 pub mod validate_attr;
 
 mod errors;
-
-fluent_messages! { "../messages.ftl" }
 
 // A bunch of utility functions of the form `parse_<thing>_from_<source>`
 // where <thing> includes crate, expr, item, stmt, tts, and one that
@@ -96,7 +92,10 @@ pub fn parse_stream_from_source_str(
     sess: &ParseSess,
     override_span: Option<Span>,
 ) -> TokenStream {
-    source_file_to_stream(sess, sess.source_map().new_source_file(name, source), override_span)
+    let (stream, mut errors) =
+        source_file_to_stream(sess, sess.source_map().new_source_file(name, source), override_span);
+    emit_unclosed_delims(&mut errors, &sess);
+    stream
 }
 
 /// Creates a new parser from a source string.
@@ -132,8 +131,9 @@ fn maybe_source_file_to_parser(
     source_file: Lrc<SourceFile>,
 ) -> Result<Parser<'_>, Vec<Diagnostic>> {
     let end_pos = source_file.end_pos;
-    let stream = maybe_file_to_stream(sess, source_file, None)?;
+    let (stream, unclosed_delims) = maybe_file_to_stream(sess, source_file, None)?;
     let mut parser = stream_to_parser(sess, stream, None);
+    parser.unclosed_delims = unclosed_delims;
     if parser.token == token::Eof {
         parser.token.span = Span::new(end_pos, end_pos, parser.token.span.ctxt(), None);
     }
@@ -153,7 +153,7 @@ fn try_file_to_source_file(
 ) -> Result<Lrc<SourceFile>, Diagnostic> {
     sess.source_map().load_file(path).map_err(|e| {
         let msg = format!("couldn't read {}: {}", path.display(), e);
-        let mut diag = Diagnostic::new(Level::Fatal, msg);
+        let mut diag = Diagnostic::new(Level::Fatal, &msg);
         if let Some(sp) = spanopt {
             diag.set_span(sp);
         }
@@ -178,7 +178,7 @@ pub fn source_file_to_stream(
     sess: &ParseSess,
     source_file: Lrc<SourceFile>,
     override_span: Option<Span>,
-) -> TokenStream {
+) -> (TokenStream, Vec<lexer::UnmatchedBrace>) {
     panictry_buffer!(&sess.span_diagnostic, maybe_file_to_stream(sess, source_file, override_span))
 }
 
@@ -188,15 +188,31 @@ pub fn maybe_file_to_stream(
     sess: &ParseSess,
     source_file: Lrc<SourceFile>,
     override_span: Option<Span>,
-) -> Result<TokenStream, Vec<Diagnostic>> {
+) -> Result<(TokenStream, Vec<lexer::UnmatchedBrace>), Vec<Diagnostic>> {
     let src = source_file.src.as_ref().unwrap_or_else(|| {
-        sess.span_diagnostic.bug(format!(
+        sess.span_diagnostic.bug(&format!(
             "cannot lex `source_file` without source: {}",
             sess.source_map().filename_for_diagnostics(&source_file.name)
         ));
     });
 
-    lexer::parse_token_trees(sess, src.as_str(), source_file.start_pos, override_span)
+    let (token_trees, unmatched_braces) =
+        lexer::parse_token_trees(sess, src.as_str(), source_file.start_pos, override_span);
+
+    match token_trees {
+        Ok(stream) => Ok((stream, unmatched_braces)),
+        Err(err) => {
+            let mut buffer = Vec::with_capacity(1);
+            err.buffer(&mut buffer);
+            // Not using `emit_unclosed_delims` to use `db.buffer`
+            for unmatched in unmatched_braces {
+                if let Some(err) = make_unclosed_delims_error(unmatched, &sess) {
+                    err.buffer(&mut buffer);
+                }
+            }
+            Err(buffer)
+        }
+    }
 }
 
 /// Given a stream and the `ParseSess`, produces a parser.
@@ -240,14 +256,13 @@ pub fn parse_cfg_attr(
     parse_sess: &ParseSess,
 ) -> Option<(MetaItem, Vec<(AttrItem, Span)>)> {
     match attr.get_normal_item().args {
-        ast::AttrArgs::Delimited(ast::DelimArgs { dspan, delim, ref tokens })
-            if !tokens.is_empty() =>
-        {
-            crate::validate_attr::check_cfg_attr_bad_delim(parse_sess, dspan, delim);
-            match parse_in(parse_sess, tokens.clone(), "`cfg_attr` input", |p| p.parse_cfg_attr()) {
+        ast::MacArgs::Delimited(dspan, delim, ref tts) if !tts.is_empty() => {
+            let msg = "wrong `cfg_attr` delimiters";
+            crate::validate_attr::check_meta_bad_delim(parse_sess, dspan, delim, msg);
+            match parse_in(parse_sess, tts.clone(), "`cfg_attr` input", |p| p.parse_cfg_attr()) {
                 Ok(r) => return Some(r),
                 Err(mut e) => {
-                    e.help(format!("the valid syntax is `{}`", CFG_ATTR_GRAMMAR_HELP))
+                    e.help(&format!("the valid syntax is `{}`", CFG_ATTR_GRAMMAR_HELP))
                         .note(CFG_ATTR_NOTE_REF)
                         .emit();
                 }
@@ -264,5 +279,15 @@ const CFG_ATTR_NOTE_REF: &str = "for more information, visit \
     #the-cfg_attr-attribute>";
 
 fn error_malformed_cfg_attr_missing(span: Span, parse_sess: &ParseSess) {
-    parse_sess.emit_err(errors::MalformedCfgAttr { span, sugg: CFG_ATTR_GRAMMAR_HELP });
+    parse_sess
+        .span_diagnostic
+        .struct_span_err(span, "malformed `cfg_attr` attribute input")
+        .span_suggestion(
+            span,
+            "missing condition and attribute",
+            CFG_ATTR_GRAMMAR_HELP,
+            Applicability::HasPlaceholders,
+        )
+        .note(CFG_ATTR_NOTE_REF)
+        .emit();
 }

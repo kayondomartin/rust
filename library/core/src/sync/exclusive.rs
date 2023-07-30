@@ -69,6 +69,9 @@ use core::task::{Context, Poll};
 /// for any value. This is a parallel with the fact that
 /// `&` and `&mut` references together can be thought of as a _compile-time_
 /// version of a read-write lock.
+///
+///
+/// [`Sync`]: core::marker::Sync
 #[unstable(feature = "exclusive_wrapper", issue = "98407")]
 #[doc(alias = "SyncWrapper")]
 #[doc(alias = "SyncCell")]
@@ -135,7 +138,7 @@ impl<T: ?Sized> Exclusive<T> {
         unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().inner) }
     }
 
-    /// Build a _mutable_ reference to an `Exclusive<T>` from
+    /// Build a _mutable_ references to an `Exclusive<T>` from
     /// a _mutable_ reference to a `T`. This allows you to skip
     /// building an `Exclusive` with [`Exclusive::new`].
     #[unstable(feature = "exclusive_wrapper", issue = "98407")]
@@ -146,7 +149,7 @@ impl<T: ?Sized> Exclusive<T> {
         unsafe { &mut *(r as *mut T as *mut Exclusive<T>) }
     }
 
-    /// Build a _pinned mutable_ reference to an `Exclusive<T>` from
+    /// Build a _pinned mutable_ references to an `Exclusive<T>` from
     /// a _pinned mutable_ reference to a `T`. This allows you to skip
     /// building an `Exclusive` with [`Exclusive::new`].
     #[unstable(feature = "exclusive_wrapper", issue = "98407")]

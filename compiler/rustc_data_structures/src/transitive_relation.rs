@@ -199,7 +199,7 @@ impl<T: Eq + Hash + Copy> TransitiveRelation<T> {
     /// Viewing the relation as a graph, computes the "mutual
     /// immediate postdominator" of a set of points (if one
     /// exists). See `postdom_upper_bound` for details.
-    pub fn mutual_immediate_postdominator(&self, mut mubs: Vec<T>) -> Option<T> {
+    pub fn mutual_immediate_postdominator<'a>(&'a self, mut mubs: Vec<T>) -> Option<T> {
         loop {
             match mubs.len() {
                 0 => return None,
@@ -250,7 +250,7 @@ impl<T: Eq + Hash + Copy> TransitiveRelation<T> {
             // values. So here is what we do:
             //
             // 1. Find the vector `[X | a < X && b < X]` of all values
-            //    `X` where `a < X` and `b < X`. In terms of the
+            //    `X` where `a < X` and `b < X`.  In terms of the
             //    graph, this means all values reachable from both `a`
             //    and `b`. Note that this vector is also a set, but we
             //    use the term vector because the order matters

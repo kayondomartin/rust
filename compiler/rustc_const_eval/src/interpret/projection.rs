@@ -7,12 +7,9 @@
 //! but we still need to do bounds checking and adjust the layout. To not duplicate that with MPlaceTy, we actually
 //! implement the logic on OpTy, and MPlaceTy calls that.
 
-use either::{Left, Right};
-
 use rustc_middle::mir;
 use rustc_middle::ty;
 use rustc_middle::ty::layout::LayoutOf;
-use rustc_middle::ty::Ty;
 use rustc_target::abi::{self, Abi, VariantIdx};
 
 use super::{
@@ -87,13 +84,13 @@ where
         base: &OpTy<'tcx, M::Provenance>,
         field: usize,
     ) -> InterpResult<'tcx, OpTy<'tcx, M::Provenance>> {
-        let base = match base.as_mplace_or_imm() {
-            Left(ref mplace) => {
+        let base = match base.try_as_mplace() {
+            Ok(ref mplace) => {
                 // We can reuse the mplace field computation logic for indirect operands.
                 let field = self.mplace_field(mplace, field)?;
                 return Ok(field.into());
             }
-            Right(value) => value,
+            Err(value) => value,
         };
 
         let field_layout = base.layout.field(self, field);
@@ -207,8 +204,8 @@ where
         }
     }
 
-    /// Iterates over all fields of an array. Much more efficient than doing the
-    /// same by repeatedly calling `operand_index`.
+    // Iterates over all fields of an array. Much more efficient than doing the
+    // same by repeatedly calling `operand_index`.
     pub fn operand_array_fields<'a>(
         &self,
         base: &'a OpTy<'tcx, Prov>,
@@ -318,11 +315,9 @@ where
         let (meta, ty) = match base.layout.ty.kind() {
             // It is not nice to match on the type, but that seems to be the only way to
             // implement this.
-            ty::Array(inner, _) => {
-                (MemPlaceMeta::None, Ty::new_array(self.tcx.tcx, *inner, inner_len))
-            }
+            ty::Array(inner, _) => (MemPlaceMeta::None, self.tcx.mk_array(*inner, inner_len)),
             ty::Slice(..) => {
-                let len = Scalar::from_target_usize(inner_len, self);
+                let len = Scalar::from_machine_usize(inner_len, self);
                 (MemPlaceMeta::Meta(len), base.layout.ty)
             }
             _ => {
@@ -366,7 +361,7 @@ where
             Index(local) => {
                 let layout = self.layout_of(self.tcx.types.usize)?;
                 let n = self.local_to_op(self.frame(), local, Some(layout))?;
-                let n = self.read_target_usize(&n)?;
+                let n = self.read_scalar(&n)?.to_machine_usize(self)?;
                 self.place_index(base, n)?
             }
             ConstantIndex { offset, min_length, from_end } => {
@@ -395,7 +390,7 @@ where
             Index(local) => {
                 let layout = self.layout_of(self.tcx.types.usize)?;
                 let n = self.local_to_op(self.frame(), local, Some(layout))?;
-                let n = self.read_target_usize(&n)?;
+                let n = self.read_scalar(&n)?.to_machine_usize(self)?;
                 self.operand_index(base, n)?
             }
             ConstantIndex { offset, min_length, from_end } => {

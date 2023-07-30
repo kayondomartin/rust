@@ -2,9 +2,8 @@
 //!
 //! [work products]: WorkProduct
 
-use crate::errors;
 use crate::persist::fs::*;
-use rustc_data_structures::unord::UnordMap;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_fs_util::link_or_copy;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
 use rustc_session::Session;
@@ -20,7 +19,7 @@ pub fn copy_cgu_workproduct_to_incr_comp_cache_dir(
     debug!(?cgu_name, ?files);
     sess.opts.incremental.as_ref()?;
 
-    let mut saved_files = UnordMap::default();
+    let mut saved_files = FxHashMap::default();
     for (ext, path) in files {
         let file_name = format!("{cgu_name}.{ext}");
         let path_in_incr_dir = in_incr_comp_dir_sess(sess, &file_name);
@@ -29,11 +28,12 @@ pub fn copy_cgu_workproduct_to_incr_comp_cache_dir(
                 let _ = saved_files.insert(ext.to_string(), file_name);
             }
             Err(err) => {
-                sess.emit_warning(errors::CopyWorkProductToCache {
-                    from: &path,
-                    to: &path_in_incr_dir,
-                    err,
-                });
+                sess.warn(&format!(
+                    "error copying object file `{}` to incremental directory as `{}`: {}",
+                    path.display(),
+                    path_in_incr_dir.display(),
+                    err
+                ));
             }
         }
     }
@@ -46,10 +46,14 @@ pub fn copy_cgu_workproduct_to_incr_comp_cache_dir(
 
 /// Removes files for a given work product.
 pub fn delete_workproduct_files(sess: &Session, work_product: &WorkProduct) {
-    for (_, path) in work_product.saved_files.items().into_sorted_stable_ord() {
+    for (_, path) in &work_product.saved_files {
         let path = in_incr_comp_dir_sess(sess, path);
         if let Err(err) = std_fs::remove_file(&path) {
-            sess.emit_warning(errors::DeleteWorkProduct { path: &path, err });
+            sess.warn(&format!(
+                "file-system error deleting outdated file `{}`: {}",
+                path.display(),
+                err
+            ));
         }
     }
 }

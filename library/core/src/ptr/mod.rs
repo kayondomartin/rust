@@ -35,8 +35,7 @@
 //!   be used for inter-thread synchronization.
 //! * The result of casting a reference to a pointer is valid for as long as the
 //!   underlying object is live and no reference (just raw pointers) is used to
-//!   access the same memory. That is, reference and pointer accesses cannot be
-//!   interleaved.
+//!   access the same memory.
 //!
 //! These axioms, along with careful use of [`offset`] for pointer arithmetic,
 //! are enough to correctly implement many useful things in unsafe code. Stronger guarantees
@@ -64,6 +63,7 @@
 //! Common examples of allocated objects include stack-allocated variables (each variable is a
 //! separate allocated object), heap allocations (each allocation created by the global allocator is
 //! a separate allocated object), and `static` variables.
+//!
 //!
 //! # Strict Provenance
 //!
@@ -374,7 +374,6 @@ use crate::hash;
 use crate::intrinsics::{
     self, assert_unsafe_precondition, is_aligned_and_not_null, is_nonoverlapping,
 };
-use crate::marker::FnPtr;
 
 use crate::mem::{self, MaybeUninit};
 
@@ -409,6 +408,10 @@ pub use unique::Unique;
 mod const_ptr;
 mod mut_ptr;
 
+/// metadata_update trait
+#[unstable(feature = "metadata_update", issue = "none")]
+pub mod metadata_update;
+
 /// Executes the destructor (if any) of the pointed-to value.
 ///
 /// This is semantically equivalent to calling [`ptr::read`] and discarding
@@ -441,24 +444,18 @@ mod mut_ptr;
 ///
 /// * `to_drop` must be [valid] for both reads and writes.
 ///
-/// * `to_drop` must be properly aligned, even if `T` has size 0.
+/// * `to_drop` must be properly aligned.
 ///
-/// * `to_drop` must be nonnull, even if `T` has size 0.
-///
-/// * The value `to_drop` points to must be valid for dropping, which may mean
-///   it must uphold additional invariants. These invariants depend on the type
-///   of the value being dropped. For instance, when dropping a Box, the box's
-///   pointer to the heap must be valid.
-///
-/// * While `drop_in_place` is executing, the only way to access parts of
-///   `to_drop` is through the `&mut self` references supplied to the
-///   `Drop::drop` methods that `drop_in_place` invokes.
+/// * The value `to_drop` points to must be valid for dropping, which may mean it must uphold
+///   additional invariants - this is type-dependent.
 ///
 /// Additionally, if `T` is not [`Copy`], using the pointed-to value after
 /// calling `drop_in_place` can cause undefined behavior. Note that `*to_drop =
 /// foo` counts as a use because it will cause the value to be dropped
 /// again. [`write()`] can be used to overwrite data without causing it to be
 /// dropped.
+///
+/// Note that even if `T` has size `0`, the pointer must be non-null and properly aligned.
 ///
 /// [valid]: self#safety
 ///
@@ -521,27 +518,6 @@ pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
 #[rustc_diagnostic_item = "ptr_null"]
 pub const fn null<T: ?Sized + Thin>() -> *const T {
     from_raw_parts(invalid(0), ())
-}
-
-/// Creates a null mutable raw pointer.
-///
-/// # Examples
-///
-/// ```
-/// use std::ptr;
-///
-/// let p: *mut i32 = ptr::null_mut();
-/// assert!(p.is_null());
-/// ```
-#[inline(always)]
-#[must_use]
-#[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_promotable]
-#[rustc_const_stable(feature = "const_ptr_null", since = "1.24.0")]
-#[rustc_allow_const_fn_unstable(ptr_metadata)]
-#[rustc_diagnostic_item = "ptr_null_mut"]
-pub const fn null_mut<T: ?Sized + Thin>() -> *mut T {
-    from_raw_parts_mut(invalid_mut(0), ())
 }
 
 /// Creates an invalid pointer with the given address.
@@ -641,10 +617,9 @@ pub const fn invalid_mut<T>(addr: usize) -> *mut T {
 /// This API and its claimed semantics are part of the Strict Provenance experiment, see the
 /// [module documentation][crate::ptr] for details.
 #[must_use]
-#[inline(always)]
+#[inline]
 #[unstable(feature = "strict_provenance", issue = "95228")]
 #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
-#[allow(fuzzy_provenance_casts)] // this *is* the strict provenance API one should use instead
 pub fn from_exposed_addr<T>(addr: usize) -> *const T
 where
     T: Sized,
@@ -679,10 +654,9 @@ where
 /// This API and its claimed semantics are part of the Strict Provenance experiment, see the
 /// [module documentation][crate::ptr] for details.
 #[must_use]
-#[inline(always)]
+#[inline]
 #[unstable(feature = "strict_provenance", issue = "95228")]
 #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
-#[allow(fuzzy_provenance_casts)] // this *is* the strict provenance API one should use instead
 pub fn from_exposed_addr_mut<T>(addr: usize) -> *mut T
 where
     T: Sized,
@@ -691,27 +665,25 @@ where
     addr as *mut T
 }
 
-/// Convert a reference to a raw pointer.
+/// Creates a null mutable raw pointer.
 ///
-/// This is equivalent to `r as *const T`, but is a bit safer since it will never silently change
-/// type or mutability, in particular if the code is refactored.
+/// # Examples
+///
+/// ```
+/// use std::ptr;
+///
+/// let p: *mut i32 = ptr::null_mut();
+/// assert!(p.is_null());
+/// ```
 #[inline(always)]
 #[must_use]
-#[unstable(feature = "ptr_from_ref", issue = "106116")]
-#[rustc_diagnostic_item = "ptr_from_ref"]
-pub const fn from_ref<T: ?Sized>(r: &T) -> *const T {
-    r
-}
-
-/// Convert a mutable reference to a raw pointer.
-///
-/// This is equivalent to `r as *mut T`, but is a bit safer since it will never silently change
-/// type or mutability, in particular if the code is refactored.
-#[inline(always)]
-#[must_use]
-#[unstable(feature = "ptr_from_ref", issue = "106116")]
-pub const fn from_mut<T: ?Sized>(r: &mut T) -> *mut T {
-    r
+#[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_promotable]
+#[rustc_const_stable(feature = "const_ptr_null", since = "1.24.0")]
+#[rustc_allow_const_fn_unstable(ptr_metadata)]
+#[rustc_diagnostic_item = "ptr_null_mut"]
+pub const fn null_mut<T: ?Sized + Thin>() -> *mut T {
+    from_raw_parts_mut(invalid_mut(0), ())
 }
 
 /// Forms a raw slice from a pointer and a length.
@@ -940,15 +912,21 @@ pub const unsafe fn swap_nonoverlapping<T>(x: *mut T, y: *mut T, count: usize) {
         );
     }
 
-    // Split up the slice into small power-of-two-sized chunks that LLVM is able
-    // to vectorize (unless it's a special type with more-than-pointer alignment,
-    // because we don't want to pessimize things like slices of SIMD vectors.)
-    if mem::align_of::<T>() <= mem::size_of::<usize>()
-        && (!mem::size_of::<T>().is_power_of_two()
-            || mem::size_of::<T>() > mem::size_of::<usize>() * 2)
+    // NOTE(scottmcm) Miri is disabled here as reading in smaller units is a
+    // pessimization for it.  Also, if the type contains any unaligned pointers,
+    // copying those over multiple reads is difficult to support.
+    #[cfg(not(miri))]
     {
-        attempt_swap_as_chunks!(usize);
-        attempt_swap_as_chunks!(u8);
+        // Split up the slice into small power-of-two-sized chunks that LLVM is able
+        // to vectorize (unless it's a special type with more-than-pointer alignment,
+        // because we don't want to pessimize things like slices of SIMD vectors.)
+        if mem::align_of::<T>() <= mem::size_of::<usize>()
+            && (!mem::size_of::<T>().is_power_of_two()
+                || mem::size_of::<T>() > mem::size_of::<usize>() * 2)
+        {
+            attempt_swap_as_chunks!(usize);
+            attempt_swap_as_chunks!(u8);
+        }
     }
 
     // SAFETY: Same preconditions as this function
@@ -1140,43 +1118,30 @@ pub const unsafe fn replace<T>(dst: *mut T, mut src: T) -> T {
 /// [valid]: self#safety
 #[inline]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_const_stable(feature = "const_ptr_read", since = "1.71.0")]
-#[rustc_allow_const_fn_unstable(const_mut_refs, const_maybe_uninit_as_mut_ptr)]
+#[rustc_const_unstable(feature = "const_ptr_read", issue = "80377")]
 #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
 pub const unsafe fn read<T>(src: *const T) -> T {
-    // It would be semantically correct to implement this via `copy_nonoverlapping`
-    // and `MaybeUninit`, as was done before PR #109035. Calling `assume_init`
-    // provides enough information to know that this is a typed operation.
+    // We are calling the intrinsics directly to avoid function calls in the generated code
+    // as `intrinsics::copy_nonoverlapping` is a wrapper function.
+    extern "rust-intrinsic" {
+        #[rustc_const_stable(feature = "const_intrinsic_copy", since = "1.63.0")]
+        fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
+    }
 
-    // However, as of March 2023 the compiler was not capable of taking advantage
-    // of that information.  Thus the implementation here switched to an intrinsic,
-    // which lowers to `_0 = *src` in MIR, to address a few issues:
-    //
-    // - Using `MaybeUninit::assume_init` after a `copy_nonoverlapping` was not
-    //   turning the untyped copy into a typed load. As such, the generated
-    //   `load` in LLVM didn't get various metadata, such as `!range` (#73258),
-    //   `!nonnull`, and `!noundef`, resulting in poorer optimization.
-    // - Going through the extra local resulted in multiple extra copies, even
-    //   in optimized MIR.  (Ignoring StorageLive/Dead, the intrinsic is one
-    //   MIR statement, while the previous implementation was eight.)  LLVM
-    //   could sometimes optimize them away, but because `read` is at the core
-    //   of so many things, not having them in the first place improves what we
-    //   hand off to the backend.  For example, `mem::replace::<Big>` previously
-    //   emitted 4 `alloca` and 6 `memcpy`s, but is now 1 `alloc` and 3 `memcpy`s.
-    // - In general, this approach keeps us from getting any more bugs (like
-    //   #106369) that boil down to "`read(p)` is worse than `*p`", as this
-    //   makes them look identical to the backend (or other MIR consumers).
-    //
-    // Future enhancements to MIR optimizations might well allow this to return
-    // to the previous implementation, rather than using an intrinsic.
-
+    let mut tmp = MaybeUninit::<T>::uninit();
     // SAFETY: the caller must guarantee that `src` is valid for reads.
+    // `src` cannot overlap `tmp` because `tmp` was just allocated on
+    // the stack as a separate allocated object.
+    //
+    // Also, since we just wrote a valid value into `tmp`, it is guaranteed
+    // to be properly initialized.
     unsafe {
         assert_unsafe_precondition!(
             "ptr::read requires that the pointer argument is aligned and non-null",
             [T](src: *const T) => is_aligned_and_not_null(src)
         );
-        crate::intrinsics::read_via_copy(src)
+        copy_nonoverlapping(src, tmp.as_mut_ptr(), 1);
+        tmp.assume_init()
     }
 }
 
@@ -1257,8 +1222,7 @@ pub const unsafe fn read<T>(src: *const T) -> T {
 /// ```
 #[inline]
 #[stable(feature = "ptr_unaligned", since = "1.17.0")]
-#[rustc_const_stable(feature = "const_ptr_read", since = "1.71.0")]
-#[rustc_allow_const_fn_unstable(const_mut_refs, const_maybe_uninit_as_mut_ptr)]
+#[rustc_const_unstable(feature = "const_ptr_read", issue = "80377")]
 #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
 pub const unsafe fn read_unaligned<T>(src: *const T) -> T {
     let mut tmp = MaybeUninit::<T>::uninit();
@@ -1358,13 +1322,12 @@ pub const unsafe fn read_unaligned<T>(src: *const T) -> T {
 #[rustc_const_unstable(feature = "const_ptr_write", issue = "86302")]
 #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
 pub const unsafe fn write<T>(dst: *mut T, src: T) {
-    // Semantically, it would be fine for this to be implemented as a
-    // `copy_nonoverlapping` and appropriate drop suppression of `src`.
-
-    // However, implementing via that currently produces more MIR than is ideal.
-    // Using an intrinsic keeps it down to just the simple `*dst = move src` in
-    // MIR (11 statements shorter, at the time of writing), and also allows
-    // `src` to stay an SSA value in codegen_ssa, rather than a memory one.
+    // We are calling the intrinsics directly to avoid function calls in the generated code
+    // as `intrinsics::copy_nonoverlapping` is a wrapper function.
+    extern "rust-intrinsic" {
+        #[rustc_const_stable(feature = "const_intrinsic_copy", since = "1.63.0")]
+        fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
+    }
 
     // SAFETY: the caller must guarantee that `dst` is valid for writes.
     // `dst` cannot overlap `src` because the caller has mutable access
@@ -1374,7 +1337,8 @@ pub const unsafe fn write<T>(dst: *mut T, src: T) {
             "ptr::write requires that the pointer argument is aligned and non-null",
             [T](dst: *mut T) => is_aligned_and_not_null(dst)
         );
-        intrinsics::write_via_move(dst, src)
+        copy_nonoverlapping(&src as *const T, dst, 1);
+        intrinsics::forget(src);
     }
 }
 
@@ -1620,14 +1584,10 @@ pub unsafe fn write_volatile<T>(dst: *mut T, src: T) {
 
 /// Align pointer `p`.
 ///
-/// Calculate offset (in terms of elements of `size_of::<T>()` stride) that has to be applied
+/// Calculate offset (in terms of elements of `stride` stride) that has to be applied
 /// to pointer `p` so that pointer `p` would get aligned to `a`.
 ///
-/// # Safety
-/// `a` must be a power of two.
-///
-/// # Notes
-/// This implementation has been carefully tailored to not panic. It is UB for this to panic.
+/// Note: This implementation has been carefully tailored to not panic. It is UB for this to panic.
 /// The only real change that can be made here is change of `INV_TABLE_MOD_16` and associated
 /// constants.
 ///
@@ -1637,12 +1597,12 @@ pub unsafe fn write_volatile<T>(dst: *mut T, src: T) {
 ///
 /// Any questions go to @nagisa.
 #[lang = "align_offset"]
-pub(crate) const unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usize {
+pub(crate) unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usize {
     // FIXME(#75598): Direct use of these intrinsics improves codegen significantly at opt-level <=
     // 1, where the method versions of these operations are not inlined.
     use intrinsics::{
-        assume, cttz_nonzero, exact_div, mul_with_overflow, unchecked_rem, unchecked_shl,
-        unchecked_shr, unchecked_sub, wrapping_add, wrapping_mul, wrapping_sub,
+        cttz_nonzero, exact_div, unchecked_rem, unchecked_shl, unchecked_shr, unchecked_sub,
+        wrapping_add, wrapping_mul, wrapping_sub,
     };
 
     /// Calculate multiplicative modular inverse of `x` modulo `m`.
@@ -1654,7 +1614,7 @@ pub(crate) const unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usiz
     ///
     /// Implementation of this function shall not panic. Ever.
     #[inline]
-    const unsafe fn mod_inv(x: usize, m: usize) -> usize {
+    unsafe fn mod_inv(x: usize, m: usize) -> usize {
         /// Multiplicative modular inverse table modulo 2⁴ = 16.
         ///
         /// Note, that this table does not contain values where inverse does not exist (i.e., for
@@ -1662,48 +1622,40 @@ pub(crate) const unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usiz
         const INV_TABLE_MOD_16: [u8; 8] = [1, 11, 13, 7, 9, 3, 5, 15];
         /// Modulo for which the `INV_TABLE_MOD_16` is intended.
         const INV_TABLE_MOD: usize = 16;
+        /// INV_TABLE_MOD²
+        const INV_TABLE_MOD_SQUARED: usize = INV_TABLE_MOD * INV_TABLE_MOD;
 
+        let table_inverse = INV_TABLE_MOD_16[(x & (INV_TABLE_MOD - 1)) >> 1] as usize;
         // SAFETY: `m` is required to be a power-of-two, hence non-zero.
         let m_minus_one = unsafe { unchecked_sub(m, 1) };
-        let mut inverse = INV_TABLE_MOD_16[(x & (INV_TABLE_MOD - 1)) >> 1] as usize;
-        let mut mod_gate = INV_TABLE_MOD;
-        // We iterate "up" using the following formula:
-        //
-        // $$ xy ≡ 1 (mod 2ⁿ) → xy (2 - xy) ≡ 1 (mod 2²ⁿ) $$
-        //
-        // This application needs to be applied at least until `2²ⁿ ≥ m`, at which point we can
-        // finally reduce the computation to our desired `m` by taking `inverse mod m`.
-        //
-        // This computation is `O(log log m)`, which is to say, that on 64-bit machines this loop
-        // will always finish in at most 4 iterations.
-        loop {
-            // y = y * (2 - xy) mod n
+        if m <= INV_TABLE_MOD {
+            table_inverse & m_minus_one
+        } else {
+            // We iterate "up" using the following formula:
             //
-            // Note, that we use wrapping operations here intentionally – the original formula
-            // uses e.g., subtraction `mod n`. It is entirely fine to do them `mod
-            // usize::MAX` instead, because we take the result `mod n` at the end
-            // anyway.
-            if mod_gate >= m {
-                break;
+            // $$ xy ≡ 1 (mod 2ⁿ) → xy (2 - xy) ≡ 1 (mod 2²ⁿ) $$
+            //
+            // until 2²ⁿ ≥ m. Then we can reduce to our desired `m` by taking the result `mod m`.
+            let mut inverse = table_inverse;
+            let mut going_mod = INV_TABLE_MOD_SQUARED;
+            loop {
+                // y = y * (2 - xy) mod n
+                //
+                // Note, that we use wrapping operations here intentionally – the original formula
+                // uses e.g., subtraction `mod n`. It is entirely fine to do them `mod
+                // usize::MAX` instead, because we take the result `mod n` at the end
+                // anyway.
+                inverse = wrapping_mul(inverse, wrapping_sub(2usize, wrapping_mul(x, inverse)));
+                if going_mod >= m {
+                    return inverse & m_minus_one;
+                }
+                going_mod = wrapping_mul(going_mod, going_mod);
             }
-            inverse = wrapping_mul(inverse, wrapping_sub(2usize, wrapping_mul(x, inverse)));
-            let (new_gate, overflow) = mul_with_overflow(mod_gate, mod_gate);
-            if overflow {
-                break;
-            }
-            mod_gate = new_gate;
         }
-        inverse & m_minus_one
     }
 
+    let addr = p.addr();
     let stride = mem::size_of::<T>();
-
-    // SAFETY: This is just an inlined `p.addr()` (which is not
-    // a `const fn` so we cannot call it).
-    // During const eval, we hook this function to ensure that the pointer never
-    // has provenance, making this sound.
-    let addr: usize = unsafe { mem::transmute(p) };
-
     // SAFETY: `a` is a power-of-two, therefore non-zero.
     let a_minus_one = unsafe { unchecked_sub(a, 1) };
 
@@ -1723,7 +1675,7 @@ pub(crate) const unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usiz
         // offset is not a multiple of `stride`, the input pointer was misaligned and no pointer
         // offset will be able to produce a `p` aligned to the specified `a`.
         //
-        // The naive `-p (mod a)` equation inhibits LLVM's ability to select instructions
+        // The naive `-p (mod a)` equation  inhibits LLVM's ability to select instructions
         // like `lea`. We compute `(round_up_to_next_alignment(p, a) - p)` instead. This
         // redistributes operations around the load-bearing, but pessimizing `and` instruction
         // sufficiently for LLVM to be able to utilize the various optimizations it knows about.
@@ -1733,18 +1685,12 @@ pub(crate) const unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usiz
         // in a branch-free way and then bitwise-OR it with whatever result the `-p mod a`
         // computation produces.
 
-        let aligned_address = wrapping_add(addr, a_minus_one) & wrapping_sub(0, a);
-        let byte_offset = wrapping_sub(aligned_address, addr);
-        // FIXME: Remove the assume after <https://github.com/llvm/llvm-project/issues/62502>
-        // SAFETY: Masking by `-a` can only affect the low bits, and thus cannot have reduced
-        // the value by more than `a-1`, so even though the intermediate values might have
-        // wrapped, the byte_offset is always in `[0, a)`.
-        unsafe { assume(byte_offset < a) };
-
         // SAFETY: `stride == 0` case has been handled by the special case above.
         let addr_mod_stride = unsafe { unchecked_rem(addr, stride) };
 
         return if addr_mod_stride == 0 {
+            let aligned_address = wrapping_add(addr, a_minus_one) & wrapping_sub(0, a);
+            let byte_offset = wrapping_sub(aligned_address, addr);
             // SAFETY: `stride` is non-zero. This is guaranteed to divide exactly as well, because
             // addr has been verified to be aligned to the original type’s alignment requirements.
             unsafe { exact_div(byte_offset, stride) }
@@ -1760,12 +1706,7 @@ pub(crate) const unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usiz
     // miracles, given the situations this case has to deal with.
 
     // SAFETY: a is power-of-two hence non-zero. stride == 0 case is handled above.
-    // FIXME(const-hack) replace with min
-    let gcdpow = unsafe {
-        let x = cttz_nonzero(stride);
-        let y = cttz_nonzero(a);
-        if x < y { x } else { y }
-    };
+    let gcdpow = unsafe { cttz_nonzero(stride).min(cttz_nonzero(a)) };
     // SAFETY: gcdpow has an upper-bound that’s at most the number of bits in a usize.
     let gcd = unsafe { unchecked_shl(1usize, gcdpow) };
     // SAFETY: gcd is always greater or equal to 1.
@@ -1824,7 +1765,7 @@ pub(crate) const unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usiz
 /// (which is what the `PartialEq for &T` implementation does).
 ///
 /// When comparing wide pointers, both the address and the metadata are tested for equality.
-/// However, note that comparing trait object pointers (`*const dyn Trait`) is unreliable: pointers
+/// However, note that comparing trait object pointers (`*const dyn Trait`) is unrealiable: pointers
 /// to values of the same underlying type can compare inequal (because vtables are duplicated in
 /// multiple codegen units), and pointers to values of *different* underlying type can compare equal
 /// (since identical vtables can be deduplicated within a codegen unit).
@@ -1856,7 +1797,7 @@ pub(crate) const unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usiz
 /// assert!(!std::ptr::eq(&a[0..2], &a[1..3]));
 /// ```
 #[stable(feature = "ptr_eq", since = "1.17.0")]
-#[inline(always)]
+#[inline]
 pub fn eq<T: ?Sized>(a: *const T, b: *const T) -> bool {
     a == b
 }
@@ -1893,51 +1834,150 @@ pub fn hash<T: ?Sized, S: hash::Hasher>(hashee: *const T, into: &mut S) {
     hashee.hash(into);
 }
 
-#[stable(feature = "fnptr_impls", since = "1.4.0")]
-impl<F: FnPtr> PartialEq for F {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.addr() == other.addr()
-    }
-}
-#[stable(feature = "fnptr_impls", since = "1.4.0")]
-impl<F: FnPtr> Eq for F {}
-
-#[stable(feature = "fnptr_impls", since = "1.4.0")]
-impl<F: FnPtr> PartialOrd for F {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.addr().partial_cmp(&other.addr())
-    }
-}
-#[stable(feature = "fnptr_impls", since = "1.4.0")]
-impl<F: FnPtr> Ord for F {
-    #[inline]
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.addr().cmp(&other.addr())
-    }
+// If this is a unary fn pointer, it adds a doc comment.
+// Otherwise, it hides the docs entirely.
+macro_rules! maybe_fnptr_doc {
+    (@ #[$meta:meta] $item:item) => {
+        #[doc(hidden)]
+        #[$meta]
+        $item
+    };
+    ($a:ident @ #[$meta:meta] $item:item) => {
+        #[doc(fake_variadic)]
+        #[doc = "This trait is implemented for function pointers with up to twelve arguments."]
+        #[$meta]
+        $item
+    };
+    ($a:ident $($rest_a:ident)+ @ #[$meta:meta] $item:item) => {
+        #[doc(hidden)]
+        #[$meta]
+        $item
+    };
 }
 
-#[stable(feature = "fnptr_impls", since = "1.4.0")]
-impl<F: FnPtr> hash::Hash for F {
-    fn hash<HH: hash::Hasher>(&self, state: &mut HH) {
-        state.write_usize(self.addr() as _)
+// FIXME(strict_provenance_magic): function pointers have buggy codegen that
+// necessitates casting to a usize to get the backend to do the right thing.
+// for now I will break AVR to silence *a billion* lints. We should probably
+// have a proper "opaque function pointer type" to handle this kind of thing.
+
+// Impls for function pointers
+macro_rules! fnptr_impls_safety_abi {
+    ($FnTy: ty, $($Arg: ident),*) => {
+        fnptr_impls_safety_abi! { #[stable(feature = "fnptr_impls", since = "1.4.0")] $FnTy, $($Arg),* }
+    };
+    (@c_unwind $FnTy: ty, $($Arg: ident),*) => {
+        #[cfg(not(bootstrap))]
+        fnptr_impls_safety_abi! { #[unstable(feature = "c_unwind", issue = "74990")] $FnTy, $($Arg),* }
+    };
+    (#[$meta:meta] $FnTy: ty, $($Arg: ident),*) => {
+        maybe_fnptr_doc! {
+            $($Arg)* @
+            #[$meta]
+            impl<Ret, $($Arg),*> PartialEq for $FnTy {
+                #[inline]
+                fn eq(&self, other: &Self) -> bool {
+                    *self as usize == *other as usize
+                }
+            }
+        }
+
+        maybe_fnptr_doc! {
+            $($Arg)* @
+            #[$meta]
+            impl<Ret, $($Arg),*> Eq for $FnTy {}
+        }
+
+        maybe_fnptr_doc! {
+            $($Arg)* @
+            #[$meta]
+            impl<Ret, $($Arg),*> PartialOrd for $FnTy {
+                #[inline]
+                fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                    (*self as usize).partial_cmp(&(*other as usize))
+                }
+            }
+        }
+
+        maybe_fnptr_doc! {
+            $($Arg)* @
+            #[$meta]
+            impl<Ret, $($Arg),*> Ord for $FnTy {
+                #[inline]
+                fn cmp(&self, other: &Self) -> Ordering {
+                    (*self as usize).cmp(&(*other as usize))
+                }
+            }
+        }
+
+        maybe_fnptr_doc! {
+            $($Arg)* @
+            #[$meta]
+            impl<Ret, $($Arg),*> hash::Hash for $FnTy {
+                fn hash<HH: hash::Hasher>(&self, state: &mut HH) {
+                    state.write_usize(*self as usize)
+                }
+            }
+        }
+
+        maybe_fnptr_doc! {
+            $($Arg)* @
+            #[$meta]
+            impl<Ret, $($Arg),*> fmt::Pointer for $FnTy {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    fmt::pointer_fmt_inner(*self as usize, f)
+                }
+            }
+        }
+
+        maybe_fnptr_doc! {
+            $($Arg)* @
+            #[$meta]
+            impl<Ret, $($Arg),*> fmt::Debug for $FnTy {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    fmt::pointer_fmt_inner(*self as usize, f)
+                }
+            }
+        }
     }
 }
 
-#[stable(feature = "fnptr_impls", since = "1.4.0")]
-impl<F: FnPtr> fmt::Pointer for F {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::pointer_fmt_inner(self.addr() as _, f)
-    }
+macro_rules! fnptr_impls_args {
+    ($($Arg: ident),+) => {
+        fnptr_impls_safety_abi! { extern "Rust" fn($($Arg),+) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { extern "C" fn($($Arg),+) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { extern "C" fn($($Arg),+ , ...) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { @c_unwind extern "C-unwind" fn($($Arg),+) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { @c_unwind extern "C-unwind" fn($($Arg),+ , ...) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { unsafe extern "Rust" fn($($Arg),+) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { unsafe extern "C" fn($($Arg),+) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { unsafe extern "C" fn($($Arg),+ , ...) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { @c_unwind unsafe extern "C-unwind" fn($($Arg),+) -> Ret, $($Arg),+ }
+        fnptr_impls_safety_abi! { @c_unwind unsafe extern "C-unwind" fn($($Arg),+ , ...) -> Ret, $($Arg),+ }
+    };
+    () => {
+        // No variadic functions with 0 parameters
+        fnptr_impls_safety_abi! { extern "Rust" fn() -> Ret, }
+        fnptr_impls_safety_abi! { extern "C" fn() -> Ret, }
+        fnptr_impls_safety_abi! { @c_unwind extern "C-unwind" fn() -> Ret, }
+        fnptr_impls_safety_abi! { unsafe extern "Rust" fn() -> Ret, }
+        fnptr_impls_safety_abi! { unsafe extern "C" fn() -> Ret, }
+        fnptr_impls_safety_abi! { @c_unwind unsafe extern "C-unwind" fn() -> Ret, }
+    };
 }
 
-#[stable(feature = "fnptr_impls", since = "1.4.0")]
-impl<F: FnPtr> fmt::Debug for F {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::pointer_fmt_inner(self.addr() as _, f)
-    }
-}
+fnptr_impls_args! {}
+fnptr_impls_args! { T }
+fnptr_impls_args! { A, B }
+fnptr_impls_args! { A, B, C }
+fnptr_impls_args! { A, B, C, D }
+fnptr_impls_args! { A, B, C, D, E }
+fnptr_impls_args! { A, B, C, D, E, F }
+fnptr_impls_args! { A, B, C, D, E, F, G }
+fnptr_impls_args! { A, B, C, D, E, F, G, H }
+fnptr_impls_args! { A, B, C, D, E, F, G, H, I }
+fnptr_impls_args! { A, B, C, D, E, F, G, H, I, J }
+fnptr_impls_args! { A, B, C, D, E, F, G, H, I, J, K }
+fnptr_impls_args! { A, B, C, D, E, F, G, H, I, J, K, L }
 
 /// Create a `const` raw pointer to a place, without creating an intermediate reference.
 ///
@@ -1969,7 +2009,7 @@ impl<F: FnPtr> fmt::Debug for F {
 /// assert_eq!(unsafe { raw_f2.read_unaligned() }, 2);
 /// ```
 ///
-/// See [`addr_of_mut`] for how to create a pointer to uninitialized data.
+/// See [`addr_of_mut`] for how to create a pointer to unininitialized data.
 /// Doing that with `addr_of` would not make much sense since one could only
 /// read the data, and that would be Undefined Behavior.
 #[stable(feature = "raw_ref_macros", since = "1.51.0")]

@@ -182,7 +182,7 @@ impl TyCtxt<'_> {
             if hir.attrs(id).iter().any(|attr| Level::from_attr(attr).is_some()) {
                 return id;
             }
-            let next = hir.parent_id(id);
+            let next = hir.get_parent_node(id);
             if next == id {
                 bug!("lint traversal reached the root of the crate");
             }
@@ -231,19 +231,28 @@ pub fn explain_lint_level_source(
     let name = lint.name_lower();
     match src {
         LintLevelSource::Default => {
-            err.note_once(format!("`#[{}({})]` on by default", level.as_str(), name));
+            err.note_once(&format!("`#[{}({})]` on by default", level.as_str(), name));
         }
         LintLevelSource::CommandLine(lint_flag_val, orig_level) => {
-            let flag = orig_level.to_cmd_flag();
+            let flag = match orig_level {
+                Level::Warn => "-W",
+                Level::Deny => "-D",
+                Level::Forbid => "-F",
+                Level::Allow => "-A",
+                Level::ForceWarn(_) => "--force-warn",
+                Level::Expect(_) => {
+                    unreachable!("the expect level does not have a commandline flag")
+                }
+            };
             let hyphen_case_lint_name = name.replace('_', "-");
             if lint_flag_val.as_str() == name {
-                err.note_once(format!(
+                err.note_once(&format!(
                     "requested on the command line with `{} {}`",
                     flag, hyphen_case_lint_name
                 ));
             } else {
                 let hyphen_case_flag_val = lint_flag_val.as_str().replace('_', "-");
-                err.note_once(format!(
+                err.note_once(&format!(
                     "`{} {}` implied by `{} {}`",
                     flag, hyphen_case_lint_name, flag, hyphen_case_flag_val
                 ));
@@ -251,12 +260,12 @@ pub fn explain_lint_level_source(
         }
         LintLevelSource::Node { name: lint_attr_name, span, reason, .. } => {
             if let Some(rationale) = reason {
-                err.note(rationale.to_string());
+                err.note(rationale.as_str());
             }
             err.span_note_once(span, "the lint level is defined here");
             if lint_attr_name.as_str() != name {
                 let level_str = level.as_str();
-                err.note_once(format!(
+                err.note_once(&format!(
                     "`#[{}({})]` implied by `#[{}({})]`",
                     level_str, name, level_str, lint_attr_name
                 ));
@@ -388,11 +397,10 @@ pub fn struct_lint_level(
             // it'll become a hard error, so we have to emit *something*. Also,
             // if this lint occurs in the expansion of a macro from an external crate,
             // allow individual lints to opt-out from being reported.
-            let incompatible = future_incompatible.is_some_and(|f| f.reason.edition().is_none());
-
-            if !incompatible && !lint.report_in_external_macro {
+            let not_future_incompatible =
+                future_incompatible.map(|f| f.reason.edition().is_some()).unwrap_or(true);
+            if not_future_incompatible && !lint.report_in_external_macro {
                 err.cancel();
-
                 // Don't continue further, since we don't want to have
                 // `diag_span_note_once` called for a diagnostic that isn't emitted.
                 return;
@@ -445,12 +453,12 @@ pub fn struct_lint_level(
             };
 
             if future_incompatible.explain_reason {
-                err.warn(explanation);
+                err.warn(&explanation);
             }
             if !future_incompatible.reference.is_empty() {
                 let citation =
                     format!("for more information, see {}", future_incompatible.reference);
-                err.note(citation);
+                err.note(&citation);
             }
         }
 
@@ -469,7 +477,8 @@ pub fn struct_lint_level(
 pub fn in_external_macro(sess: &Session, span: Span) -> bool {
     let expn_data = span.ctxt().outer_expn_data();
     match expn_data.kind {
-        ExpnKind::Root
+        ExpnKind::Inlined
+        | ExpnKind::Root
         | ExpnKind::Desugaring(
             DesugaringKind::ForLoop | DesugaringKind::WhileLoop | DesugaringKind::OpaqueTy,
         ) => false,

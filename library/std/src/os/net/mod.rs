@@ -1,13 +1,7 @@
-//! OS-specific networking functionality.
+//! Linux and Android-specific definitions for socket options.
 
-// See cfg macros in `library/std/src/os/mod.rs` for why these platforms must
-// be special-cased during rustdoc generation.
-#[cfg(not(all(
-    doc,
-    any(
-        all(target_arch = "wasm32", not(target_os = "wasi")),
-        all(target_vendor = "fortanix", target_env = "sgx")
-    )
-)))]
-#[cfg(any(target_os = "linux", target_os = "android", doc))]
-pub(super) mod linux_ext;
+#![unstable(feature = "tcp_quickack", issue = "96256")]
+#![doc(cfg(any(target_os = "linux", target_os = "android",)))]
+pub mod tcp;
+#[cfg(test)]
+mod tests;

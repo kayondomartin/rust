@@ -1,10 +1,9 @@
-use crate::dep_graph::DepKind;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{pluralize, struct_span_err, Applicability, MultiSpan};
 use rustc_hir as hir;
-use rustc_hir::def::{DefKind, Res};
+use rustc_hir::def::DefKind;
 use rustc_middle::ty::Representability;
-use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt};
 use rustc_query_system::query::QueryInfo;
 use rustc_query_system::Value;
 use rustc_span::def_id::LocalDefId;
@@ -12,16 +11,16 @@ use rustc_span::Span;
 
 use std::fmt::Write;
 
-impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for Ty<'_> {
-    fn from_cycle_error(tcx: TyCtxt<'tcx>, _: &[QueryInfo<DepKind>]) -> Self {
+impl<'tcx> Value<TyCtxt<'tcx>> for Ty<'_> {
+    fn from_cycle_error(tcx: TyCtxt<'tcx>, _: &[QueryInfo]) -> Self {
         // SAFETY: This is never called when `Self` is not `Ty<'tcx>`.
         // FIXME: Represent the above fact in the trait system somehow.
-        unsafe { std::mem::transmute::<Ty<'tcx>, Ty<'_>>(Ty::new_misc_error(tcx)) }
+        unsafe { std::mem::transmute::<Ty<'tcx>, Ty<'_>>(tcx.ty_error()) }
     }
 }
 
-impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for ty::SymbolName<'_> {
-    fn from_cycle_error(tcx: TyCtxt<'tcx>, _: &[QueryInfo<DepKind>]) -> Self {
+impl<'tcx> Value<TyCtxt<'tcx>> for ty::SymbolName<'_> {
+    fn from_cycle_error(tcx: TyCtxt<'tcx>, _: &[QueryInfo]) -> Self {
         // SAFETY: This is never called when `Self` is not `SymbolName<'tcx>`.
         // FIXME: Represent the above fact in the trait system somehow.
         unsafe {
@@ -32,24 +31,14 @@ impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for ty::SymbolName<'_> {
     }
 }
 
-impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for ty::Binder<'_, ty::FnSig<'_>> {
-    fn from_cycle_error(tcx: TyCtxt<'tcx>, stack: &[QueryInfo<DepKind>]) -> Self {
-        let err = Ty::new_misc_error(tcx);
-
-        let arity = if let Some(frame) = stack.get(0)
-            && frame.query.dep_kind == DepKind::fn_sig
-            && let Some(def_id) = frame.query.def_id
-            && let Some(node) = tcx.hir().get_if_local(def_id)
-            && let Some(sig) = node.fn_sig()
-        {
-            sig.decl.inputs.len() + sig.decl.implicit_self.has_implicit_self() as usize
-        } else {
-            tcx.sess.abort_if_errors();
-            unreachable!()
-        };
-
+impl<'tcx> Value<TyCtxt<'tcx>> for ty::Binder<'_, ty::FnSig<'_>> {
+    fn from_cycle_error(tcx: TyCtxt<'tcx>, _: &[QueryInfo]) -> Self {
+        let err = tcx.ty_error();
+        // FIXME(compiler-errors): It would be nice if we could get the
+        // query key, so we could at least generate a fn signature that
+        // has the right arity.
         let fn_sig = ty::Binder::dummy(tcx.mk_fn_sig(
-            std::iter::repeat(err).take(arity),
+            [].into_iter(),
             err,
             false,
             rustc_hir::Unsafety::Normal,
@@ -62,12 +51,12 @@ impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for ty::Binder<'_, ty::FnSig<'_>> {
     }
 }
 
-impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for Representability {
-    fn from_cycle_error(tcx: TyCtxt<'tcx>, cycle: &[QueryInfo<DepKind>]) -> Self {
+impl<'tcx> Value<TyCtxt<'tcx>> for Representability {
+    fn from_cycle_error(tcx: TyCtxt<'tcx>, cycle: &[QueryInfo]) -> Self {
         let mut item_and_field_ids = Vec::new();
         let mut representable_ids = FxHashSet::default();
         for info in cycle {
-            if info.query.dep_kind == DepKind::representability
+            if info.query.name == "representability"
                 && let Some(field_id) = info.query.def_id
                 && let Some(field_id) = field_id.as_local()
                 && let Some(DefKind::Field) = info.query.def_kind
@@ -81,7 +70,7 @@ impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for Representability {
             }
         }
         for info in cycle {
-            if info.query.dep_kind == DepKind::representability_adt_ty
+            if info.query.name == "representability_adt_ty"
                 && let Some(def_id) = info.query.ty_adt_id
                 && let Some(def_id) = def_id.as_local()
                 && !item_and_field_ids.iter().any(|&(id, _)| id == def_id)
@@ -91,27 +80,6 @@ impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for Representability {
         }
         recursive_type_error(tcx, item_and_field_ids, &representable_ids);
         Representability::Infinite
-    }
-}
-
-impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for ty::EarlyBinder<Ty<'_>> {
-    fn from_cycle_error(tcx: TyCtxt<'tcx>, cycle: &[QueryInfo<DepKind>]) -> Self {
-        ty::EarlyBinder::bind(Ty::from_cycle_error(tcx, cycle))
-    }
-}
-
-impl<'tcx> Value<TyCtxt<'tcx>, DepKind> for ty::EarlyBinder<ty::Binder<'_, ty::FnSig<'_>>> {
-    fn from_cycle_error(tcx: TyCtxt<'tcx>, cycle: &[QueryInfo<DepKind>]) -> Self {
-        ty::EarlyBinder::bind(ty::Binder::from_cycle_error(tcx, cycle))
-    }
-}
-
-impl<'tcx, T> Value<TyCtxt<'tcx>, DepKind> for Result<T, &'_ ty::layout::LayoutError<'_>> {
-    fn from_cycle_error(_tcx: TyCtxt<'tcx>, _cycle: &[QueryInfo<DepKind>]) -> Self {
-        // tcx.arena.alloc cannot be used because we are not allowed to use &'tcx LayoutError under
-        // min_specialization. Since this is an error path anyways, leaking doesn't matter (and really,
-        // tcx.arena.alloc is pretty much equal to leaking).
-        Err(Box::leak(Box::new(ty::layout::LayoutError::Cycle)))
     }
 }
 
@@ -167,8 +135,8 @@ pub fn recursive_type_error(
     }
     let items_list = {
         let mut s = String::new();
-        for (i, &(item_id, _)) in item_and_field_ids.iter().enumerate() {
-            let path = tcx.def_path_str(item_id);
+        for (i, (item_id, _)) in item_and_field_ids.iter().enumerate() {
+            let path = tcx.def_path_str(item_id.to_def_id());
             write!(&mut s, "`{path}`").unwrap();
             if i == (ITEM_LIMIT - 1) && cycle_len > ITEM_LIMIT {
                 write!(&mut s, " and {} more", cycle_len - 5).unwrap();
@@ -208,8 +176,7 @@ fn find_item_ty_spans(
 ) {
     match ty.kind {
         hir::TyKind::Path(hir::QPath::Resolved(_, path)) => {
-            if let Res::Def(kind, def_id) = path.res
-                && kind != DefKind::TyAlias {
+            if let Some(def_id) = path.res.opt_def_id() {
                 let check_params = def_id.as_local().map_or(true, |def_id| {
                     if def_id == needle {
                         spans.push(ty.span);
@@ -218,8 +185,7 @@ fn find_item_ty_spans(
                 });
                 if check_params && let Some(args) = path.segments.last().unwrap().args {
                     let params_in_repr = tcx.params_in_repr(def_id);
-                    // the domain size check is needed because the HIR may not be well-formed at this point
-                    for (i, arg) in args.args.iter().enumerate().take(params_in_repr.domain_size()) {
+                    for (i, arg) in args.args.iter().enumerate() {
                         if let hir::GenericArg::Type(ty) = arg && params_in_repr.contains(i as u32) {
                             find_item_ty_spans(tcx, ty, needle, spans, seen_representable);
                         }

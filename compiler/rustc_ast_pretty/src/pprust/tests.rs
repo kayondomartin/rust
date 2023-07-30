@@ -3,7 +3,6 @@ use super::*;
 use rustc_ast as ast;
 use rustc_span::create_default_session_globals_then;
 use rustc_span::symbol::Ident;
-use thin_vec::ThinVec;
 
 fn fun_to_string(
     decl: &ast::FnDecl,
@@ -28,10 +27,8 @@ fn test_fun_to_string() {
     create_default_session_globals_then(|| {
         let abba_ident = Ident::from_str("abba");
 
-        let decl = ast::FnDecl {
-            inputs: ThinVec::new(),
-            output: ast::FnRetTy::Default(rustc_span::DUMMY_SP),
-        };
+        let decl =
+            ast::FnDecl { inputs: Vec::new(), output: ast::FnRetTy::Default(rustc_span::DUMMY_SP) };
         let generics = ast::Generics::default();
         assert_eq!(
             fun_to_string(&decl, ast::FnHeader::default(), abba_ident, &generics),

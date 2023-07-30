@@ -1,34 +1,15 @@
 use crate::cell::{Cell, UnsafeCell};
 use crate::sync::atomic::{AtomicU8, Ordering};
-use crate::sync::{Arc, Condvar, Mutex};
+use crate::sync::mpsc::{channel, Sender};
 use crate::thread::{self, LocalKey};
 use crate::thread_local;
 
-#[derive(Clone, Default)]
-struct Signal(Arc<(Mutex<bool>, Condvar)>);
+struct Foo(Sender<()>);
 
-impl Signal {
-    fn notify(&self) {
-        let (set, cvar) = &*self.0;
-        *set.lock().unwrap() = true;
-        cvar.notify_one();
-    }
-
-    fn wait(&self) {
-        let (set, cvar) = &*self.0;
-        let mut set = set.lock().unwrap();
-        while !*set {
-            set = cvar.wait(set).unwrap();
-        }
-    }
-}
-
-struct NotifyOnDrop(Signal);
-
-impl Drop for NotifyOnDrop {
+impl Drop for Foo {
     fn drop(&mut self) {
-        let NotifyOnDrop(ref f) = *self;
-        f.notify();
+        let Foo(ref s) = *self;
+        s.send(()).unwrap();
     }
 }
 
@@ -82,21 +63,20 @@ fn states() {
 
 #[test]
 fn smoke_dtor() {
-    thread_local!(static FOO: UnsafeCell<Option<NotifyOnDrop>> = UnsafeCell::new(None));
+    thread_local!(static FOO: UnsafeCell<Option<Foo>> = UnsafeCell::new(None));
     run(&FOO);
-    thread_local!(static FOO2: UnsafeCell<Option<NotifyOnDrop>> = const { UnsafeCell::new(None) });
+    thread_local!(static FOO2: UnsafeCell<Option<Foo>> = const { UnsafeCell::new(None) });
     run(&FOO2);
 
-    fn run(key: &'static LocalKey<UnsafeCell<Option<NotifyOnDrop>>>) {
-        let signal = Signal::default();
-        let signal2 = signal.clone();
+    fn run(key: &'static LocalKey<UnsafeCell<Option<Foo>>>) {
+        let (tx, rx) = channel();
         let t = thread::spawn(move || unsafe {
-            let mut signal = Some(signal2);
+            let mut tx = Some(tx);
             key.with(|f| {
-                *f.get() = Some(NotifyOnDrop(signal.take().unwrap()));
+                *f.get() = Some(Foo(tx.take().unwrap()));
             });
         });
-        signal.wait();
+        rx.recv().unwrap();
         t.join().unwrap();
     }
 }
@@ -185,50 +165,48 @@ fn self_referential() {
 // requires the destructor to be run to pass the test).
 #[test]
 fn dtors_in_dtors_in_dtors() {
-    struct S1(Signal);
+    struct S1(Sender<()>);
     thread_local!(static K1: UnsafeCell<Option<S1>> = UnsafeCell::new(None));
-    thread_local!(static K2: UnsafeCell<Option<NotifyOnDrop>> = UnsafeCell::new(None));
+    thread_local!(static K2: UnsafeCell<Option<Foo>> = UnsafeCell::new(None));
 
     impl Drop for S1 {
         fn drop(&mut self) {
-            let S1(ref signal) = *self;
+            let S1(ref tx) = *self;
             unsafe {
-                let _ = K2.try_with(|s| *s.get() = Some(NotifyOnDrop(signal.clone())));
+                let _ = K2.try_with(|s| *s.get() = Some(Foo(tx.clone())));
             }
         }
     }
 
-    let signal = Signal::default();
-    let signal2 = signal.clone();
+    let (tx, rx) = channel();
     let _t = thread::spawn(move || unsafe {
-        let mut signal = Some(signal2);
-        K1.with(|s| *s.get() = Some(S1(signal.take().unwrap())));
+        let mut tx = Some(tx);
+        K1.with(|s| *s.get() = Some(S1(tx.take().unwrap())));
     });
-    signal.wait();
+    rx.recv().unwrap();
 }
 
 #[test]
 fn dtors_in_dtors_in_dtors_const_init() {
-    struct S1(Signal);
+    struct S1(Sender<()>);
     thread_local!(static K1: UnsafeCell<Option<S1>> = const { UnsafeCell::new(None) });
-    thread_local!(static K2: UnsafeCell<Option<NotifyOnDrop>> = const { UnsafeCell::new(None) });
+    thread_local!(static K2: UnsafeCell<Option<Foo>> = const { UnsafeCell::new(None) });
 
     impl Drop for S1 {
         fn drop(&mut self) {
-            let S1(ref signal) = *self;
+            let S1(ref tx) = *self;
             unsafe {
-                let _ = K2.try_with(|s| *s.get() = Some(NotifyOnDrop(signal.clone())));
+                let _ = K2.try_with(|s| *s.get() = Some(Foo(tx.clone())));
             }
         }
     }
 
-    let signal = Signal::default();
-    let signal2 = signal.clone();
+    let (tx, rx) = channel();
     let _t = thread::spawn(move || unsafe {
-        let mut signal = Some(signal2);
-        K1.with(|s| *s.get() = Some(S1(signal.take().unwrap())));
+        let mut tx = Some(tx);
+        K1.with(|s| *s.get() = Some(S1(tx.take().unwrap())));
     });
-    signal.wait();
+    rx.recv().unwrap();
 }
 
 // This test tests that TLS destructors have run before the thread joins. The

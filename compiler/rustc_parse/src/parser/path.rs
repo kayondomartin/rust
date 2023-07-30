@@ -1,7 +1,6 @@
 use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
 use super::{Parser, Restrictions, TokenType};
-use crate::errors::PathSingleColon;
-use crate::{errors, maybe_whole};
+use crate::maybe_whole;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Delimiter, Token, TokenKind};
 use rustc_ast::{
@@ -9,12 +8,11 @@ use rustc_ast::{
     AssocConstraintKind, BlockCheckMode, GenericArg, GenericArgs, Generics, ParenthesizedArgs,
     Path, PathSegment, QSelf,
 };
-use rustc_errors::{Applicability, IntoDiagnostic, PResult};
+use rustc_errors::{pluralize, Applicability, PResult};
 use rustc_span::source_map::{BytePos, Span};
 use rustc_span::symbol::{kw, sym, Ident};
+
 use std::mem;
-use thin_vec::ThinVec;
-use tracing::debug;
 
 /// Specifies how to parse a path.
 #[derive(Copy, Clone, PartialEq)]
@@ -25,19 +23,7 @@ pub enum PathStyle {
     /// In all such contexts the non-path interpretation is preferred by default for practical
     /// reasons, but the path interpretation can be forced by the disambiguator `::`, e.g.
     /// `x<y>` - comparisons, `x::<y>` - unambiguously a path.
-    ///
-    /// Also, a path may never be followed by a `:`. This means that we can eagerly recover if
-    /// we encounter it.
     Expr,
-    /// The same as `Expr`, but may be followed by a `:`.
-    /// For example, this code:
-    /// ```rust
-    /// struct S;
-    ///
-    /// let S: S;
-    /// //  ^ Followed by a `:`
-    /// ```
-    Pat,
     /// In other contexts, notably in types, no ambiguity exists and paths can be written
     /// without the disambiguator, e.g., `x<y>` - unambiguously a path.
     /// Paths with disambiguators are still accepted, `x::<Y>` - unambiguously a path too.
@@ -51,12 +37,6 @@ pub enum PathStyle {
     Mod,
 }
 
-impl PathStyle {
-    fn has_generic_ambiguity(&self) -> bool {
-        matches!(self, Self::Expr | Self::Pat)
-    }
-}
-
 impl<'a> Parser<'a> {
     /// Parses a qualified path.
     /// Assumes that the leading `<` has been parsed already.
@@ -68,7 +48,7 @@ impl<'a> Parser<'a> {
     /// `<T as U>::a`
     /// `<T as U>::F::a<S>` (without disambiguator)
     /// `<T as U>::F::a::<S>` (with disambiguator)
-    pub(super) fn parse_qpath(&mut self, style: PathStyle) -> PResult<'a, (P<QSelf>, Path)> {
+    pub(super) fn parse_qpath(&mut self, style: PathStyle) -> PResult<'a, (QSelf, Path)> {
         let lo = self.prev_token.span;
         let ty = self.parse_ty()?;
 
@@ -83,7 +63,7 @@ impl<'a> Parser<'a> {
             path_span = path_lo.to(self.prev_token.span);
         } else {
             path_span = self.token.span.to(self.token.span);
-            path = ast::Path { segments: ThinVec::new(), span: path_span, tokens: None };
+            path = ast::Path { segments: Vec::new(), span: path_span, tokens: None };
         }
 
         // See doc comment for `unmatched_angle_bracket_count`.
@@ -97,7 +77,7 @@ impl<'a> Parser<'a> {
             self.expect(&token::ModSep)?;
         }
 
-        let qself = P(QSelf { ty, path_span, position: path.segments.len() });
+        let qself = QSelf { ty, path_span, position: path.segments.len() };
         self.parse_path_segments(&mut path.segments, style, None)?;
 
         Ok((
@@ -169,13 +149,16 @@ impl<'a> Parser<'a> {
             //
             if style == PathStyle::Mod && path.segments.iter().any(|segment| segment.args.is_some())
             {
-                let span = path
-                    .segments
-                    .iter()
-                    .filter_map(|segment| segment.args.as_ref())
-                    .map(|arg| arg.span())
-                    .collect::<Vec<_>>();
-                parser.sess.emit_err(errors::GenericsInPath { span });
+                parser
+                    .struct_span_err(
+                        path.segments
+                            .iter()
+                            .filter_map(|segment| segment.args.as_ref())
+                            .map(|arg| arg.span())
+                            .collect::<Vec<_>>(),
+                        "unexpected generic arguments in path",
+                    )
+                    .emit();
             }
         };
 
@@ -196,24 +179,25 @@ impl<'a> Parser<'a> {
         }
 
         let lo = self.token.span;
-        let mut segments = ThinVec::new();
+        let mut segments = Vec::new();
         let mod_sep_ctxt = self.token.span.ctxt();
         if self.eat(&token::ModSep) {
             segments.push(PathSegment::path_root(lo.shrink_to_lo().with_ctxt(mod_sep_ctxt)));
         }
         self.parse_path_segments(&mut segments, style, ty_generics)?;
+
         Ok(Path { segments, span: lo.to(self.prev_token.span), tokens: None })
     }
 
     pub(super) fn parse_path_segments(
         &mut self,
-        segments: &mut ThinVec<PathSegment>,
+        segments: &mut Vec<PathSegment>,
         style: PathStyle,
         ty_generics: Option<&Generics>,
     ) -> PResult<'a, ()> {
         loop {
             let segment = self.parse_path_segment(style, ty_generics)?;
-            if style.has_generic_ambiguity() {
+            if style == PathStyle::Expr {
                 // In order to check for trailing angle brackets, we must have finished
                 // recursing (`parse_path_segment` can indirectly call this function),
                 // that is, the next token must be the highlighted part of the below example:
@@ -235,29 +219,6 @@ impl<'a> Parser<'a> {
             segments.push(segment);
 
             if self.is_import_coupler() || !self.eat(&token::ModSep) {
-                if style == PathStyle::Expr
-                    && self.may_recover()
-                    && self.token == token::Colon
-                    && self.look_ahead(1, |token| token.is_ident() && !token.is_reserved_ident())
-                {
-                    // Emit a special error message for `a::b:c` to help users
-                    // otherwise, `a: c` might have meant to introduce a new binding
-                    if self.token.span.lo() == self.prev_token.span.hi()
-                        && self.look_ahead(1, |token| self.token.span.hi() == token.span.lo())
-                    {
-                        self.bump(); // bump past the colon
-                        self.sess.emit_err(PathSingleColon {
-                            span: self.prev_token.span,
-                            type_ascription: self
-                                .sess
-                                .unstable_features
-                                .is_nightly_build()
-                                .then_some(()),
-                        });
-                    }
-                    continue;
-                }
-
                 return Ok(());
             }
         }
@@ -311,28 +272,12 @@ impl<'a> Parser<'a> {
                         ty_generics,
                     )?;
                     self.expect_gt().map_err(|mut err| {
-                        // Try to recover a `:` into a `::`
-                        if self.token == token::Colon
-                            && self.look_ahead(1, |token| {
-                                token.is_ident() && !token.is_reserved_ident()
-                            })
-                        {
-                            err.cancel();
-                            err = PathSingleColon {
-                                span: self.token.span,
-                                type_ascription: self
-                                    .sess
-                                    .unstable_features
-                                    .is_nightly_build()
-                                    .then_some(()),
-                            }
-                            .into_diagnostic(self.diagnostic());
-                        }
                         // Attempt to find places where a missing `>` might belong.
-                        else if let Some(arg) = args
+                        if let Some(arg) = args
                             .iter()
                             .rev()
-                            .find(|arg| !matches!(arg, AngleBracketedArg::Constraint(_)))
+                            .skip_while(|arg| matches!(arg, AngleBracketedArg::Constraint(_)))
+                            .next()
                         {
                             err.span_suggestion_verbose(
                                 arg.span().shrink_to_hi(),
@@ -345,32 +290,6 @@ impl<'a> Parser<'a> {
                     })?;
                     let span = lo.to(self.prev_token.span);
                     AngleBracketedArgs { args, span }.into()
-                } else if self.may_recover()
-                    && self.token.kind == token::OpenDelim(Delimiter::Parenthesis)
-                    // FIXME(return_type_notation): Could also recover `...` here.
-                    && self.look_ahead(1, |tok| tok.kind == token::DotDot)
-                {
-                    self.bump();
-                    self.sess
-                        .emit_err(errors::BadReturnTypeNotationDotDot { span: self.token.span });
-                    self.bump();
-                    self.expect(&token::CloseDelim(Delimiter::Parenthesis))?;
-                    let span = lo.to(self.prev_token.span);
-
-                    if self.eat_noexpect(&token::RArrow) {
-                        let lo = self.prev_token.span;
-                        let ty = self.parse_ty()?;
-                        self.sess
-                            .emit_err(errors::BadReturnTypeNotationOutput { span: lo.to(ty.span) });
-                    }
-
-                    ParenthesizedArgs {
-                        span,
-                        inputs: ThinVec::new(),
-                        inputs_span: span,
-                        output: ast::FnRetTy::Default(self.prev_token.span.shrink_to_hi()),
-                    }
-                    .into()
                 } else {
                     // `(T, U) -> R`
                     let (inputs, _) = self.parse_paren_comma_seq(|p| p.parse_ty())?;
@@ -381,7 +300,7 @@ impl<'a> Parser<'a> {
                     ParenthesizedArgs { span, inputs, inputs_span, output }.into()
                 };
 
-                PathSegment { ident, args: Some(args), id: ast::DUMMY_NODE_ID }
+                PathSegment { ident, args, id: ast::DUMMY_NODE_ID }
             } else {
                 // Generic arguments are not found.
                 PathSegment::from_ident(ident)
@@ -413,7 +332,7 @@ impl<'a> Parser<'a> {
         style: PathStyle,
         lo: Span,
         ty_generics: Option<&Generics>,
-    ) -> PResult<'a, ThinVec<AngleBracketedArg>> {
+    ) -> PResult<'a, Vec<AngleBracketedArg>> {
         // We need to detect whether there are extra leading left angle brackets and produce an
         // appropriate error and suggestion. This cannot be implemented by looking ahead at
         // upcoming tokens for a matching `>` character - if there are unmatched `<` tokens
@@ -485,7 +404,7 @@ impl<'a> Parser<'a> {
 
         let is_first_invocation = style == PathStyle::Expr;
         // Take a snapshot before attempting to parse - we can restore this later.
-        let snapshot = is_first_invocation.then(|| self.clone());
+        let snapshot = if is_first_invocation { Some(self.clone()) } else { None };
 
         debug!("parse_generic_args_with_leading_angle_bracket_recovery: (snapshotting)");
         match self.parse_angle_args(ty_generics) {
@@ -522,10 +441,23 @@ impl<'a> Parser<'a> {
                     // i.e. no multibyte characters, in this range.
                     let span =
                         lo.with_hi(lo.lo() + BytePos(snapshot.unmatched_angle_bracket_count));
-                    self.sess.emit_err(errors::UnmatchedAngle {
+                    self.struct_span_err(
                         span,
-                        plural: snapshot.unmatched_angle_bracket_count > 1,
-                    });
+                        &format!(
+                            "unmatched angle bracket{}",
+                            pluralize!(snapshot.unmatched_angle_bracket_count)
+                        ),
+                    )
+                    .span_suggestion(
+                        span,
+                        &format!(
+                            "remove extra angle bracket{}",
+                            pluralize!(snapshot.unmatched_angle_bracket_count)
+                        ),
+                        "",
+                        Applicability::MachineApplicable,
+                    )
+                    .emit();
 
                     // Try again without unmatched angle bracket characters.
                     self.parse_angle_args(ty_generics)
@@ -540,8 +472,8 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_angle_args(
         &mut self,
         ty_generics: Option<&Generics>,
-    ) -> PResult<'a, ThinVec<AngleBracketedArg>> {
-        let mut args = ThinVec::new();
+    ) -> PResult<'a, Vec<AngleBracketedArg>> {
+        let mut args = Vec::new();
         while let Some(arg) = self.parse_angle_arg(ty_generics)? {
             args.push(arg);
             if !self.eat(&token::Comma) {
@@ -606,7 +538,7 @@ impl<'a> Parser<'a> {
                     let kind = if self.eat(&token::Colon) {
                         // Parse associated type constraint bound.
 
-                        let bounds = self.parse_generic_bounds()?;
+                        let bounds = self.parse_generic_bounds(Some(self.prev_token.span))?;
                         AssocConstraintKind::Bound { bounds }
                     } else if self.eat(&token::Eq) {
                         self.parse_assoc_equality_term(ident, self.prev_token.span)?
@@ -615,16 +547,10 @@ impl<'a> Parser<'a> {
                     };
 
                     let span = lo.to(self.prev_token.span);
+
                     // Gate associated type bounds, e.g., `Iterator<Item: Ord>`.
                     if let AssocConstraintKind::Bound { .. } = kind {
-                        if let Some(ast::GenericArgs::Parenthesized(args)) = &gen_args
-                            && args.inputs.is_empty()
-                            && matches!(args.output, ast::FnRetTy::Default(..))
-                        {
-                            self.sess.gated_spans.gate(sym::return_type_notation, span);
-                        } else {
-                            self.sess.gated_spans.gate(sym::associated_type_bounds, span);
-                        }
+                        self.sess.gated_spans.gate(sym::associated_type_bounds, span);
                     }
                     let constraint =
                         AssocConstraint { id: ast::DUMMY_NODE_ID, ident, gen_args, kind, span };
@@ -662,7 +588,10 @@ impl<'a> Parser<'a> {
                 c.into()
             }
             Some(GenericArg::Lifetime(lt)) => {
-                self.sess.emit_err(errors::AssocLifetime { span, lifetime: lt.ident.span });
+                self.struct_span_err(span, "associated lifetimes are not supported")
+                    .span_label(lt.ident.span, "the lifetime is given here")
+                    .help("if you meant to specify a trait object, write `dyn Trait + 'lifetime`")
+                    .emit();
                 self.mk_ty(span, ast::TyKind::Err).into()
             }
             None => {
@@ -679,14 +608,14 @@ impl<'a> Parser<'a> {
                     );
                     err.span_suggestion(
                         eq.to(before_next),
-                        format!("remove the `=` if `{}` is a type", ident),
+                        &format!("remove the `=` if `{}` is a type", ident),
                         "",
                         Applicability::MaybeIncorrect,
                     )
                 } else {
                     err.span_label(
                         self.token.span,
-                        format!("expected type, found {}", super::token_descr(&self.token)),
+                        &format!("expected type, found {}", super::token_descr(&self.token)),
                     )
                 };
                 return Err(err);
@@ -702,9 +631,7 @@ impl<'a> Parser<'a> {
     /// - A single-segment path.
     pub(super) fn expr_is_valid_const_arg(&self, expr: &P<rustc_ast::Expr>) -> bool {
         match &expr.kind {
-            ast::ExprKind::Block(_, _)
-            | ast::ExprKind::Lit(_)
-            | ast::ExprKind::IncludedBytes(..) => true,
+            ast::ExprKind::Block(_, _) | ast::ExprKind::Lit(_) => true,
             ast::ExprKind::Unary(ast::UnOp::Neg, expr) => {
                 matches!(expr.kind, ast::ExprKind::Lit(_))
             }
@@ -724,7 +651,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_const_arg(&mut self) -> PResult<'a, AnonConst> {
         // Parse const argument.
         let value = if let token::OpenDelim(Delimiter::Brace) = self.token.kind {
-            self.parse_expr_block(None, self.token.span, BlockCheckMode::Default)?
+            self.parse_block_expr(None, self.token.span, BlockCheckMode::Default)?
         } else {
             self.handle_unambiguous_unbraced_const_arg()?
         };
@@ -746,42 +673,22 @@ impl<'a> Parser<'a> {
             GenericArg::Const(self.parse_const_arg()?)
         } else if self.check_type() {
             // Parse type argument.
-
-            // Proactively create a parser snapshot enabling us to rewind and try to reparse the
-            // input as a const expression in case we fail to parse a type. If we successfully
-            // do so, we will report an error that it needs to be wrapped in braces.
-            let mut snapshot = None;
-            if self.may_recover() && self.token.can_begin_expr() {
-                snapshot = Some(self.create_snapshot_for_diagnostic());
-            }
-
+            let is_const_fn =
+                self.look_ahead(1, |t| t.kind == token::OpenDelim(Delimiter::Parenthesis));
+            let mut snapshot = self.create_snapshot_for_diagnostic();
             match self.parse_ty() {
-                Ok(ty) => {
-                    // Since the type parser recovers from some malformed slice and array types and
-                    // successfully returns a type, we need to look for `TyKind::Err`s in the
-                    // type to determine if error recovery has occurred and if the input is not a
-                    // syntactically valid type after all.
-                    if let ast::TyKind::Slice(inner_ty) | ast::TyKind::Array(inner_ty, _) = &ty.kind
-                        && let ast::TyKind::Err = inner_ty.kind
-                        && let Some(snapshot) = snapshot
-                        && let Some(expr) = self.recover_unbraced_const_arg_that_can_begin_ty(snapshot)
-                    {
-                        return Ok(Some(self.dummy_const_arg_needs_braces(
-                            self.struct_span_err(expr.span, "invalid const generic expression"),
-                            expr.span,
-                        )));
-                    }
-
-                    GenericArg::Type(ty)
-                }
+                Ok(ty) => GenericArg::Type(ty),
                 Err(err) => {
-                    if let Some(snapshot) = snapshot
-                        && let Some(expr) = self.recover_unbraced_const_arg_that_can_begin_ty(snapshot)
-                    {
-                        return Ok(Some(self.dummy_const_arg_needs_braces(
-                            err,
-                            expr.span,
-                        )));
+                    if is_const_fn {
+                        match (*snapshot).parse_expr_res(Restrictions::CONST_EXPR, None) {
+                            Ok(expr) => {
+                                self.restore_snapshot(snapshot);
+                                return Ok(Some(self.dummy_const_arg_needs_braces(err, expr.span)));
+                            }
+                            Err(err) => {
+                                err.cancel();
+                            }
+                        }
                     }
                     // Try to recover from possible `const` arg without braces.
                     return self.recover_const_arg(start, err).map(Some);

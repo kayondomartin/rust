@@ -5,12 +5,11 @@
 // features.
 
 use super::{Cc, CodeModel, LinkerFlavor, Lld, PanicStrategy};
-use super::{RelroLevel, SanitizerSet, StackProbeType, Target, TargetOptions};
+use super::{RelroLevel, StackProbeType, Target, TargetOptions};
 
 pub fn target() -> Target {
     let opts = TargetOptions {
         cpu: "x86-64".into(),
-        plt_by_default: false,
         max_atomic_width: Some(64),
         stack_probes: StackProbeType::X86,
         position_independent_executables: true,
@@ -21,7 +20,6 @@ pub fn target() -> Target {
         features:
             "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-3dnow,-3dnowa,-avx,-avx2,+soft-float"
                 .into(),
-        supported_sanitizers: SanitizerSet::KCFI | SanitizerSet::KERNELADDRESS,
         disable_redzone: true,
         panic_strategy: PanicStrategy::Abort,
         code_model: Some(CodeModel::Kernel),

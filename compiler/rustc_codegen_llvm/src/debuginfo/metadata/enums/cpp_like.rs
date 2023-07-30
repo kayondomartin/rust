@@ -6,7 +6,7 @@ use rustc_codegen_ssa::{
     traits::ConstMethods,
 };
 
-use rustc_index::IndexVec;
+use rustc_index::vec::IndexVec;
 use rustc_middle::{
     bug,
     ty::{
@@ -22,9 +22,9 @@ use crate::{
     common::CodegenCx,
     debuginfo::{
         metadata::{
-            build_field_di_node,
+            build_field_di_node, closure_saved_names_of_captured_variables,
             enums::{tag_base_type, DiscrResult},
-            file_metadata, size_and_align_of, type_di_node,
+            file_metadata, generator_layout_and_saved_local_names, size_and_align_of, type_di_node,
             type_map::{self, Stub, UniqueTypeId},
             unknown_file_metadata, DINodeCreationResult, SmallVec, NO_GENERICS, NO_SCOPE_METADATA,
             UNKNOWN_LINE_NUMBER,
@@ -62,7 +62,7 @@ const SINGLE_VARIANT_VIRTUAL_DISR: u64 = 0;
 
 /// In CPP-like mode, we generate a union with a field for each variant and an
 /// explicit tag field. The field of each variant has a struct type
-/// that encodes the discriminant of the variant and it's data layout.
+/// that encodes the discrimiant of the variant and it's data layout.
 /// The union also has a nested enumeration type that is only used for encoding
 /// variant names in an efficient way. Its enumerator values do _not_ correspond
 /// to the enum's discriminant values.
@@ -462,7 +462,7 @@ fn build_variant_names_type_di_node<'ll, 'tcx>(
         cx,
         "VariantNames",
         variant_names_enum_base_type(cx),
-        variants.map(|(variant_index, variant_name)| (variant_name, variant_index.as_u32().into())),
+        variants.map(|(variant_index, variant_name)| (variant_name, variant_index.as_u32() as u64)),
         containing_scope,
     )
 }
@@ -676,9 +676,10 @@ fn build_union_fields_for_direct_tag_generator<'ll, 'tcx>(
         _ => unreachable!(),
     };
 
-    let generator_layout = cx.tcx.optimized_mir(generator_def_id).generator_layout().unwrap();
+    let (generator_layout, state_specific_upvar_names) =
+        generator_layout_and_saved_local_names(cx.tcx, generator_def_id);
 
-    let common_upvar_names = cx.tcx.closure_saved_names_of_captured_variables(generator_def_id);
+    let common_upvar_names = closure_saved_names_of_captured_variables(cx.tcx, generator_def_id);
     let variant_range = generator_substs.variant_range(generator_def_id, cx.tcx);
     let variant_count = (variant_range.start.as_u32()..variant_range.end.as_u32()).len();
 
@@ -713,6 +714,7 @@ fn build_union_fields_for_direct_tag_generator<'ll, 'tcx>(
                 generator_type_and_layout,
                 generator_type_di_node,
                 generator_layout,
+                &state_specific_upvar_names,
                 &common_upvar_names,
             );
 

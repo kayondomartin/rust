@@ -51,7 +51,8 @@
 use rustc_middle::hir::place::*;
 use rustc_middle::ty::adjustment;
 use rustc_middle::ty::fold::TypeFoldable;
-use rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitableExt};
+use rustc_middle::ty::visit::TypeVisitable;
+use rustc_middle::ty::{self, Ty, TyCtxt};
 
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_hir as hir;
@@ -59,9 +60,10 @@ use rustc_hir::def::{CtorOf, DefKind, Res};
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::pat_util::EnumerateAndAdjustIterator;
 use rustc_hir::PatKind;
+use rustc_index::vec::Idx;
 use rustc_infer::infer::InferCtxt;
 use rustc_span::Span;
-use rustc_target::abi::{FieldIdx, VariantIdx, FIRST_VARIANT};
+use rustc_target::abi::VariantIdx;
 use rustc_trait_selection::infer::InferCtxtExt;
 
 pub(crate) trait HirNode {
@@ -119,19 +121,19 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         self.infcx.tcx
     }
 
-    pub(crate) fn type_is_copy_modulo_regions(&self, ty: Ty<'tcx>) -> bool {
-        self.infcx.type_is_copy_modulo_regions(self.param_env, ty)
+    pub(crate) fn type_is_copy_modulo_regions(&self, ty: Ty<'tcx>, span: Span) -> bool {
+        self.infcx.type_is_copy_modulo_regions(self.param_env, ty, span)
     }
 
     fn resolve_vars_if_possible<T>(&self, value: T) -> T
     where
-        T: TypeFoldable<TyCtxt<'tcx>>,
+        T: TypeFoldable<'tcx>,
     {
         self.infcx.resolve_vars_if_possible(value)
     }
 
     fn is_tainted_by_errors(&self) -> bool {
-        self.infcx.tainted_by_errors().is_some()
+        self.infcx.is_tainted_by_errors()
     }
 
     fn resolve_type_vars_or_error(
@@ -153,7 +155,8 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             None if self.is_tainted_by_errors() => Err(()),
             None => {
                 bug!(
-                    "no type for node {} in mem_categorization",
+                    "no type for node {}: {} in mem_categorization",
+                    id,
                     self.tcx().hir().node_to_string(id)
                 );
             }
@@ -277,11 +280,9 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             adjustment::Adjust::Deref(overloaded) => {
                 // Equivalent to *expr or something similar.
                 let base = if let Some(deref) = overloaded {
-                    let ref_ty = Ty::new_ref(
-                        self.tcx(),
-                        deref.region,
-                        ty::TypeAndMut { ty: target, mutbl: deref.mutbl },
-                    );
+                    let ref_ty = self
+                        .tcx()
+                        .mk_ref(deref.region, ty::TypeAndMut { ty: target, mutbl: deref.mutbl });
                     self.cat_rvalue(expr.hir_id, expr.span, ref_ty)
                 } else {
                     previous()?
@@ -332,7 +333,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
                     expr,
                     base,
                     expr_ty,
-                    ProjectionKind::Field(field_idx, FIRST_VARIANT),
+                    ProjectionKind::Field(field_idx as u32, VariantIdx::new(0)),
                 ))
             }
 
@@ -363,7 +364,6 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             | hir::ExprKind::AssignOp(..)
             | hir::ExprKind::Closure { .. }
             | hir::ExprKind::Ret(..)
-            | hir::ExprKind::Become(..)
             | hir::ExprKind::Unary(..)
             | hir::ExprKind::Yield(..)
             | hir::ExprKind::MethodCall(..)
@@ -384,8 +384,8 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             | hir::ExprKind::Struct(..)
             | hir::ExprKind::Repeat(..)
             | hir::ExprKind::InlineAsm(..)
-            | hir::ExprKind::OffsetOf(..)
-            | hir::ExprKind::Err(_) => Ok(self.cat_rvalue(expr.hir_id, expr.span, expr_ty)),
+            | hir::ExprKind::Box(..)
+            | hir::ExprKind::Err => Ok(self.cat_rvalue(expr.hir_id, expr.span, expr_ty)),
         }
     }
 
@@ -414,7 +414,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             }
 
             Res::Local(var_id) => {
-                if self.upvars.is_some_and(|upvars| upvars.contains_key(&var_id)) {
+                if self.upvars.map_or(false, |upvars| upvars.contains_key(&var_id)) {
                     self.cat_upvar(hir_id, var_id)
                 } else {
                     Ok(PlaceWithHirId::new(hir_id, expr_ty, PlaceBase::Local(var_id), Vec::new()))
@@ -491,7 +491,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         let ty::Ref(region, _, mutbl) = *base_ty.kind() else {
             span_bug!(expr.span, "cat_overloaded_place: base is not a reference");
         };
-        let ref_ty = Ty::new_ref(self.tcx(), region, ty::TypeAndMut { ty: place_ty, mutbl });
+        let ref_ty = self.tcx().mk_ref(region, ty::TypeAndMut { ty: place_ty, mutbl });
 
         let base = self.cat_rvalue(expr.hir_id, expr.span, ref_ty);
         self.cat_deref(expr, base)
@@ -564,7 +564,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             | Res::SelfTyParam { .. }
             | Res::SelfTyAlias { .. } => {
                 // Structs and Unions have only have one variant.
-                Ok(FIRST_VARIANT)
+                Ok(VariantIdx::new(0))
             }
             _ => bug!("expected ADT path, found={:?}", res),
         }
@@ -603,6 +603,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         }
     }
 
+    // FIXME(#19596) This is a workaround, but there should be a better way to do this
     fn cat_pattern_<F>(
         &self,
         mut place_with_id: PlaceWithHirId<'tcx>,
@@ -638,7 +639,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         // `&&Some(x,)` `place_foo`
         //  `&Some(x,)` `deref { place_foo}`
         //   `Some(x,)` `deref { deref { place_foo }}`
-        //       `(x,)` `field0 { deref { deref { place_foo }}}` <- resulting place
+        //        (x,)` `field0 { deref { deref { place_foo }}}` <- resulting place
         //
         // The above example has no adjustments. If the code were instead the (after adjustments,
         // equivalent) version
@@ -678,8 +679,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
 
                 for (i, subpat) in subpats.iter().enumerate_and_adjust(total_fields, dots_pos) {
                     let subpat_ty = self.pat_ty_adjusted(subpat)?;
-                    let projection_kind =
-                        ProjectionKind::Field(FieldIdx::from_usize(i), FIRST_VARIANT);
+                    let projection_kind = ProjectionKind::Field(i as u32, VariantIdx::new(0));
                     let sub_place =
                         self.cat_projection(pat, place_with_id.clone(), subpat_ty, projection_kind);
                     self.cat_pattern_(sub_place, subpat, op)?;
@@ -694,8 +694,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
 
                 for (i, subpat) in subpats.iter().enumerate_and_adjust(total_fields, dots_pos) {
                     let subpat_ty = self.pat_ty_adjusted(subpat)?;
-                    let projection_kind =
-                        ProjectionKind::Field(FieldIdx::from_usize(i), variant_index);
+                    let projection_kind = ProjectionKind::Field(i as u32, variant_index);
                     let sub_place =
                         self.cat_projection(pat, place_with_id.clone(), subpat_ty, projection_kind);
                     self.cat_pattern_(sub_place, subpat, op)?;
@@ -720,7 +719,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
                         pat,
                         place_with_id.clone(),
                         field_ty,
-                        ProjectionKind::Field(field_index, variant_index),
+                        ProjectionKind::Field(field_index as u32, variant_index),
                     );
                     self.cat_pattern_(field_place, fp.pat, op)?;
                 }
@@ -737,7 +736,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             }
 
             PatKind::Box(ref subpat) | PatKind::Ref(ref subpat, _) => {
-                // box p1, &p1, &mut p1. we can ignore the mutability of
+                // box p1, &p1, &mut p1.  we can ignore the mutability of
                 // PatKind::Ref since that information is already contained
                 // in the type.
                 let subplace = self.cat_deref(pat, place_with_id)?;

@@ -1,4 +1,3 @@
-use crate::fmt;
 use crate::iter::{FusedIterator, TrustedLen};
 
 /// Creates an iterator that lazily generates a value exactly once by invoking
@@ -67,21 +66,10 @@ pub fn once_with<A, F: FnOnce() -> A>(gen: F) -> OnceWith<F> {
 ///
 /// This `struct` is created by the [`once_with()`] function.
 /// See its documentation for more.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[stable(feature = "iter_once_with", since = "1.43.0")]
 pub struct OnceWith<F> {
     gen: Option<F>,
-}
-
-#[stable(feature = "iter_once_with_debug", since = "1.68.0")]
-impl<F> fmt::Debug for OnceWith<F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.gen.is_some() {
-            f.write_str("OnceWith(Some(_))")
-        } else {
-            f.write_str("OnceWith(None)")
-        }
-    }
 }
 
 #[stable(feature = "iter_once_with", since = "1.43.0")]

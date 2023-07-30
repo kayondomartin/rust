@@ -58,7 +58,9 @@ mod rustc {
             use rustc_middle::ty;
 
             let parent = if let ty::Adt(adt_def, ..) = scope.kind() {
-                self.parent(adt_def.did())
+                use rustc_middle::ty::DefIdTree;
+                let parent = self.parent(adt_def.did());
+                parent
             } else {
                 // Is this always how we want to handle a non-ADT scope?
                 return false;
@@ -74,7 +76,11 @@ mod rustc {
                 }
             };
 
-            let ret: bool = self.visibility(def_id).is_accessible_from(parent, *self);
+            let ret = if self.visibility(def_id).is_accessible_from(parent, *self) {
+                true
+            } else {
+                false
+            };
 
             trace!(?ret, "ret");
             ret

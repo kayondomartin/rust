@@ -1,6 +1,4 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
-use rustc_index::IndexVec;
+use rustc_index::vec::{Idx, IndexVec};
 use rustc_middle::mir::{BasicBlock, Body, Location};
 
 /// Maps between a MIR Location, which identifies a particular
@@ -20,8 +18,9 @@ pub struct LocationTable {
 }
 
 rustc_index::newtype_index! {
-    #[debug_format = "LocationIndex({})"]
-    pub struct LocationIndex {}
+    pub struct LocationIndex {
+        DEBUG_FORMAT = "LocationIndex({})"
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -50,19 +49,19 @@ impl LocationTable {
     }
 
     pub fn all_points(&self) -> impl Iterator<Item = LocationIndex> {
-        (0..self.num_points).map(LocationIndex::from_usize)
+        (0..self.num_points).map(LocationIndex::new)
     }
 
     pub fn start_index(&self, location: Location) -> LocationIndex {
         let Location { block, statement_index } = location;
         let start_index = self.statements_before_block[block];
-        LocationIndex::from_usize(start_index + statement_index * 2)
+        LocationIndex::new(start_index + statement_index * 2)
     }
 
     pub fn mid_index(&self, location: Location) -> LocationIndex {
         let Location { block, statement_index } = location;
         let start_index = self.statements_before_block[block];
-        LocationIndex::from_usize(start_index + statement_index * 2 + 1)
+        LocationIndex::new(start_index + statement_index * 2 + 1)
     }
 
     pub fn to_location(&self, index: LocationIndex) -> RichLocation {

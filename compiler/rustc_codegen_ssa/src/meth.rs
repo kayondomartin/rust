@@ -28,11 +28,11 @@ impl<'a, 'tcx> VirtualIndex {
         if bx.cx().sess().opts.unstable_opts.virtual_function_elimination
             && bx.cx().sess().lto() == Lto::Fat
         {
-            let typeid = bx
-                .typeid_metadata(typeid_for_trait_ref(bx.tcx(), expect_dyn_trait_in_self(ty)))
-                .unwrap();
+            let typeid =
+                bx.typeid_metadata(typeid_for_trait_ref(bx.tcx(), expect_dyn_trait_in_self(ty)));
             let vtable_byte_offset = self.0 * bx.data_layout().pointer_size.bytes();
-            let func = bx.type_checked_load(llvtable, vtable_byte_offset, typeid);
+            let type_checked_load = bx.type_checked_load(llvtable, vtable_byte_offset, typeid);
+            let func = bx.extract_value(type_checked_load, 0);
             bx.pointercast(func, llty)
         } else {
             let ptr_align = bx.tcx().data_layout.pointer_align.abi;
@@ -66,12 +66,12 @@ impl<'a, 'tcx> VirtualIndex {
 
 /// This takes a valid `self` receiver type and extracts the principal trait
 /// ref of the type.
-fn expect_dyn_trait_in_self(ty: Ty<'_>) -> ty::PolyExistentialTraitRef<'_> {
+fn expect_dyn_trait_in_self<'tcx>(ty: Ty<'tcx>) -> ty::PolyExistentialTraitRef<'tcx> {
     for arg in ty.peel_refs().walk() {
-        if let GenericArgKind::Type(ty) = arg.unpack()
-            && let ty::Dynamic(data, _, _) = ty.kind()
-        {
-            return data.principal().expect("expected principal trait object");
+        if let GenericArgKind::Type(ty) = arg.unpack() {
+            if let ty::Dynamic(data, _, _) = ty.kind() {
+                return data.principal().expect("expected principal trait object");
+            }
         }
     }
 

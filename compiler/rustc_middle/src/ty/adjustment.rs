@@ -1,12 +1,13 @@
+use crate::ty::subst::SubstsRef;
 use crate::ty::{self, Ty, TyCtxt};
 use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
 use rustc_macros::HashStable;
 use rustc_span::Span;
-use rustc_target::abi::FieldIdx;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, TyEncodable, TyDecodable, Hash, HashStable)]
-pub enum PointerCoercion {
+pub enum PointerCast {
     /// Go from a fn-item type to a fn-pointer type.
     ReifyFnPointer,
 
@@ -99,7 +100,7 @@ pub enum Adjust<'tcx> {
     /// Take the address and produce either a `&` or `*` pointer.
     Borrow(AutoBorrow<'tcx>),
 
-    Pointer(PointerCoercion),
+    Pointer(PointerCast),
 
     /// Cast into a dyn* object.
     DynStar,
@@ -120,8 +121,7 @@ pub struct OverloadedDeref<'tcx> {
 }
 
 impl<'tcx> OverloadedDeref<'tcx> {
-    /// Get the zst function item type for this method call.
-    pub fn method_call(&self, tcx: TyCtxt<'tcx>, source: Ty<'tcx>) -> Ty<'tcx> {
+    pub fn method_call(&self, tcx: TyCtxt<'tcx>, source: Ty<'tcx>) -> (DefId, SubstsRef<'tcx>) {
         let trait_def_id = match self.mutbl {
             hir::Mutability::Not => tcx.require_lang_item(LangItem::Deref, None),
             hir::Mutability::Mut => tcx.require_lang_item(LangItem::DerefMut, None),
@@ -132,7 +132,7 @@ impl<'tcx> OverloadedDeref<'tcx> {
             .find(|m| m.kind == ty::AssocKind::Fn)
             .unwrap()
             .def_id;
-        Ty::new_fn_def(tcx, method_def_id, [source])
+        (method_def_id, tcx.mk_substs_trait(source, &[]))
     }
 }
 
@@ -158,18 +158,6 @@ pub enum AllowTwoPhase {
 pub enum AutoBorrowMutability {
     Mut { allow_two_phase_borrow: AllowTwoPhase },
     Not,
-}
-
-impl AutoBorrowMutability {
-    /// Creates an `AutoBorrowMutability` from a mutability and allowance of two phase borrows.
-    ///
-    /// Note that when `mutbl.is_not()`, `allow_two_phase_borrow` is ignored
-    pub fn new(mutbl: hir::Mutability, allow_two_phase_borrow: AllowTwoPhase) -> Self {
-        match mutbl {
-            hir::Mutability::Not => Self::Not,
-            hir::Mutability::Mut => Self::Mut { allow_two_phase_borrow },
-        }
-    }
 }
 
 impl From<AutoBorrowMutability> for hir::Mutability {
@@ -209,5 +197,5 @@ pub struct CoerceUnsizedInfo {
 #[derive(Clone, Copy, TyEncodable, TyDecodable, Debug, HashStable)]
 pub enum CustomCoerceUnsized {
     /// Records the index of the field being coerced.
-    Struct(FieldIdx),
+    Struct(usize),
 }

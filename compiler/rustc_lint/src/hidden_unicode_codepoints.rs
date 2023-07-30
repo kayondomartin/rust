@@ -1,12 +1,7 @@
-use crate::{
-    lints::{
-        HiddenUnicodeCodepointsDiag, HiddenUnicodeCodepointsDiagLabels,
-        HiddenUnicodeCodepointsDiagSub,
-    },
-    EarlyContext, EarlyLintPass, LintContext,
-};
+use crate::{EarlyContext, EarlyLintPass, LintContext};
 use ast::util::unicode::{contains_text_flow_control_chars, TEXT_FLOW_CONTROL_CHARS};
 use rustc_ast as ast;
+use rustc_errors::{fluent, Applicability, SuggestionStyle};
 use rustc_span::{BytePos, Span, Symbol};
 
 declare_lint! {
@@ -65,19 +60,55 @@ impl HiddenUnicodeCodepoints {
             })
             .collect();
 
-        let count = spans.len();
-        let labels = point_at_inner_spans
-            .then_some(HiddenUnicodeCodepointsDiagLabels { spans: spans.clone() });
-        let sub = if point_at_inner_spans && !spans.is_empty() {
-            HiddenUnicodeCodepointsDiagSub::Escape { spans }
-        } else {
-            HiddenUnicodeCodepointsDiagSub::NoEscape { spans }
-        };
-
-        cx.emit_spanned_lint(
+        cx.struct_span_lint(
             TEXT_DIRECTION_CODEPOINT_IN_LITERAL,
             span,
-            HiddenUnicodeCodepointsDiag { label, count, span_label: span, labels, sub },
+            fluent::lint_hidden_unicode_codepoints,
+            |lint| {
+                lint.set_arg("label", label);
+                lint.set_arg("count", spans.len());
+                lint.span_label(span, fluent::label);
+                lint.note(fluent::note);
+                if point_at_inner_spans {
+                    for (c, span) in &spans {
+                        lint.span_label(*span, format!("{:?}", c));
+                    }
+                }
+                if point_at_inner_spans && !spans.is_empty() {
+                    lint.multipart_suggestion_with_style(
+                        fluent::suggestion_remove,
+                        spans.iter().map(|(_, span)| (*span, "".to_string())).collect(),
+                        Applicability::MachineApplicable,
+                        SuggestionStyle::HideCodeAlways,
+                    );
+                    lint.multipart_suggestion(
+                        fluent::suggestion_escape,
+                        spans
+                            .into_iter()
+                            .map(|(c, span)| {
+                                let c = format!("{:?}", c);
+                                (span, c[1..c.len() - 1].to_string())
+                            })
+                            .collect(),
+                        Applicability::MachineApplicable,
+                    );
+                } else {
+                    // FIXME: in other suggestions we've reversed the inner spans of doc comments. We
+                    // should do the same here to provide the same good suggestions as we do for
+                    // literals above.
+                    lint.set_arg(
+                        "escaped",
+                        spans
+                            .into_iter()
+                            .map(|(c, _)| format!("{:?}", c))
+                            .collect::<Vec<String>>()
+                            .join(", "),
+                    );
+                    lint.note(fluent::suggestion_remove);
+                    lint.note(fluent::no_suggestion_note_escape);
+                }
+                lint
+            },
         );
     }
 }
@@ -90,25 +121,25 @@ impl EarlyLintPass for HiddenUnicodeCodepoints {
         }
     }
 
-    #[inline]
     fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &ast::Expr) {
         // byte strings are already handled well enough by `EscapeError::NonAsciiCharInByteString`
-        match &expr.kind {
-            ast::ExprKind::Lit(token_lit) => {
+        let (text, span, padding) = match &expr.kind {
+            ast::ExprKind::Lit(ast::Lit { token_lit, kind, span }) => {
                 let text = token_lit.symbol;
                 if !contains_text_flow_control_chars(text.as_str()) {
                     return;
                 }
-                let padding = match token_lit.kind {
+                let padding = match kind {
                     // account for `"` or `'`
-                    ast::token::LitKind::Str | ast::token::LitKind::Char => 1,
+                    ast::LitKind::Str(_, ast::StrStyle::Cooked) | ast::LitKind::Char(_) => 1,
                     // account for `r###"`
-                    ast::token::LitKind::StrRaw(n) => n as u32 + 2,
+                    ast::LitKind::Str(_, ast::StrStyle::Raw(val)) => *val as u32 + 2,
                     _ => return,
                 };
-                self.lint_text_direction_codepoint(cx, text, expr.span, padding, true, "literal");
+                (text, span, padding)
             }
-            _ => {}
+            _ => return,
         };
+        self.lint_text_direction_codepoint(cx, text, *span, padding, true, "literal");
     }
 }

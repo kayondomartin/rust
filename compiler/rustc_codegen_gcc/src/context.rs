@@ -1,10 +1,9 @@
 use std::cell::{Cell, RefCell};
 
-use gccjit::{Block, CType, Context, Function, FunctionPtrType, FunctionType, LValue, RValue, Type};
+use gccjit::{Block, CType, Context, Function, FunctionPtrType, FunctionType, LValue, RValue, Struct, Type};
 use rustc_codegen_ssa::base::wants_msvc_seh;
 use rustc_codegen_ssa::traits::{
     BackendTypes,
-    BaseTypeMethods,
     MiscMethods,
 };
 use rustc_data_structures::base_n;
@@ -12,7 +11,7 @@ use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_middle::span_bug;
 use rustc_middle::mir::mono::CodegenUnit;
 use rustc_middle::ty::{self, Instance, ParamEnv, PolyExistentialTraitRef, Ty, TyCtxt};
-use rustc_middle::ty::layout::{FnAbiError, FnAbiOf, FnAbiOfHelpers, FnAbiRequest, HasParamEnv, HasTyCtxt, LayoutError, TyAndLayout, LayoutOfHelpers};
+use rustc_middle::ty::layout::{FnAbiError, FnAbiOfHelpers, FnAbiRequest, HasParamEnv, HasTyCtxt, LayoutError, TyAndLayout, LayoutOfHelpers};
 use rustc_session::Session;
 use rustc_span::{Span, source_map::respan};
 use rustc_target::abi::{call::FnAbi, HasDataLayout, PointeeInfo, Size, TargetDataLayout, VariantIdx};
@@ -34,7 +33,6 @@ pub struct CodegenCx<'gcc, 'tcx> {
     // TODO(bjorn3): Can this field be removed?
     pub current_func: RefCell<Option<Function<'gcc>>>,
     pub normal_function_addresses: RefCell<FxHashSet<RValue<'gcc>>>,
-    pub function_address_names: RefCell<FxHashMap<RValue<'gcc>, String>>,
 
     pub functions: RefCell<FxHashMap<String, Function<'gcc>>>,
     pub intrinsics: RefCell<FxHashMap<String, Function<'gcc>>>,
@@ -80,17 +78,19 @@ pub struct CodegenCx<'gcc, 'tcx> {
 
     pub struct_types: RefCell<FxHashMap<Vec<Type<'gcc>>, Type<'gcc>>>,
 
+    pub types_with_fields_to_set: RefCell<FxHashMap<Type<'gcc>, (Struct<'gcc>, TyAndLayout<'tcx>)>>,
+
     /// Cache instances of monomorphic and polymorphic items
     pub instances: RefCell<FxHashMap<Instance<'tcx>, LValue<'gcc>>>,
     /// Cache function instances of monomorphic and polymorphic items
-    pub function_instances: RefCell<FxHashMap<Instance<'tcx>, Function<'gcc>>>,
+    pub function_instances: RefCell<FxHashMap<Instance<'tcx>, RValue<'gcc>>>,
     /// Cache generated vtables
     pub vtables: RefCell<FxHashMap<(Ty<'tcx>, Option<ty::PolyExistentialTraitRef<'tcx>>), RValue<'gcc>>>,
 
     // TODO(antoyo): improve the SSA API to not require those.
-    /// Mapping from function pointer type to indexes of on stack parameters.
+    // Mapping from function pointer type to indexes of on stack parameters.
     pub on_stack_params: RefCell<FxHashMap<FunctionPtrType<'gcc>, FxHashSet<usize>>>,
-    /// Mapping from function to indexes of on stack parameters.
+    // Mapping from function to indexes of on stack parameters.
     pub on_stack_function_params: RefCell<FxHashMap<Function<'gcc>, FxHashSet<usize>>>,
 
     /// Cache of emitted const globals (value -> global)
@@ -110,7 +110,6 @@ pub struct CodegenCx<'gcc, 'tcx> {
     local_gen_sym_counter: Cell<usize>,
 
     eh_personality: Cell<Option<RValue<'gcc>>>,
-    pub rust_try_fn: Cell<Option<(Type<'gcc>, Function<'gcc>)>>,
 
     pub pointee_infos: RefCell<FxHashMap<(Ty<'tcx>, Size), Option<PointeeInfo>>>,
 
@@ -120,8 +119,6 @@ pub struct CodegenCx<'gcc, 'tcx> {
     /// they can be dereferenced later.
     /// FIXME(antoyo): fix the rustc API to avoid having this hack.
     pub structs_as_pointer: RefCell<FxHashSet<RValue<'gcc>>>,
-
-    pub cleanup_blocks: RefCell<FxHashSet<Block<'gcc>>>,
 }
 
 impl<'gcc, 'tcx> CodegenCx<'gcc, 'tcx> {
@@ -197,7 +194,6 @@ impl<'gcc, 'tcx> CodegenCx<'gcc, 'tcx> {
             context,
             current_func: RefCell::new(None),
             normal_function_addresses: Default::default(),
-            function_address_names: Default::default(),
             functions: RefCell::new(functions),
             intrinsics: RefCell::new(FxHashMap::default()),
 
@@ -247,18 +243,17 @@ impl<'gcc, 'tcx> CodegenCx<'gcc, 'tcx> {
             types: Default::default(),
             tcx,
             struct_types: Default::default(),
+            types_with_fields_to_set: Default::default(),
             local_gen_sym_counter: Cell::new(0),
             eh_personality: Cell::new(None),
-            rust_try_fn: Cell::new(None),
             pointee_infos: Default::default(),
             structs_as_pointer: Default::default(),
-            cleanup_blocks: Default::default(),
         }
     }
 
     pub fn rvalue_as_function(&self, value: RValue<'gcc>) -> Function<'gcc> {
         let function: Function<'gcc> = unsafe { std::mem::transmute(value) };
-        debug_assert!(self.functions.borrow().values().any(|value| *value == function),
+        debug_assert!(self.functions.borrow().values().find(|value| **value == function).is_some(),
             "{:?} ({:?}) is not a function", value, value.get_type());
         function
     }
@@ -332,9 +327,8 @@ impl<'gcc, 'tcx> MiscMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
 
     fn get_fn(&self, instance: Instance<'tcx>) -> RValue<'gcc> {
         let func = get_fn(self, instance);
-        *self.current_func.borrow_mut() = Some(func);
-        // FIXME(antoyo): this is a wrong cast. That requires changing the compiler API.
-        unsafe { std::mem::transmute(func) }
+        *self.current_func.borrow_mut() = Some(self.rvalue_as_function(func));
+        func
     }
 
     fn get_fn_addr(&self, instance: Instance<'tcx>) -> RValue<'gcc> {
@@ -345,7 +339,8 @@ impl<'gcc, 'tcx> MiscMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
                 self.intrinsics.borrow()[func_name].clone()
             }
             else {
-                get_fn(self, instance)
+                let func = get_fn(self, instance);
+                self.rvalue_as_function(func)
             };
         let ptr = func.get_address(None);
 
@@ -353,7 +348,6 @@ impl<'gcc, 'tcx> MiscMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
         // FIXME(antoyo): the rustc API seems to call get_fn_addr() when not needed (e.g. for FFI).
 
         self.normal_function_addresses.borrow_mut().insert(ptr);
-        self.function_address_names.borrow_mut().insert(ptr, func_name.to_string());
 
         ptr
     }
@@ -383,40 +377,31 @@ impl<'gcc, 'tcx> MiscMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
             return llpersonality;
         }
         let tcx = self.tcx;
-        let func =
-            match tcx.lang_items().eh_personality() {
-                Some(def_id) if !wants_msvc_seh(self.sess()) => {
-                    let instance =
-                        ty::Instance::resolve(
-                            tcx,
-                            ty::ParamEnv::reveal_all(),
-                            def_id,
-                            ty::List::empty(),
-                        )
-                        .unwrap().unwrap();
-
-                    let symbol_name = tcx.symbol_name(instance).name;
-                    let fn_abi = self.fn_abi_of_instance(instance, ty::List::empty());
-                    self.linkage.set(FunctionType::Extern);
-                    let func = self.declare_fn(symbol_name, &fn_abi);
-                    let func: RValue<'gcc> = unsafe { std::mem::transmute(func) };
-                    func
-                },
-                _ => {
-                    let name =
-                        if wants_msvc_seh(self.sess()) {
-                            "__CxxFrameHandler3"
-                        }
-                        else {
-                            "rust_eh_personality"
-                        };
-                    let func = self.declare_func(name, self.type_i32(), &[], true);
-                    unsafe { std::mem::transmute(func) }
-                }
-            };
+        let llfn = match tcx.lang_items().eh_personality() {
+            Some(def_id) if !wants_msvc_seh(self.sess()) => self.get_fn_addr(
+                ty::Instance::resolve(
+                    tcx,
+                    ty::ParamEnv::reveal_all(),
+                    def_id,
+                    tcx.intern_substs(&[]),
+                )
+                .unwrap().unwrap(),
+            ),
+            _ => {
+                let _name = if wants_msvc_seh(self.sess()) {
+                    "__CxxFrameHandler3"
+                } else {
+                    "rust_eh_personality"
+                };
+                //let func = self.declare_func(name, self.type_i32(), &[], true);
+                // FIXME(antoyo): this hack should not be needed. That will probably be removed when
+                // unwinding support is added.
+                self.context.new_rvalue_from_int(self.int_type, 0)
+            }
+        };
         // TODO(antoyo): apply target cpu attributes.
-        self.eh_personality.set(Some(func));
-        func
+        self.eh_personality.set(Some(llfn));
+        llfn
     }
 
     fn sess(&self) -> &Session {
@@ -440,9 +425,8 @@ impl<'gcc, 'tcx> MiscMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
     }
 
     fn declare_c_main(&self, fn_type: Self::Type) -> Option<Self::Function> {
-        let entry_name = self.sess().target.entry_name.as_ref();
-        if self.get_declared_value(entry_name).is_none() {
-            Some(self.declare_entry_fn(entry_name, fn_type, ()))
+        if self.get_declared_value("main").is_none() {
+            Some(self.declare_cfn("main", fn_type))
         }
         else {
             // If the symbol already exists, it is an error: for example, the user wrote
@@ -477,7 +461,7 @@ impl<'gcc, 'tcx> LayoutOfHelpers<'tcx> for CodegenCx<'gcc, 'tcx> {
     #[inline]
     fn handle_layout_err(&self, err: LayoutError<'tcx>, span: Span, ty: Ty<'tcx>) -> ! {
         if let LayoutError::SizeOverflow(_) = err {
-            self.sess().emit_fatal(respan(span, err.into_diagnostic()))
+            self.sess().emit_fatal(respan(span, err))
         } else {
             span_bug!(span, "failed to get layout for `{}`: {}", ty, err)
         }
@@ -499,12 +483,21 @@ impl<'gcc, 'tcx> FnAbiOfHelpers<'tcx> for CodegenCx<'gcc, 'tcx> {
         } else {
             match fn_abi_request {
                 FnAbiRequest::OfFnPtr { sig, extra_args } => {
-                    span_bug!(span, "`fn_abi_of_fn_ptr({sig}, {extra_args:?})` failed: {err:?}");
+                    span_bug!(
+                        span,
+                        "`fn_abi_of_fn_ptr({}, {:?})` failed: {}",
+                        sig,
+                        extra_args,
+                        err
+                    );
                 }
                 FnAbiRequest::OfInstance { instance, extra_args } => {
                     span_bug!(
                         span,
-                        "`fn_abi_of_instance({instance}, {extra_args:?})` failed: {err:?}"
+                        "`fn_abi_of_instance({}, {:?})` failed: {}",
+                        instance,
+                        extra_args,
+                        err
                     );
                 }
             }

@@ -3,6 +3,7 @@
 use rustc_macros::HashStable;
 use rustc_span::Symbol;
 
+use std::cmp::Ord;
 use std::fmt::{self, Debug, Formatter};
 
 rustc_index::newtype_index! {
@@ -10,10 +11,10 @@ rustc_index::newtype_index! {
     /// CounterValueReference.as_u32() (which ascend from 1) or an ExpressionOperandId.as_u32()
     /// (which _*descend*_ from u32::MAX). Id value `0` (zero) represents a virtual counter with a
     /// constant value of `0`.
-    #[derive(HashStable)]
-    #[max = 0xFFFF_FFFF]
-    #[debug_format = "ExpressionOperandId({})"]
     pub struct ExpressionOperandId {
+        derive [HashStable]
+        DEBUG_FORMAT = "ExpressionOperandId({})",
+        MAX = 0xFFFF_FFFF,
     }
 }
 
@@ -32,10 +33,11 @@ impl ExpressionOperandId {
 }
 
 rustc_index::newtype_index! {
-    #[derive(HashStable)]
-    #[max = 0xFFFF_FFFF]
-    #[debug_format = "CounterValueReference({})"]
-    pub struct CounterValueReference {}
+    pub struct CounterValueReference {
+        derive [HashStable]
+        DEBUG_FORMAT = "CounterValueReference({})",
+        MAX = 0xFFFF_FFFF,
+    }
 }
 
 impl CounterValueReference {
@@ -55,30 +57,33 @@ rustc_index::newtype_index! {
     /// InjectedExpressionId.as_u32() converts to ExpressionOperandId.as_u32()
     ///
     /// Values descend from u32::MAX.
-    #[derive(HashStable)]
-    #[max = 0xFFFF_FFFF]
-    #[debug_format = "InjectedExpressionId({})"]
-    pub struct InjectedExpressionId {}
+    pub struct InjectedExpressionId {
+        derive [HashStable]
+        DEBUG_FORMAT = "InjectedExpressionId({})",
+        MAX = 0xFFFF_FFFF,
+    }
 }
 
 rustc_index::newtype_index! {
     /// InjectedExpressionIndex.as_u32() translates to u32::MAX - ExpressionOperandId.as_u32()
     ///
     /// Values ascend from 0.
-    #[derive(HashStable)]
-    #[max = 0xFFFF_FFFF]
-    #[debug_format = "InjectedExpressionIndex({})"]
-    pub struct InjectedExpressionIndex {}
+    pub struct InjectedExpressionIndex {
+        derive [HashStable]
+        DEBUG_FORMAT = "InjectedExpressionIndex({})",
+        MAX = 0xFFFF_FFFF,
+    }
 }
 
 rustc_index::newtype_index! {
     /// MappedExpressionIndex values ascend from zero, and are recalculated indexes based on their
     /// array position in the LLVM coverage map "Expressions" array, which is assembled during the
     /// "mapgen" process. They cannot be computed algorithmically, from the other `newtype_index`s.
-    #[derive(HashStable)]
-    #[max = 0xFFFF_FFFF]
-    #[debug_format = "MappedExpressionIndex({})"]
-    pub struct MappedExpressionIndex {}
+    pub struct MappedExpressionIndex {
+        derive [HashStable]
+        DEBUG_FORMAT = "MappedExpressionIndex({})",
+        MAX = 0xFFFF_FFFF,
+    }
 }
 
 impl From<CounterValueReference> for ExpressionOperandId {
@@ -135,10 +140,7 @@ impl Debug for CoverageKind {
                 "Expression({:?}) = {} {} {}",
                 id.index(),
                 lhs.index(),
-                match op {
-                    Op::Add => "+",
-                    Op::Subtract => "-",
-                },
+                if *op == Op::Add { "+" } else { "-" },
                 rhs.index(),
             ),
             Unreachable => write!(fmt, "Unreachable"),

@@ -9,7 +9,7 @@ use crate::type_::Type;
 use crate::value::Value;
 
 use cstr::cstr;
-use rustc_codegen_ssa::base::{wants_msvc_seh, wants_wasm_eh};
+use rustc_codegen_ssa::base::wants_msvc_seh;
 use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::base_n;
 use rustc_data_structures::fx::FxHashMap;
@@ -26,7 +26,6 @@ use rustc_session::config::{BranchProtection, CFGuard, CFProtection};
 use rustc_session::config::{CrateType, DebugInfo, PAuthKey, PacRet};
 use rustc_session::Session;
 use rustc_span::source_map::Span;
-use rustc_span::source_map::Spanned;
 use rustc_target::abi::{
     call::FnAbi, HasDataLayout, PointeeInfo, Size, TargetDataLayout, VariantIdx,
 };
@@ -143,15 +142,24 @@ pub unsafe fn create_module<'ll>(
 
     let mut target_data_layout = sess.target.data_layout.to_string();
     let llvm_version = llvm_util::get_version();
+    if llvm_version < (14, 0, 0) {
+        if sess.target.llvm_target == "i686-pc-windows-msvc"
+            || sess.target.llvm_target == "i586-pc-windows-msvc"
+        {
+            target_data_layout =
+                "e-m:x-p:32:32-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:32-n8:16:32-a:0:32-S32"
+                    .to_string();
+        }
+        if sess.target.arch == "wasm32" {
+            target_data_layout = target_data_layout.replace("-p10:8:8-p20:8:8", "");
+        }
+    }
     if llvm_version < (16, 0, 0) {
         if sess.target.arch == "s390x" {
-            // LLVM 16 data layout changed to always set 64-bit vector alignment,
-            // which is conditional in earlier LLVM versions.
-            // https://reviews.llvm.org/D131158 for the discussion.
             target_data_layout = target_data_layout.replace("-v128:64", "");
-        } else if sess.target.arch == "riscv64" {
-            // LLVM 16 introduced this change so as to produce more efficient code.
-            // See https://reviews.llvm.org/D116735 for the discussion.
+        }
+
+        if sess.target.arch == "riscv64" {
             target_data_layout = target_data_layout.replace("-n32:64-", "-n64-");
         }
     }
@@ -182,7 +190,7 @@ pub unsafe fn create_module<'ll>(
         //
         // FIXME(#34960)
         let cfg_llvm_root = option_env!("CFG_LLVM_ROOT").unwrap_or("");
-        let custom_llvm_used = !cfg_llvm_root.trim().is_empty();
+        let custom_llvm_used = cfg_llvm_root.trim() != "";
 
         if !custom_llvm_used && target_data_layout != llvm_data_layout {
             bug!(
@@ -228,32 +236,16 @@ pub unsafe fn create_module<'ll>(
         llvm::LLVMRustAddModuleFlag(llmod, llvm::LLVMModFlagBehavior::Warning, avoid_plt, 1);
     }
 
-    // Enable canonical jump tables if CFI is enabled. (See https://reviews.llvm.org/D65629.)
-    if sess.is_sanitizer_cfi_canonical_jump_tables_enabled() && sess.is_sanitizer_cfi_enabled() {
+    if sess.is_sanitizer_cfi_enabled() {
+        // FIXME(rcvalle): Add support for non canonical jump tables.
         let canonical_jump_tables = "CFI Canonical Jump Tables\0".as_ptr().cast();
+        // FIXME(rcvalle): Add it with Override behavior flag.
         llvm::LLVMRustAddModuleFlag(
             llmod,
-            llvm::LLVMModFlagBehavior::Override,
+            llvm::LLVMModFlagBehavior::Warning,
             canonical_jump_tables,
             1,
         );
-    }
-
-    // Enable LTO unit splitting if specified or if CFI is enabled. (See https://reviews.llvm.org/D53891.)
-    if sess.is_split_lto_unit_enabled() || sess.is_sanitizer_cfi_enabled() {
-        let enable_split_lto_unit = "EnableSplitLTOUnit\0".as_ptr().cast();
-        llvm::LLVMRustAddModuleFlag(
-            llmod,
-            llvm::LLVMModFlagBehavior::Override,
-            enable_split_lto_unit,
-            1,
-        );
-    }
-
-    // Add "kcfi" module flag if KCFI is enabled. (See https://reviews.llvm.org/D119296.)
-    if sess.is_sanitizer_kcfi_enabled() {
-        let kcfi = "kcfi\0".as_ptr().cast();
-        llvm::LLVMRustAddModuleFlag(llmod, llvm::LLVMModFlagBehavior::Override, kcfi, 1);
     }
 
     // Control Flow Guard is currently only supported by the MSVC linker on Windows.
@@ -282,42 +274,33 @@ pub unsafe fn create_module<'ll>(
     }
 
     if let Some(BranchProtection { bti, pac_ret }) = sess.opts.unstable_opts.branch_protection {
-        let behavior = if llvm_version >= (15, 0, 0) {
-            llvm::LLVMModFlagBehavior::Min
+        if sess.target.arch != "aarch64" {
+            sess.err("-Zbranch-protection is only supported on aarch64");
         } else {
-            llvm::LLVMModFlagBehavior::Error
-        };
-
-        if sess.target.arch == "aarch64" {
             llvm::LLVMRustAddModuleFlag(
                 llmod,
-                behavior,
+                llvm::LLVMModFlagBehavior::Error,
                 "branch-target-enforcement\0".as_ptr().cast(),
                 bti.into(),
             );
             llvm::LLVMRustAddModuleFlag(
                 llmod,
-                behavior,
+                llvm::LLVMModFlagBehavior::Error,
                 "sign-return-address\0".as_ptr().cast(),
                 pac_ret.is_some().into(),
             );
             let pac_opts = pac_ret.unwrap_or(PacRet { leaf: false, key: PAuthKey::A });
             llvm::LLVMRustAddModuleFlag(
                 llmod,
-                behavior,
+                llvm::LLVMModFlagBehavior::Error,
                 "sign-return-address-all\0".as_ptr().cast(),
                 pac_opts.leaf.into(),
             );
             llvm::LLVMRustAddModuleFlag(
                 llmod,
-                behavior,
+                llvm::LLVMModFlagBehavior::Error,
                 "sign-return-address-with-bkey\0".as_ptr().cast(),
                 u32::from(pac_opts.key == PAuthKey::B),
-            );
-        } else {
-            bug!(
-                "branch-protection used on non-AArch64 target; \
-                  this should be checked in rustc_session."
             );
         }
     }
@@ -418,8 +401,12 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
 
         let (llcx, llmod) = (&*llvm_module.llcx, llvm_module.llmod());
 
-        let coverage_cx =
-            tcx.sess.instrument_coverage().then(coverageinfo::CrateCoverageContext::new);
+        let coverage_cx = if tcx.sess.instrument_coverage() {
+            let covctx = coverageinfo::CrateCoverageContext::new();
+            Some(covctx)
+        } else {
+            None
+        };
 
         let dbg_cx = if tcx.sess.opts.debuginfo != DebugInfo::None {
             let dctx = debuginfo::CodegenUnitDebugContext::new(llmod);
@@ -528,28 +515,24 @@ impl<'ll, 'tcx> MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         if let Some(llpersonality) = self.eh_personality.get() {
             return llpersonality;
         }
-
-        let name = if wants_msvc_seh(self.sess()) {
-            Some("__CxxFrameHandler3")
-        } else if wants_wasm_eh(self.sess()) {
-            // LLVM specifically tests for the name of the personality function
-            // There is no need for this function to exist anywhere, it will
-            // not be called. However, its name has to be "__gxx_wasm_personality_v0"
-            // for native wasm exceptions.
-            Some("__gxx_wasm_personality_v0")
-        } else {
-            None
-        };
-
         let tcx = self.tcx;
         let llfn = match tcx.lang_items().eh_personality() {
-            Some(def_id) if name.is_none() => self.get_fn_addr(
-                ty::Instance::resolve(tcx, ty::ParamEnv::reveal_all(), def_id, ty::List::empty())
-                    .unwrap()
-                    .unwrap(),
+            Some(def_id) if !wants_msvc_seh(self.sess()) => self.get_fn_addr(
+                ty::Instance::resolve(
+                    tcx,
+                    ty::ParamEnv::reveal_all(),
+                    def_id,
+                    tcx.intern_substs(&[]),
+                )
+                .unwrap()
+                .unwrap(),
             ),
             _ => {
-                let name = name.unwrap_or("rust_eh_personality");
+                let name = if wants_msvc_seh(self.sess()) {
+                    "__CxxFrameHandler3"
+                } else {
+                    "rust_eh_personality"
+                };
                 if let Some(llfn) = self.get_declared_value(name) {
                     llfn
                 } else {
@@ -591,14 +574,8 @@ impl<'ll, 'tcx> MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     }
 
     fn declare_c_main(&self, fn_type: Self::Type) -> Option<Self::Function> {
-        let entry_name = self.sess().target.entry_name.as_ref();
-        if self.get_declared_value(entry_name).is_none() {
-            Some(self.declare_entry_fn(
-                entry_name,
-                self.sess().target.entry_abi.into(),
-                llvm::UnnamedAddr::Global,
-                fn_type,
-            ))
+        if self.get_declared_value("main").is_none() {
+            Some(self.declare_cfn("main", llvm::UnnamedAddr::Global, fn_type))
         } else {
             // If the symbol already exists, it is an error: for example, the user wrote
             // #[no_mangle] extern "C" fn main(..) {..}
@@ -667,10 +644,6 @@ impl<'ll> CodegenCx<'ll, '_> {
         let t_f32 = self.type_f32();
         let t_f64 = self.type_f64();
         let t_metadata = self.type_metadata();
-        let t_token = self.type_token();
-
-        ifn!("llvm.wasm.get.exception", fn(t_token) -> i8p);
-        ifn!("llvm.wasm.get.ehselector", fn(t_token) -> t_i32);
 
         ifn!("llvm.wasm.trunc.unsigned.i32.f32", fn(t_f32) -> t_i32);
         ifn!("llvm.wasm.trunc.unsigned.i32.f64", fn(t_f64) -> t_i32);
@@ -759,12 +732,8 @@ impl<'ll> CodegenCx<'ll, '_> {
 
         ifn!("llvm.copysign.f32", fn(t_f32, t_f32) -> t_f32);
         ifn!("llvm.copysign.f64", fn(t_f64, t_f64) -> t_f64);
-
         ifn!("llvm.round.f32", fn(t_f32) -> t_f32);
         ifn!("llvm.round.f64", fn(t_f64) -> t_f64);
-
-        ifn!("llvm.roundeven.f32", fn(t_f32) -> t_f32);
-        ifn!("llvm.roundeven.f64", fn(t_f64) -> t_f64);
 
         ifn!("llvm.rint.f32", fn(t_f32) -> t_f32);
         ifn!("llvm.rint.f64", fn(t_f64) -> t_f64);
@@ -982,9 +951,9 @@ impl<'tcx> LayoutOfHelpers<'tcx> for CodegenCx<'_, 'tcx> {
     #[inline]
     fn handle_layout_err(&self, err: LayoutError<'tcx>, span: Span, ty: Ty<'tcx>) -> ! {
         if let LayoutError::SizeOverflow(_) = err {
-            self.sess().emit_fatal(Spanned { span, node: err.into_diagnostic() })
+            self.sess().span_fatal(span, &err.to_string())
         } else {
-            span_bug!(span, "failed to get layout for `{ty}`: {err:?}")
+            span_bug!(span, "failed to get layout for `{}`: {}", ty, err)
         }
     }
 }
@@ -1000,16 +969,25 @@ impl<'tcx> FnAbiOfHelpers<'tcx> for CodegenCx<'_, 'tcx> {
         fn_abi_request: FnAbiRequest<'tcx>,
     ) -> ! {
         if let FnAbiError::Layout(LayoutError::SizeOverflow(_)) = err {
-            self.sess().emit_fatal(Spanned { span, node: err })
+            self.sess().span_fatal(span, &err.to_string())
         } else {
             match fn_abi_request {
                 FnAbiRequest::OfFnPtr { sig, extra_args } => {
-                    span_bug!(span, "`fn_abi_of_fn_ptr({sig}, {extra_args:?})` failed: {err:?}",);
+                    span_bug!(
+                        span,
+                        "`fn_abi_of_fn_ptr({}, {:?})` failed: {}",
+                        sig,
+                        extra_args,
+                        err
+                    );
                 }
                 FnAbiRequest::OfInstance { instance, extra_args } => {
                     span_bug!(
                         span,
-                        "`fn_abi_of_instance({instance}, {extra_args:?})` failed: {err:?}",
+                        "`fn_abi_of_instance({}, {:?})` failed: {}",
+                        instance,
+                        extra_args,
+                        err
                     );
                 }
             }

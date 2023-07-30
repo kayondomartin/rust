@@ -1,14 +1,14 @@
-use super::NormalizeExt;
-use super::{ObligationCause, PredicateObligation, SelectionContext};
-use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Diagnostic;
-use rustc_hir::def_id::DefId;
-use rustc_infer::infer::InferOk;
-use rustc_middle::ty::SubstsRef;
-use rustc_middle::ty::{self, ImplSubject, ToPredicate, Ty, TyCtxt, TypeVisitableExt};
 use rustc_span::Span;
+use smallvec::smallvec;
 use smallvec::SmallVec;
 
+use rustc_data_structures::fx::FxHashSet;
+use rustc_hir::def_id::DefId;
+use rustc_middle::ty::{self, ImplSubject, ToPredicate, Ty, TyCtxt, TypeVisitable};
+use rustc_middle::ty::{GenericArg, SubstsRef};
+
+use super::{Normalized, Obligation, ObligationCause, PredicateObligation, SelectionContext};
 pub use rustc_infer::traits::{self, util::*};
 
 ///////////////////////////////////////////////////////////////////////////
@@ -41,12 +41,7 @@ impl<'tcx> TraitAliasExpansionInfo<'tcx> {
 
     /// Adds diagnostic labels to `diag` for the expansion path of a trait through all intermediate
     /// trait aliases.
-    pub fn label_with_exp_info(
-        &self,
-        diag: &mut Diagnostic,
-        top_label: &'static str,
-        use_desc: &str,
-    ) {
+    pub fn label_with_exp_info(&self, diag: &mut Diagnostic, top_label: &str, use_desc: &str) {
         diag.span_label(self.top().1, top_label);
         if self.path.len() > 1 {
             for (_, sp) in self.path.iter().rev().skip(1).take(self.path.len() - 2) {
@@ -120,12 +115,12 @@ impl<'tcx> TraitAliasExpander<'tcx> {
         }
 
         // Get components of trait alias.
-        let predicates = tcx.implied_predicates_of(trait_ref.def_id());
+        let predicates = tcx.super_predicates_of(trait_ref.def_id());
         debug!(?predicates);
 
         let items = predicates.predicates.iter().rev().filter_map(|(pred, span)| {
             pred.subst_supertrait(tcx, &trait_ref)
-                .as_trait_clause()
+                .to_opt_poly_trait_pred()
                 .map(|trait_ref| item.clone_and_push(trait_ref.map_bound(|t| t.trait_ref), *span))
         });
         debug!("expand_trait_aliases: items={:?}", items.clone().collect::<Vec<_>>());
@@ -182,7 +177,7 @@ impl Iterator for SupertraitDefIds<'_> {
             predicates
                 .predicates
                 .iter()
-                .filter_map(|(pred, _)| pred.as_trait_clause())
+                .filter_map(|(pred, _)| pred.to_opt_poly_trait_pred())
                 .map(|trait_ref| trait_ref.def_id())
                 .filter(|&super_def_id| visited.insert(super_def_id)),
         );
@@ -202,25 +197,53 @@ pub fn impl_subject_and_oblig<'a, 'tcx>(
     param_env: ty::ParamEnv<'tcx>,
     impl_def_id: DefId,
     impl_substs: SubstsRef<'tcx>,
-    cause: impl Fn(usize, Span) -> ObligationCause<'tcx>,
 ) -> (ImplSubject<'tcx>, impl Iterator<Item = PredicateObligation<'tcx>>) {
-    let subject = selcx.tcx().impl_subject(impl_def_id);
+    let subject = selcx.tcx().bound_impl_subject(impl_def_id);
     let subject = subject.subst(selcx.tcx(), impl_substs);
-
-    let InferOk { value: subject, obligations: normalization_obligations1 } =
-        selcx.infcx.at(&ObligationCause::dummy(), param_env).normalize(subject);
+    let Normalized { value: subject, obligations: normalization_obligations1 } =
+        super::normalize(selcx, param_env, ObligationCause::dummy(), subject);
 
     let predicates = selcx.tcx().predicates_of(impl_def_id);
     let predicates = predicates.instantiate(selcx.tcx(), impl_substs);
-    let InferOk { value: predicates, obligations: normalization_obligations2 } =
-        selcx.infcx.at(&ObligationCause::dummy(), param_env).normalize(predicates);
-    let impl_obligations = super::predicates_for_generics(cause, param_env, predicates);
+    let Normalized { value: predicates, obligations: normalization_obligations2 } =
+        super::normalize(selcx, param_env, ObligationCause::dummy(), predicates);
+    let impl_obligations =
+        super::predicates_for_generics(|_, _| ObligationCause::dummy(), param_env, predicates);
 
     let impl_obligations = impl_obligations
         .chain(normalization_obligations1.into_iter())
         .chain(normalization_obligations2.into_iter());
 
     (subject, impl_obligations)
+}
+
+pub fn predicate_for_trait_ref<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    cause: ObligationCause<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
+    trait_ref: ty::TraitRef<'tcx>,
+    recursion_depth: usize,
+) -> PredicateObligation<'tcx> {
+    Obligation {
+        cause,
+        param_env,
+        recursion_depth,
+        predicate: ty::Binder::dummy(trait_ref).without_const().to_predicate(tcx),
+    }
+}
+
+pub fn predicate_for_trait_def<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
+    cause: ObligationCause<'tcx>,
+    trait_def_id: DefId,
+    recursion_depth: usize,
+    self_ty: Ty<'tcx>,
+    params: &[GenericArg<'tcx>],
+) -> PredicateObligation<'tcx> {
+    let trait_ref =
+        ty::TraitRef { def_id: trait_def_id, substs: tcx.mk_substs_trait(self_ty, params) };
+    predicate_for_trait_ref(tcx, cause, param_env, trait_ref, recursion_depth)
 }
 
 /// Casts a trait reference into a reference to one of its super
@@ -238,21 +261,36 @@ pub fn upcast_choices<'tcx>(
     supertraits(tcx, source_trait_ref).filter(|r| r.def_id() == target_trait_def_id).collect()
 }
 
+/// Given a trait `trait_ref`, returns the number of vtable entries
+/// that come from `trait_ref`, excluding its supertraits. Used in
+/// computing the vtable base for an upcast trait of a trait object.
+pub fn count_own_vtable_entries<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    trait_ref: ty::PolyTraitRef<'tcx>,
+) -> usize {
+    tcx.own_existential_vtable_entries(trait_ref.def_id()).len()
+}
+
 /// Given an upcast trait object described by `object`, returns the
 /// index of the method `method_def_id` (which should be part of
 /// `object.upcast_trait_ref`) within the vtable for `object`.
 pub fn get_vtable_index_of_object_method<'tcx, N>(
     tcx: TyCtxt<'tcx>,
-    object: &super::ImplSourceObjectData<N>,
+    object: &super::ImplSourceObjectData<'tcx, N>,
     method_def_id: DefId,
 ) -> Option<usize> {
     // Count number of methods preceding the one we are selecting and
     // add them to the total offset.
-    tcx.own_existential_vtable_entries(tcx.parent(method_def_id))
+    if let Some(index) = tcx
+        .own_existential_vtable_entries(object.upcast_trait_ref.def_id())
         .iter()
         .copied()
         .position(|def_id| def_id == method_def_id)
-        .map(|index| object.vtable_base + index)
+    {
+        Some(object.vtable_base + index)
+    } else {
+        None
+    }
 }
 
 pub fn closure_trait_ref_and_return_type<'tcx>(
@@ -262,12 +300,15 @@ pub fn closure_trait_ref_and_return_type<'tcx>(
     sig: ty::PolyFnSig<'tcx>,
     tuple_arguments: TupleArgumentsFlag,
 ) -> ty::Binder<'tcx, (ty::TraitRef<'tcx>, Ty<'tcx>)> {
-    assert!(!self_ty.has_escaping_bound_vars());
     let arguments_tuple = match tuple_arguments {
         TupleArgumentsFlag::No => sig.skip_binder().inputs()[0],
-        TupleArgumentsFlag::Yes => Ty::new_tup(tcx, sig.skip_binder().inputs()),
+        TupleArgumentsFlag::Yes => tcx.intern_tup(sig.skip_binder().inputs()),
     };
-    let trait_ref = ty::TraitRef::new(tcx, fn_trait_def_id, [self_ty, arguments_tuple]);
+    debug_assert!(!self_ty.has_escaping_bound_vars());
+    let trait_ref = ty::TraitRef {
+        def_id: fn_trait_def_id,
+        substs: tcx.mk_substs_trait(self_ty, &[arguments_tuple.into()]),
+    };
     sig.map_bound(|sig| (trait_ref, sig.output()))
 }
 
@@ -277,69 +318,20 @@ pub fn generator_trait_ref_and_outputs<'tcx>(
     self_ty: Ty<'tcx>,
     sig: ty::PolyGenSig<'tcx>,
 ) -> ty::Binder<'tcx, (ty::TraitRef<'tcx>, Ty<'tcx>, Ty<'tcx>)> {
-    assert!(!self_ty.has_escaping_bound_vars());
-    let trait_ref = ty::TraitRef::new(tcx, fn_trait_def_id, [self_ty, sig.skip_binder().resume_ty]);
+    debug_assert!(!self_ty.has_escaping_bound_vars());
+    let trait_ref = ty::TraitRef {
+        def_id: fn_trait_def_id,
+        substs: tcx.mk_substs_trait(self_ty, &[sig.skip_binder().resume_ty.into()]),
+    };
     sig.map_bound(|sig| (trait_ref, sig.yield_ty, sig.return_ty))
-}
-
-pub fn future_trait_ref_and_outputs<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    fn_trait_def_id: DefId,
-    self_ty: Ty<'tcx>,
-    sig: ty::PolyGenSig<'tcx>,
-) -> ty::Binder<'tcx, (ty::TraitRef<'tcx>, Ty<'tcx>)> {
-    assert!(!self_ty.has_escaping_bound_vars());
-    let trait_ref = ty::TraitRef::new(tcx, fn_trait_def_id, [self_ty]);
-    sig.map_bound(|sig| (trait_ref, sig.return_ty))
 }
 
 pub fn impl_item_is_final(tcx: TyCtxt<'_>, assoc_item: &ty::AssocItem) -> bool {
     assoc_item.defaultness(tcx).is_final()
-        && tcx.defaultness(assoc_item.container_id(tcx)).is_final()
+        && tcx.impl_defaultness(assoc_item.container_id(tcx)).is_final()
 }
 
 pub enum TupleArgumentsFlag {
     Yes,
     No,
-}
-
-// Verify that the trait item and its implementation have compatible substs lists
-pub fn check_substs_compatible<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    assoc_item: ty::AssocItem,
-    substs: ty::SubstsRef<'tcx>,
-) -> bool {
-    fn check_substs_compatible_inner<'tcx>(
-        tcx: TyCtxt<'tcx>,
-        generics: &'tcx ty::Generics,
-        args: &'tcx [ty::GenericArg<'tcx>],
-    ) -> bool {
-        if generics.count() != args.len() {
-            return false;
-        }
-
-        let (parent_args, own_args) = args.split_at(generics.parent_count);
-
-        if let Some(parent) = generics.parent
-            && let parent_generics = tcx.generics_of(parent)
-            && !check_substs_compatible_inner(tcx, parent_generics, parent_args) {
-            return false;
-        }
-
-        for (param, arg) in std::iter::zip(&generics.params, own_args) {
-            match (&param.kind, arg.unpack()) {
-                (ty::GenericParamDefKind::Type { .. }, ty::GenericArgKind::Type(_))
-                | (ty::GenericParamDefKind::Lifetime, ty::GenericArgKind::Lifetime(_))
-                | (ty::GenericParamDefKind::Const { .. }, ty::GenericArgKind::Const(_)) => {}
-                _ => return false,
-            }
-        }
-
-        true
-    }
-
-    let generics = tcx.generics_of(assoc_item.def_id);
-    // Chop off any additional substs (RPITIT) substs
-    let substs = &substs[0..generics.count().min(substs.len())];
-    check_substs_compatible_inner(tcx, generics, substs)
 }

@@ -1,10 +1,7 @@
-use crate::lints::{
-    ConfusableIdentifierPair, IdentifierNonAsciiChar, IdentifierUncommonCodepoints,
-    MixedScriptConfusables,
-};
 use crate::{EarlyContext, EarlyLintPass, LintContext};
 use rustc_ast as ast;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_errors::fluent;
 use rustc_span::symbol::Symbol;
 
 declare_lint! {
@@ -183,11 +180,21 @@ impl EarlyLintPass for NonAsciiIdents {
                 continue;
             }
             has_non_ascii_idents = true;
-            cx.emit_spanned_lint(NON_ASCII_IDENTS, sp, IdentifierNonAsciiChar);
+            cx.struct_span_lint(
+                NON_ASCII_IDENTS,
+                sp,
+                fluent::lint_identifier_non_ascii_char,
+                |lint| lint,
+            );
             if check_uncommon_codepoints
                 && !symbol_str.chars().all(GeneralSecurityProfile::identifier_allowed)
             {
-                cx.emit_spanned_lint(UNCOMMON_CODEPOINTS, sp, IdentifierUncommonCodepoints);
+                cx.struct_span_lint(
+                    UNCOMMON_CODEPOINTS,
+                    sp,
+                    fluent::lint_identifier_uncommon_codepoints,
+                    |lint| lint,
+                )
             }
         }
 
@@ -215,13 +222,14 @@ impl EarlyLintPass for NonAsciiIdents {
                     .entry(skeleton_sym)
                     .and_modify(|(existing_symbol, existing_span, existing_is_ascii)| {
                         if !*existing_is_ascii || !is_ascii {
-                            cx.emit_spanned_lint(
+                            cx.struct_span_lint(
                                 CONFUSABLE_IDENTS,
                                 sp,
-                                ConfusableIdentifierPair {
-                                    existing_sym: *existing_symbol,
-                                    sym: symbol,
-                                    label: *existing_span,
+                                fluent::lint_confusable_identifier_pair,
+                                |lint| {
+                                    lint.set_arg("existing_sym", *existing_symbol)
+                                        .set_arg("sym", symbol)
+                                        .span_label(*existing_span, fluent::label)
                                 },
                             );
                         }
@@ -250,7 +258,7 @@ impl EarlyLintPass for NonAsciiIdents {
             let latin_augmented_script_set = AugmentedScriptSet::for_char('A');
             script_states.insert(latin_augmented_script_set, ScriptSetUsage::Verified);
 
-            let mut has_suspicious = false;
+            let mut has_suspicous = false;
             for (symbol, &sp) in symbols.iter() {
                 let symbol_str = symbol.as_str();
                 for ch in symbol_str.chars() {
@@ -278,14 +286,14 @@ impl EarlyLintPass for NonAsciiIdents {
                             if !is_potential_mixed_script_confusable_char(ch) {
                                 ScriptSetUsage::Verified
                             } else {
-                                has_suspicious = true;
+                                has_suspicous = true;
                                 ScriptSetUsage::Suspicious(vec![ch], sp)
                             }
                         });
                 }
             }
 
-            if has_suspicious {
+            if has_suspicous {
                 let verified_augmented_script_sets = script_states
                     .iter()
                     .flat_map(|(k, v)| match v {
@@ -323,18 +331,24 @@ impl EarlyLintPass for NonAsciiIdents {
                 }
 
                 for ((sp, ch_list), script_set) in lint_reports {
-                    let mut includes = String::new();
-                    for (idx, ch) in ch_list.into_iter().enumerate() {
-                        if idx != 0 {
-                            includes += ", ";
-                        }
-                        let char_info = format!("'{}' (U+{:04X})", ch, ch as u32);
-                        includes += &char_info;
-                    }
-                    cx.emit_spanned_lint(
+                    cx.struct_span_lint(
                         MIXED_SCRIPT_CONFUSABLES,
                         sp,
-                        MixedScriptConfusables { set: script_set.to_string(), includes },
+                        fluent::lint_mixed_script_confusables,
+                        |lint| {
+                            let mut includes = String::new();
+                            for (idx, ch) in ch_list.into_iter().enumerate() {
+                                if idx != 0 {
+                                    includes += ", ";
+                                }
+                                let char_info = format!("'{}' (U+{:04X})", ch, ch as u32);
+                                includes += &char_info;
+                            }
+                            lint.set_arg("set", script_set.to_string())
+                                .set_arg("includes", includes)
+                                .note(fluent::includes_note)
+                                .note(fluent::note)
+                        },
                     );
                 }
             }

@@ -1,5 +1,4 @@
 use crate::iter::{FusedIterator, TrustedLen};
-use crate::num::NonZeroUsize;
 
 /// Creates a new iterator that endlessly repeats a single element.
 ///
@@ -81,7 +80,7 @@ impl<A: Clone> Iterator for Repeat<A> {
     }
 
     #[inline]
-    fn advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_by(&mut self, n: usize) -> Result<(), usize> {
         // Advancing an infinite iterator of a single element is a no-op.
         let _ = n;
         Ok(())
@@ -110,7 +109,7 @@ impl<A: Clone> DoubleEndedIterator for Repeat<A> {
     }
 
     #[inline]
-    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_back_by(&mut self, n: usize) -> Result<(), usize> {
         // Advancing an infinite iterator of a single element is a no-op.
         let _ = n;
         Ok(())

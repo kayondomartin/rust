@@ -44,33 +44,34 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let expr_ty = expr.ty;
         let temp = {
             let mut local_decl = LocalDecl::new(expr_ty, expr_span);
-            if mutability.is_not() {
+            if mutability == Mutability::Not {
                 local_decl = local_decl.immutable();
             }
 
             debug!("creating temp {:?} with block_context: {:?}", local_decl, this.block_context);
-            let local_info = match expr.kind {
+            // Find out whether this temp is being created within the
+            // tail expression of a block whose result is ignored.
+            if let Some(tail_info) = this.block_context.currently_in_block_tail() {
+                local_decl = local_decl.block_tail(tail_info);
+            }
+            match expr.kind {
                 ExprKind::StaticRef { def_id, .. } => {
                     assert!(!this.tcx.is_thread_local_static(def_id));
                     local_decl.internal = true;
-                    LocalInfo::StaticRef { def_id, is_thread_local: false }
+                    local_decl.local_info =
+                        Some(Box::new(LocalInfo::StaticRef { def_id, is_thread_local: false }));
                 }
                 ExprKind::ThreadLocalRef(def_id) => {
                     assert!(this.tcx.is_thread_local_static(def_id));
                     local_decl.internal = true;
-                    LocalInfo::StaticRef { def_id, is_thread_local: true }
+                    local_decl.local_info =
+                        Some(Box::new(LocalInfo::StaticRef { def_id, is_thread_local: true }));
                 }
                 ExprKind::NamedConst { def_id, .. } | ExprKind::ConstParam { def_id, .. } => {
-                    LocalInfo::ConstRef { def_id }
+                    local_decl.local_info = Some(Box::new(LocalInfo::ConstRef { def_id }));
                 }
-                // Find out whether this temp is being created within the
-                // tail expression of a block whose result is ignored.
-                _ if let Some(tail_info) = this.block_context.currently_in_block_tail() => {
-                    LocalInfo::BlockTailTemp(tail_info)
-                }
-                _ => LocalInfo::Boring,
-            };
-            **local_decl.local_info.as_mut().assert_crate_local() = local_info;
+                _ => {}
+            }
             this.local_decls.push(local_decl)
         };
         let temp_place = Place::from(temp);

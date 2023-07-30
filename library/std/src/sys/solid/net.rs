@@ -2,7 +2,7 @@ use super::abi;
 use crate::{
     cmp,
     ffi::CStr,
-    io::{self, BorrowedBuf, BorrowedCursor, ErrorKind, IoSlice, IoSliceMut},
+    io::{self, ErrorKind, IoSlice, IoSliceMut},
     mem,
     net::{Shutdown, SocketAddr},
     ptr, str,
@@ -112,7 +112,6 @@ impl FileDesc {
 }
 
 impl AsInner<c_int> for FileDesc {
-    #[inline]
     fn as_inner(&self) -> &c_int {
         &self.fd
     }
@@ -295,30 +294,19 @@ impl Socket {
         self.0.duplicate().map(Socket)
     }
 
-    fn recv_with_flags(&self, mut buf: BorrowedCursor<'_>, flags: c_int) -> io::Result<()> {
+    fn recv_with_flags(&self, buf: &mut [u8], flags: c_int) -> io::Result<usize> {
         let ret = cvt(unsafe {
-            netc::recv(self.0.raw(), buf.as_mut().as_mut_ptr().cast(), buf.capacity(), flags)
+            netc::recv(self.0.raw(), buf.as_mut_ptr() as *mut c_void, buf.len(), flags)
         })?;
-        unsafe {
-            buf.advance(ret as usize);
-        }
-        Ok(())
+        Ok(ret as usize)
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut buf = BorrowedBuf::from(buf);
-        self.recv_with_flags(buf.unfilled(), 0)?;
-        Ok(buf.len())
+        self.recv_with_flags(buf, 0)
     }
 
     pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut buf = BorrowedBuf::from(buf);
-        self.recv_with_flags(buf.unfilled(), MSG_PEEK)?;
-        Ok(buf.len())
-    }
-
-    pub fn read_buf(&self, buf: BorrowedCursor<'_>) -> io::Result<()> {
-        self.recv_with_flags(buf, 0)
+        self.recv_with_flags(buf, MSG_PEEK)
     }
 
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
@@ -463,7 +451,6 @@ impl Socket {
 }
 
 impl AsInner<c_int> for Socket {
-    #[inline]
     fn as_inner(&self) -> &c_int {
         self.0.as_inner()
     }

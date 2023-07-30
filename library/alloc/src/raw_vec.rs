@@ -4,8 +4,10 @@ use core::alloc::LayoutError;
 use core::cmp;
 use core::intrinsics;
 use core::mem::{self, ManuallyDrop, MaybeUninit, SizedTypeProperties};
+use core::ops::Drop;
 use core::ptr::{self, NonNull, Unique};
 use core::slice;
+use core::ptr::metadata_update::MetaUpdate;
 
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::handle_alloc_error;
@@ -52,6 +54,15 @@ pub(crate) struct RawVec<T, A: Allocator = Global> {
     ptr: Unique<T>,
     cap: usize,
     alloc: A,
+}
+
+/// raw vec is a smart pointer
+/// otherwise cap and alloc may be stored in the unsafe region
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T> MetaUpdate for RawVec<T> {
+    fn synchronize(&self) -> bool {
+        true
+    }
 }
 
 impl<T> RawVec<T, Global> {
@@ -240,15 +251,10 @@ impl<T, A: Allocator> RawVec<T, A> {
         if T::IS_ZST || self.cap == 0 {
             None
         } else {
-            // We could use Layout::array here which ensures the absence of isize and usize overflows
-            // and could hypothetically handle differences between stride and size, but this memory
-            // has already been allocated so we know it can't overflow and currently rust does not
-            // support such types. So we can do better by skipping some checks and avoid an unwrap.
-            let _: () = const { assert!(mem::size_of::<T>() % mem::align_of::<T>() == 0) };
+            // We have an allocated chunk of memory, so we can bypass runtime
+            // checks to get our current layout.
             unsafe {
-                let align = mem::align_of::<T>();
-                let size = mem::size_of::<T>().unchecked_mul(self.cap);
-                let layout = Layout::from_size_align_unchecked(size, align);
+                let layout = Layout::array::<T>(self.cap).unwrap_unchecked();
                 Some((self.ptr.cast().into(), layout))
             }
         }
@@ -430,13 +436,11 @@ impl<T, A: Allocator> RawVec<T, A> {
         assert!(cap <= self.capacity(), "Tried to shrink to a larger capacity");
 
         let (ptr, layout) = if let Some(mem) = self.current_memory() { mem } else { return Ok(()) };
-        // See current_memory() why this assert is here
-        let _: () = const { assert!(mem::size_of::<T>() % mem::align_of::<T>() == 0) };
+
         let ptr = unsafe {
             // `Layout::array` cannot overflow here because it would have
             // overflowed earlier when capacity was larger.
-            let new_size = mem::size_of::<T>().unchecked_mul(cap);
-            let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
+            let new_layout = Layout::array::<T>(cap).unwrap_unchecked();
             self.alloc
                 .shrink(ptr, layout, new_layout)
                 .map_err(|_| AllocError { layout: new_layout, non_exhaustive: () })?

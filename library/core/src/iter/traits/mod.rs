@@ -4,7 +4,6 @@ mod double_ended;
 mod exact_size;
 mod iterator;
 mod marker;
-mod unchecked_iterator;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::{
@@ -20,5 +19,3 @@ pub use self::{
 pub use self::marker::InPlaceIterable;
 #[unstable(feature = "trusted_step", issue = "85731")]
 pub use self::marker::TrustedStep;
-
-pub(crate) use self::unchecked_iterator::UncheckedIterator;

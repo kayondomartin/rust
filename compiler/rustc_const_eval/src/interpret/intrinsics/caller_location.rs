@@ -1,3 +1,5 @@
+use std::convert::TryFrom;
+
 use rustc_ast::Mutability;
 use rustc_hir::lang_items::LangItem;
 use rustc_middle::mir::TerminatorKind;
@@ -17,8 +19,8 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             debug!("find_closest_untracked_caller_location: checking frame {:?}", frame.instance);
 
             // Assert that the frame we look at is actually executing code currently
-            // (`loc` is `Right` when we are unwinding and the frame does not require cleanup).
-            let loc = frame.loc.left().unwrap();
+            // (`loc` is `Err` when we are unwinding and the frame does not require cleanup).
+            let loc = frame.loc.unwrap();
 
             // This could be a non-`Call` terminator (such as `Drop`), or not a terminator at all
             // (such as `box`). Use the normal span by default.
@@ -77,17 +79,14 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         line: u32,
         col: u32,
     ) -> MPlaceTy<'tcx, M::Provenance> {
-        let loc_details = self.tcx.sess.opts.unstable_opts.location_detail;
-        // This can fail if rustc runs out of memory right here. Trying to emit an error would be
-        // pointless, since that would require allocating more memory than these short strings.
+        let loc_details = &self.tcx.sess.opts.unstable_opts.location_detail;
         let file = if loc_details.file {
             self.allocate_str(filename.as_str(), MemoryKind::CallerLocation, Mutability::Not)
-                .unwrap()
         } else {
             // FIXME: This creates a new allocation each time. It might be preferable to
             // perform this allocation only once, and re-use the `MPlaceTy`.
             // See https://github.com/rust-lang/rust/pull/89920#discussion_r730012398
-            self.allocate_str("<redacted>", MemoryKind::CallerLocation, Mutability::Not).unwrap()
+            self.allocate_str("<redacted>", MemoryKind::CallerLocation, Mutability::Not)
         };
         let line = if loc_details.line { Scalar::from_u32(line) } else { Scalar::from_u32(0) };
         let col = if loc_details.column { Scalar::from_u32(col) } else { Scalar::from_u32(0) };
@@ -95,9 +94,11 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         // Allocate memory for `CallerLocation` struct.
         let loc_ty = self
             .tcx
-            .type_of(self.tcx.require_lang_item(LangItem::PanicLocation, None))
-            .subst(*self.tcx, self.tcx.mk_substs(&[self.tcx.lifetimes.re_erased.into()]));
+            .bound_type_of(self.tcx.require_lang_item(LangItem::PanicLocation, None))
+            .subst(*self.tcx, self.tcx.mk_substs([self.tcx.lifetimes.re_erased.into()].iter()));
         let loc_layout = self.layout_of(loc_ty).unwrap();
+        // This can fail if rustc runs out of memory right here. Trying to emit an error would be
+        // pointless, since that would require allocating more memory than a Location.
         let location = self.allocate(loc_layout, MemoryKind::CallerLocation).unwrap();
 
         // Initialize fields.

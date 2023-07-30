@@ -126,7 +126,7 @@ impl<
             write!(
                 w,
                 r#"<tr><td align="left" balign="left">{}</td></tr>"#,
-                dot::escape_html(&section)
+                dot::escape_html(&section).replace('\n', "<br/>")
             )?;
         }
 
@@ -147,7 +147,7 @@ impl<
             let src = self.node(source);
             let trg = self.node(target);
             let escaped_edge_label = if let Some(edge_label) = edge_labels.get(index) {
-                dot::escape_html(edge_label)
+                dot::escape_html(edge_label).replace('\n', r#"<br align="left"/>"#)
             } else {
                 "".to_owned()
             };
@@ -162,7 +162,8 @@ impl<
     where
         W: Write,
     {
-        let escaped_label = dot::escape_html(label);
+        let lines = label.split('\n').map(|s| dot::escape_html(s)).collect::<Vec<_>>();
+        let escaped_label = lines.join(r#"<br align="left"/>"#);
         writeln!(w, r#"    label=<<br/><br/>{}<br align="left"/><br/><br/><br/>>;"#, escaped_label)
     }
 

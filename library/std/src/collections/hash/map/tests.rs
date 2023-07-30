@@ -3,8 +3,7 @@ use super::HashMap;
 use super::RandomState;
 use crate::assert_matches::assert_matches;
 use crate::cell::RefCell;
-use crate::test_helpers::test_rng;
-use rand::Rng;
+use rand::{thread_rng, Rng};
 use realstd::collections::TryReserveErrorKind::*;
 
 // https://github.com/rust-lang/rust/issues/62301
@@ -711,16 +710,16 @@ fn test_entry_take_doesnt_corrupt() {
     }
 
     let mut m = HashMap::new();
-    let mut rng = test_rng();
+    let mut rng = thread_rng();
 
     // Populate the map with some items.
     for _ in 0..50 {
-        let x = rng.gen_range(-10..10);
+        let x = rng.gen_range(-10, 10);
         m.insert(x, ());
     }
 
     for _ in 0..1000 {
-        let x = rng.gen_range(-10..10);
+        let x = rng.gen_range(-10, 10);
         match m.entry(x) {
             Vacant(_) => {}
             Occupied(e) => {
@@ -944,7 +943,7 @@ fn test_raw_entry() {
     }
 }
 
-mod test_extract_if {
+mod test_drain_filter {
     use super::*;
 
     use crate::panic::{catch_unwind, AssertUnwindSafe};
@@ -968,7 +967,7 @@ mod test_extract_if {
     #[test]
     fn empty() {
         let mut map: HashMap<i32, i32> = HashMap::new();
-        map.extract_if(|_, _| unreachable!("there's nothing to decide on")).for_each(drop);
+        map.drain_filter(|_, _| unreachable!("there's nothing to decide on"));
         assert!(map.is_empty());
     }
 
@@ -976,7 +975,7 @@ mod test_extract_if {
     fn consuming_nothing() {
         let pairs = (0..3).map(|i| (i, i));
         let mut map: HashMap<_, _> = pairs.collect();
-        assert!(map.extract_if(|_, _| false).eq_sorted(crate::iter::empty()));
+        assert!(map.drain_filter(|_, _| false).eq_sorted(crate::iter::empty()));
         assert_eq!(map.len(), 3);
     }
 
@@ -984,7 +983,7 @@ mod test_extract_if {
     fn consuming_all() {
         let pairs = (0..3).map(|i| (i, i));
         let mut map: HashMap<_, _> = pairs.clone().collect();
-        assert!(map.extract_if(|_, _| true).eq_sorted(pairs));
+        assert!(map.drain_filter(|_, _| true).eq_sorted(pairs));
         assert!(map.is_empty());
     }
 
@@ -993,7 +992,7 @@ mod test_extract_if {
         let pairs = (0..3).map(|i| (i, i));
         let mut map: HashMap<_, _> = pairs.collect();
         assert!(
-            map.extract_if(|_, v| {
+            map.drain_filter(|_, v| {
                 *v += 6;
                 false
             })
@@ -1008,7 +1007,7 @@ mod test_extract_if {
         let pairs = (0..3).map(|i| (i, i));
         let mut map: HashMap<_, _> = pairs.collect();
         assert!(
-            map.extract_if(|_, v| {
+            map.drain_filter(|_, v| {
                 *v += 6;
                 true
             })
@@ -1034,15 +1033,14 @@ mod test_extract_if {
         let mut map = (0..3).map(|i| (i, D)).collect::<HashMap<_, _>>();
 
         catch_unwind(move || {
-            map.extract_if(|_, _| {
+            drop(map.drain_filter(|_, _| {
                 PREDS.fetch_add(1, Ordering::SeqCst);
                 true
-            })
-            .for_each(drop)
+            }))
         })
         .unwrap_err();
 
-        assert_eq!(PREDS.load(Ordering::SeqCst), 2);
+        assert_eq!(PREDS.load(Ordering::SeqCst), 3);
         assert_eq!(DROPS.load(Ordering::SeqCst), 3);
     }
 
@@ -1061,11 +1059,10 @@ mod test_extract_if {
         let mut map = (0..3).map(|i| (i, D)).collect::<HashMap<_, _>>();
 
         catch_unwind(AssertUnwindSafe(|| {
-            map.extract_if(|_, _| match PREDS.fetch_add(1, Ordering::SeqCst) {
+            drop(map.drain_filter(|_, _| match PREDS.fetch_add(1, Ordering::SeqCst) {
                 0 => true,
                 _ => panic!(),
-            })
-            .for_each(drop)
+            }))
         }))
         .unwrap_err();
 
@@ -1090,7 +1087,7 @@ mod test_extract_if {
         let mut map = (0..3).map(|i| (i, D)).collect::<HashMap<_, _>>();
 
         {
-            let mut it = map.extract_if(|_, _| match PREDS.fetch_add(1, Ordering::SeqCst) {
+            let mut it = map.drain_filter(|_, _| match PREDS.fetch_add(1, Ordering::SeqCst) {
                 0 => true,
                 _ => panic!(),
             });

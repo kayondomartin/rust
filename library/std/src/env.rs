@@ -236,14 +236,21 @@ fn _var(key: &OsStr) -> Result<String, VarError> {
 }
 
 /// Fetches the environment variable `key` from the current process, returning
-/// [`None`] if the variable isn't set or if there is another error.
+/// [`None`] if the variable isn't set or there's another error.
 ///
-/// It may return `None` if the environment variable's name contains
-/// the equal sign character (`=`) or the NUL character.
-///
-/// Note that this function will not check if the environment variable
+/// Note that the method will not check if the environment variable
 /// is valid Unicode. If you want to have an error on invalid UTF-8,
 /// use the [`var`] function instead.
+///
+/// # Errors
+///
+/// This function returns an error if the environment variable isn't set.
+///
+/// This function may return an error if the environment variable's name contains
+/// the equal sign character (`=`) or the NUL character.
+///
+/// This function may return an error if the environment variable's value contains
+/// the NUL character.
 ///
 /// # Examples
 ///
@@ -563,13 +570,6 @@ impl Error for JoinPathsError {
 ///
 /// [msdn]: https://docs.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getuserprofiledirectorya
 ///
-/// # Deprecation
-///
-/// This function is deprecated because the behaviour on Windows is not correct.
-/// The 'HOME' environment variable is not standard on Windows, and may not produce
-/// desired results; for instance, under Cygwin or Mingw it will return `/home/you`
-/// when it should return `C:\Users\you`.
-///
 /// # Examples
 ///
 /// ```
@@ -582,7 +582,7 @@ impl Error for JoinPathsError {
 /// ```
 #[deprecated(
     since = "1.29.0",
-    note = "This function's behavior may be unexpected on Windows. \
+    note = "This function's behavior is unexpected and probably not what you want. \
             Consider using a crate from crates.io instead."
 )]
 #[must_use]
@@ -888,7 +888,6 @@ pub mod consts {
     /// - x86_64
     /// - arm
     /// - aarch64
-    /// - loongarch64
     /// - m68k
     /// - mips
     /// - mips64

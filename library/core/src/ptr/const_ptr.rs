@@ -1,6 +1,6 @@
 use super::*;
 use crate::cmp::Ordering::{self, Equal, Greater, Less};
-use crate::intrinsics::{self, const_eval_select};
+use crate::intrinsics;
 use crate::mem;
 use crate::slice::{self, SliceIndex};
 
@@ -23,6 +23,8 @@ impl<T: ?Sized> *const T {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// let s: &str = "Follow the rabbit";
     /// let ptr: *const u8 = s.as_ptr();
@@ -30,46 +32,34 @@ impl<T: ?Sized> *const T {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_ptr_is_null", issue = "74939")]
-    #[rustc_diagnostic_item = "ptr_const_is_null"]
     #[inline]
     pub const fn is_null(self) -> bool {
-        #[inline]
-        fn runtime_impl(ptr: *const u8) -> bool {
-            ptr.addr() == 0
+        // Compare via a cast to a thin pointer, so fat pointers are only
+        // considering their "data" part for null-ness.
+        match (self as *const u8).guaranteed_eq(null()) {
+            None => false,
+            Some(res) => res,
         }
-
-        #[inline]
-        const fn const_impl(ptr: *const u8) -> bool {
-            // Compare via a cast to a thin pointer, so fat pointers are only
-            // considering their "data" part for null-ness.
-            match (ptr).guaranteed_eq(null_mut()) {
-                None => false,
-                Some(res) => res,
-            }
-        }
-
-        // SAFETY: The two versions are equivalent at runtime.
-        unsafe { const_eval_select((self as *const u8,), const_impl, runtime_impl) }
     }
 
     /// Casts to a pointer of another type.
     #[stable(feature = "ptr_cast", since = "1.38.0")]
     #[rustc_const_stable(feature = "const_ptr_cast", since = "1.38.0")]
-    #[inline(always)]
+    #[inline]
     pub const fn cast<U>(self) -> *const U {
         self as _
     }
 
     /// Use the pointer value in a new pointer of another type.
     ///
-    /// In case `meta` is a (fat) pointer to an unsized type, this operation
+    /// In case `val` is a (fat) pointer to an unsized type, this operation
     /// will ignore the pointer part, whereas for (thin) pointers to sized
     /// types, this has the same effect as a simple cast.
     ///
     /// The resulting pointer will have provenance of `self`, i.e., for a fat
     /// pointer, this operation is semantically the same as creating a new
     /// fat pointer with the data pointer value of `self` but the metadata of
-    /// `meta`.
+    /// `val`.
     ///
     /// # Examples
     ///
@@ -89,14 +79,19 @@ impl<T: ?Sized> *const T {
     /// }
     /// ```
     #[unstable(feature = "set_ptr_value", issue = "75091")]
-    #[rustc_const_unstable(feature = "set_ptr_value", issue = "75091")]
     #[must_use = "returns a new pointer rather than modifying its argument"]
     #[inline]
-    pub const fn with_metadata_of<U>(self, meta: *const U) -> *const U
+    pub fn with_metadata_of<U>(self, mut val: *const U) -> *const U
     where
         U: ?Sized,
     {
-        from_raw_parts::<U>(self as *const (), metadata(meta))
+        let target = &mut val as *mut *const U as *mut *const u8;
+        // SAFETY: In case of a thin pointer, this operations is identical
+        // to a simple assignment. In case of a fat pointer, with the current
+        // fat pointer layout implementation, the first field of such a
+        // pointer is always the data pointer, which is likewise assigned.
+        unsafe { *target = self as *const u8 };
+        val
     }
 
     /// Changes constness without changing the type.
@@ -105,8 +100,6 @@ impl<T: ?Sized> *const T {
     /// refactored.
     #[stable(feature = "ptr_const_cast", since = "1.65.0")]
     #[rustc_const_stable(feature = "ptr_const_cast", since = "1.65.0")]
-    #[rustc_diagnostic_item = "ptr_cast_mut"]
-    #[inline(always)]
     pub const fn cast_mut(self) -> *mut T {
         self as _
     }
@@ -124,21 +117,13 @@ impl<T: ?Sized> *const T {
     ///
     /// ```
     /// #![feature(ptr_to_from_bits)]
-    /// # #[cfg(not(miri))] { // doctest does not work with strict provenance
     /// let array = [13, 42];
     /// let p0: *const i32 = &array[0];
     /// assert_eq!(<*const _>::from_bits(p0.to_bits()), p0);
     /// let p1: *const i32 = &array[1];
     /// assert_eq!(p1.to_bits() - p0.to_bits(), 4);
-    /// # }
     /// ```
     #[unstable(feature = "ptr_to_from_bits", issue = "91126")]
-    #[deprecated(
-        since = "1.67.0",
-        note = "replaced by the `expose_addr` method, or update your code \
-            to follow the strict provenance rules using its APIs"
-    )]
-    #[inline(always)]
     pub fn to_bits(self) -> usize
     where
         T: Sized,
@@ -155,20 +140,11 @@ impl<T: ?Sized> *const T {
     ///
     /// ```
     /// #![feature(ptr_to_from_bits)]
-    /// # #[cfg(not(miri))] { // doctest does not work with strict provenance
     /// use std::ptr::NonNull;
     /// let dangling: *const u8 = NonNull::dangling().as_ptr();
     /// assert_eq!(<*const u8>::from_bits(1), dangling);
-    /// # }
     /// ```
     #[unstable(feature = "ptr_to_from_bits", issue = "91126")]
-    #[deprecated(
-        since = "1.67.0",
-        note = "replaced by the `ptr::from_exposed_addr` function, or update \
-            your code to follow the strict provenance rules using its APIs"
-    )]
-    #[allow(fuzzy_provenance_casts)] // this is an unstable and semi-deprecated cast function
-    #[inline(always)]
     pub fn from_bits(bits: usize) -> Self
     where
         T: Sized,
@@ -200,13 +176,16 @@ impl<T: ?Sized> *const T {
     /// might change in the future (including possibly weakening this so it becomes wholly
     /// equivalent to `self as usize`). See the [module documentation][crate::ptr] for details.
     #[must_use]
-    #[inline(always)]
+    #[inline]
     #[unstable(feature = "strict_provenance", issue = "95228")]
-    pub fn addr(self) -> usize {
+    pub fn addr(self) -> usize
+    where
+        T: Sized,
+    {
         // FIXME(strict_provenance_magic): I am magic and should be a compiler intrinsic.
         // SAFETY: Pointer-to-integer transmutes are valid (if you are okay with losing the
         // provenance).
-        unsafe { mem::transmute(self.cast::<()>()) }
+        unsafe { mem::transmute(self) }
     }
 
     /// Gets the "address" portion of the pointer, and 'exposes' the "provenance" part for future
@@ -234,11 +213,14 @@ impl<T: ?Sized> *const T {
     ///
     /// [`from_exposed_addr`]: from_exposed_addr
     #[must_use]
-    #[inline(always)]
+    #[inline]
     #[unstable(feature = "strict_provenance", issue = "95228")]
-    pub fn expose_addr(self) -> usize {
+    pub fn expose_addr(self) -> usize
+    where
+        T: Sized,
+    {
         // FIXME(strict_provenance_magic): I am magic and should be a compiler intrinsic.
-        self.cast::<()>() as usize
+        self as usize
     }
 
     /// Creates a new pointer with the given address.
@@ -256,7 +238,10 @@ impl<T: ?Sized> *const T {
     #[must_use]
     #[inline]
     #[unstable(feature = "strict_provenance", issue = "95228")]
-    pub fn with_addr(self, addr: usize) -> Self {
+    pub fn with_addr(self, addr: usize) -> Self
+    where
+        T: Sized,
+    {
         // FIXME(strict_provenance_magic): I am magic and should be a compiler intrinsic.
         //
         // In the mean-time, this operation is defined to be "as if" it was
@@ -266,7 +251,7 @@ impl<T: ?Sized> *const T {
         let dest_addr = addr as isize;
         let offset = dest_addr.wrapping_sub(self_addr);
 
-        // This is the canonical desugaring of this operation
+        // This is the canonical desugarring of this operation
         self.wrapping_byte_offset(offset)
     }
 
@@ -279,7 +264,10 @@ impl<T: ?Sized> *const T {
     #[must_use]
     #[inline]
     #[unstable(feature = "strict_provenance", issue = "95228")]
-    pub fn map_addr(self, f: impl FnOnce(usize) -> usize) -> Self {
+    pub fn map_addr(self, f: impl FnOnce(usize) -> usize) -> Self
+    where
+        T: Sized,
+    {
         self.with_addr(f(self.addr()))
     }
 
@@ -322,6 +310,8 @@ impl<T: ?Sized> *const T {
     /// [the module documentation]: crate::ptr#safety
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// let ptr: *const u8 = &10u8 as *const u8;
@@ -381,6 +371,8 @@ impl<T: ?Sized> *const T {
     /// [the module documentation]: crate::ptr#safety
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// #![feature(ptr_as_uninit)]
@@ -445,6 +437,8 @@ impl<T: ?Sized> *const T {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// let s: &str = "123";
     /// let ptr: *const u8 = s.as_ptr();
@@ -484,7 +478,8 @@ impl<T: ?Sized> *const T {
     #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
     pub const unsafe fn byte_offset(self, count: isize) -> Self {
         // SAFETY: the caller must uphold the safety contract for `offset`.
-        unsafe { self.cast::<u8>().offset(count).with_metadata_of(self) }
+        let this = unsafe { self.cast::<u8>().offset(count).cast::<()>() };
+        from_raw_parts::<T>(this, metadata(self))
     }
 
     /// Calculates the offset from a pointer using wrapping arithmetic.
@@ -519,6 +514,8 @@ impl<T: ?Sized> *const T {
     /// [allocated object]: crate::ptr#allocated-object
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// // Iterate using a raw pointer in increments of two elements
@@ -562,7 +559,7 @@ impl<T: ?Sized> *const T {
     #[unstable(feature = "pointer_byte_offsets", issue = "96283")]
     #[rustc_const_unstable(feature = "const_pointer_byte_offsets", issue = "96283")]
     pub const fn wrapping_byte_offset(self, count: isize) -> Self {
-        self.cast::<u8>().wrapping_offset(count).with_metadata_of(self)
+        from_raw_parts::<T>(self.cast::<u8>().wrapping_offset(count).cast::<()>(), metadata(self))
     }
 
     /// Masks out bits of the pointer according to a mask.
@@ -571,36 +568,12 @@ impl<T: ?Sized> *const T {
     ///
     /// For non-`Sized` pointees this operation changes only the data pointer,
     /// leaving the metadata untouched.
-    ///
-    /// ## Examples
-    ///
-    /// ```
-    /// #![feature(ptr_mask, strict_provenance)]
-    /// let v = 17_u32;
-    /// let ptr: *const u32 = &v;
-    ///
-    /// // `u32` is 4 bytes aligned,
-    /// // which means that lower 2 bits are always 0.
-    /// let tag_mask = 0b11;
-    /// let ptr_mask = !tag_mask;
-    ///
-    /// // We can store something in these lower bits
-    /// let tagged_ptr = ptr.map_addr(|a| a | 0b10);
-    ///
-    /// // Get the "tag" back
-    /// let tag = tagged_ptr.addr() & tag_mask;
-    /// assert_eq!(tag, 0b10);
-    ///
-    /// // Note that `tagged_ptr` is unaligned, it's UB to read from it.
-    /// // To get original pointer `mask` can be used:
-    /// let masked_ptr = tagged_ptr.mask(ptr_mask);
-    /// assert_eq!(unsafe { *masked_ptr }, 17);
-    /// ```
     #[unstable(feature = "ptr_mask", issue = "98290")]
     #[must_use = "returns a new pointer rather than modifying its argument"]
     #[inline(always)]
     pub fn mask(self, mask: usize) -> *const T {
-        intrinsics::ptr_mask(self.cast::<()>(), mask).with_metadata_of(self)
+        let this = intrinsics::ptr_mask(self.cast::<()>(), mask);
+        from_raw_parts::<T>(this, metadata(self))
     }
 
     /// Calculates the distance between two pointers. The returned value is in
@@ -711,7 +684,7 @@ impl<T: ?Sized> *const T {
     #[unstable(feature = "pointer_byte_offsets", issue = "96283")]
     #[rustc_const_unstable(feature = "const_pointer_byte_offsets", issue = "96283")]
     #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
-    pub const unsafe fn byte_offset_from<U: ?Sized>(self, origin: *const U) -> isize {
+    pub const unsafe fn byte_offset_from(self, origin: *const T) -> isize {
         // SAFETY: the caller must uphold the safety contract for `offset_from`.
         unsafe { self.cast::<u8>().offset_from(origin.cast::<u8>()) }
     }
@@ -723,7 +696,7 @@ impl<T: ?Sized> *const T {
     /// This computes the same value that [`offset_from`](#method.offset_from)
     /// would compute, but with the added precondition that the offset is
     /// guaranteed to be non-negative.  This method is equivalent to
-    /// `usize::try_from(self.offset_from(origin)).unwrap_unchecked()`,
+    /// `usize::from(self.offset_from(origin)).unwrap_unchecked()`,
     /// but it provides slightly more information to the optimizer, which can
     /// sometimes allow it to optimize slightly better with some backends.
     ///
@@ -900,6 +873,8 @@ impl<T: ?Sized> *const T {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// let s: &str = "123";
     /// let ptr: *const u8 = s.as_ptr();
@@ -919,7 +894,7 @@ impl<T: ?Sized> *const T {
         T: Sized,
     {
         // SAFETY: the caller must uphold the safety contract for `offset`.
-        unsafe { intrinsics::offset(self, count) }
+        unsafe { self.offset(count as isize) }
     }
 
     /// Calculates the offset from a pointer in bytes (convenience for `.byte_offset(count as isize)`).
@@ -939,7 +914,8 @@ impl<T: ?Sized> *const T {
     #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
     pub const unsafe fn byte_add(self, count: usize) -> Self {
         // SAFETY: the caller must uphold the safety contract for `add`.
-        unsafe { self.cast::<u8>().add(count).with_metadata_of(self) }
+        let this = unsafe { self.cast::<u8>().add(count).cast::<()>() };
+        from_raw_parts::<T>(this, metadata(self))
     }
 
     /// Calculates the offset from a pointer (convenience for
@@ -983,6 +959,8 @@ impl<T: ?Sized> *const T {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// let s: &str = "123";
     ///
@@ -995,7 +973,7 @@ impl<T: ?Sized> *const T {
     #[stable(feature = "pointer_methods", since = "1.26.0")]
     #[must_use = "returns a new pointer rather than modifying its argument"]
     #[rustc_const_stable(feature = "const_ptr_offset", since = "1.61.0")]
-    #[inline(always)]
+    #[inline]
     #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
     pub const unsafe fn sub(self, count: usize) -> Self
     where
@@ -1023,7 +1001,8 @@ impl<T: ?Sized> *const T {
     #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
     pub const unsafe fn byte_sub(self, count: usize) -> Self {
         // SAFETY: the caller must uphold the safety contract for `sub`.
-        unsafe { self.cast::<u8>().sub(count).with_metadata_of(self) }
+        let this = unsafe { self.cast::<u8>().sub(count).cast::<()>() };
+        from_raw_parts::<T>(this, metadata(self))
     }
 
     /// Calculates the offset from a pointer using wrapping arithmetic.
@@ -1059,6 +1038,8 @@ impl<T: ?Sized> *const T {
     /// [allocated object]: crate::ptr#allocated-object
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// // Iterate using a raw pointer in increments of two elements
@@ -1101,7 +1082,7 @@ impl<T: ?Sized> *const T {
     #[unstable(feature = "pointer_byte_offsets", issue = "96283")]
     #[rustc_const_unstable(feature = "const_pointer_byte_offsets", issue = "96283")]
     pub const fn wrapping_byte_add(self, count: usize) -> Self {
-        self.cast::<u8>().wrapping_add(count).with_metadata_of(self)
+        from_raw_parts::<T>(self.cast::<u8>().wrapping_add(count).cast::<()>(), metadata(self))
     }
 
     /// Calculates the offset from a pointer using wrapping arithmetic.
@@ -1138,6 +1119,8 @@ impl<T: ?Sized> *const T {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// // Iterate using a raw pointer in increments of two elements (backwards)
     /// let data = [1u8, 2, 3, 4, 5];
@@ -1156,7 +1139,7 @@ impl<T: ?Sized> *const T {
     #[stable(feature = "pointer_methods", since = "1.26.0")]
     #[must_use = "returns a new pointer rather than modifying its argument"]
     #[rustc_const_stable(feature = "const_ptr_offset", since = "1.61.0")]
-    #[inline(always)]
+    #[inline]
     pub const fn wrapping_sub(self, count: usize) -> Self
     where
         T: Sized,
@@ -1179,7 +1162,7 @@ impl<T: ?Sized> *const T {
     #[unstable(feature = "pointer_byte_offsets", issue = "96283")]
     #[rustc_const_unstable(feature = "const_pointer_byte_offsets", issue = "96283")]
     pub const fn wrapping_byte_sub(self, count: usize) -> Self {
-        self.cast::<u8>().wrapping_sub(count).with_metadata_of(self)
+        from_raw_parts::<T>(self.cast::<u8>().wrapping_sub(count).cast::<()>(), metadata(self))
     }
 
     /// Reads the value from `self` without moving it. This leaves the
@@ -1189,7 +1172,7 @@ impl<T: ?Sized> *const T {
     ///
     /// [`ptr::read`]: crate::ptr::read()
     #[stable(feature = "pointer_methods", since = "1.26.0")]
-    #[rustc_const_stable(feature = "const_ptr_read", since = "1.71.0")]
+    #[rustc_const_unstable(feature = "const_ptr_read", issue = "80377")]
     #[inline]
     #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
     pub const unsafe fn read(self) -> T
@@ -1230,7 +1213,7 @@ impl<T: ?Sized> *const T {
     ///
     /// [`ptr::read_unaligned`]: crate::ptr::read_unaligned()
     #[stable(feature = "pointer_methods", since = "1.26.0")]
-    #[rustc_const_stable(feature = "const_ptr_read", since = "1.71.0")]
+    #[rustc_const_unstable(feature = "const_ptr_read", issue = "80377")]
     #[inline]
     #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
     pub const unsafe fn read_unaligned(self) -> T
@@ -1321,8 +1304,6 @@ impl<T: ?Sized> *const T {
     /// }
     /// # }
     /// ```
-    #[must_use]
-    #[inline]
     #[stable(feature = "align_offset", since = "1.36.0")]
     #[rustc_const_unstable(feature = "const_align_offset", issue = "90962")]
     pub const fn align_offset(self, align: usize) -> usize
@@ -1333,125 +1314,32 @@ impl<T: ?Sized> *const T {
             panic!("align_offset: align is not a power-of-two");
         }
 
-        {
+        fn rt_impl<T>(p: *const T, align: usize) -> usize {
             // SAFETY: `align` has been checked to be a power of 2 above
-            unsafe { align_offset(self, align) }
+            unsafe { align_offset(p, align) }
         }
+
+        const fn ctfe_impl<T>(_: *const T, _: usize) -> usize {
+            usize::MAX
+        }
+
+        // SAFETY:
+        // It is permissible for `align_offset` to always return `usize::MAX`,
+        // algorithm correctness can not depend on `align_offset` returning non-max values.
+        //
+        // As such the behaviour can't change after replacing `align_offset` with `usize::MAX`, only performance can.
+        unsafe { intrinsics::const_eval_select((self, align), ctfe_impl, rt_impl) }
     }
 
     /// Returns whether the pointer is properly aligned for `T`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(pointer_is_aligned)]
-    /// #![feature(pointer_byte_offsets)]
-    ///
-    /// // On some platforms, the alignment of i32 is less than 4.
-    /// #[repr(align(4))]
-    /// struct AlignedI32(i32);
-    ///
-    /// let data = AlignedI32(42);
-    /// let ptr = &data as *const AlignedI32;
-    ///
-    /// assert!(ptr.is_aligned());
-    /// assert!(!ptr.wrapping_byte_add(1).is_aligned());
-    /// ```
-    ///
-    /// # At compiletime
-    /// **Note: Alignment at compiletime is experimental and subject to change. See the
-    /// [tracking issue] for details.**
-    ///
-    /// At compiletime, the compiler may not know where a value will end up in memory.
-    /// Calling this function on a pointer created from a reference at compiletime will only
-    /// return `true` if the pointer is guaranteed to be aligned. This means that the pointer
-    /// is never aligned if cast to a type with a stricter alignment than the reference's
-    /// underlying allocation.
-    ///
-    /// ```
-    /// #![feature(pointer_is_aligned)]
-    /// #![feature(const_pointer_is_aligned)]
-    ///
-    /// // On some platforms, the alignment of primitives is less than their size.
-    /// #[repr(align(4))]
-    /// struct AlignedI32(i32);
-    /// #[repr(align(8))]
-    /// struct AlignedI64(i64);
-    ///
-    /// const _: () = {
-    ///     let data = AlignedI32(42);
-    ///     let ptr = &data as *const AlignedI32;
-    ///     assert!(ptr.is_aligned());
-    ///
-    ///     // At runtime either `ptr1` or `ptr2` would be aligned, but at compiletime neither is aligned.
-    ///     let ptr1 = ptr.cast::<AlignedI64>();
-    ///     let ptr2 = ptr.wrapping_add(1).cast::<AlignedI64>();
-    ///     assert!(!ptr1.is_aligned());
-    ///     assert!(!ptr2.is_aligned());
-    /// };
-    /// ```
-    ///
-    /// Due to this behavior, it is possible that a runtime pointer derived from a compiletime
-    /// pointer is aligned, even if the compiletime pointer wasn't aligned.
-    ///
-    /// ```
-    /// #![feature(pointer_is_aligned)]
-    /// #![feature(const_pointer_is_aligned)]
-    ///
-    /// // On some platforms, the alignment of primitives is less than their size.
-    /// #[repr(align(4))]
-    /// struct AlignedI32(i32);
-    /// #[repr(align(8))]
-    /// struct AlignedI64(i64);
-    ///
-    /// // At compiletime, neither `COMPTIME_PTR` nor `COMPTIME_PTR + 1` is aligned.
-    /// const COMPTIME_PTR: *const AlignedI32 = &AlignedI32(42);
-    /// const _: () = assert!(!COMPTIME_PTR.cast::<AlignedI64>().is_aligned());
-    /// const _: () = assert!(!COMPTIME_PTR.wrapping_add(1).cast::<AlignedI64>().is_aligned());
-    ///
-    /// // At runtime, either `runtime_ptr` or `runtime_ptr + 1` is aligned.
-    /// let runtime_ptr = COMPTIME_PTR;
-    /// assert_ne!(
-    ///     runtime_ptr.cast::<AlignedI64>().is_aligned(),
-    ///     runtime_ptr.wrapping_add(1).cast::<AlignedI64>().is_aligned(),
-    /// );
-    /// ```
-    ///
-    /// If a pointer is created from a fixed address, this function behaves the same during
-    /// runtime and compiletime.
-    ///
-    /// ```
-    /// #![feature(pointer_is_aligned)]
-    /// #![feature(const_pointer_is_aligned)]
-    ///
-    /// // On some platforms, the alignment of primitives is less than their size.
-    /// #[repr(align(4))]
-    /// struct AlignedI32(i32);
-    /// #[repr(align(8))]
-    /// struct AlignedI64(i64);
-    ///
-    /// const _: () = {
-    ///     let ptr = 40 as *const AlignedI32;
-    ///     assert!(ptr.is_aligned());
-    ///
-    ///     // For pointers with a known address, runtime and compiletime behavior are identical.
-    ///     let ptr1 = ptr.cast::<AlignedI64>();
-    ///     let ptr2 = ptr.wrapping_add(1).cast::<AlignedI64>();
-    ///     assert!(ptr1.is_aligned());
-    ///     assert!(!ptr2.is_aligned());
-    /// };
-    /// ```
-    ///
-    /// [tracking issue]: https://github.com/rust-lang/rust/issues/104203
     #[must_use]
     #[inline]
     #[unstable(feature = "pointer_is_aligned", issue = "96284")]
-    #[rustc_const_unstable(feature = "const_pointer_is_aligned", issue = "104203")]
-    pub const fn is_aligned(self) -> bool
+    pub fn is_aligned(self) -> bool
     where
         T: Sized,
     {
-        self.is_aligned_to(mem::align_of::<T>())
+        self.is_aligned_to(core::mem::align_of::<T>())
     }
 
     /// Returns whether the pointer is aligned to `align`.
@@ -1462,128 +1350,16 @@ impl<T: ?Sized> *const T {
     /// # Panics
     ///
     /// The function panics if `align` is not a power-of-two (this includes 0).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(pointer_is_aligned)]
-    /// #![feature(pointer_byte_offsets)]
-    ///
-    /// // On some platforms, the alignment of i32 is less than 4.
-    /// #[repr(align(4))]
-    /// struct AlignedI32(i32);
-    ///
-    /// let data = AlignedI32(42);
-    /// let ptr = &data as *const AlignedI32;
-    ///
-    /// assert!(ptr.is_aligned_to(1));
-    /// assert!(ptr.is_aligned_to(2));
-    /// assert!(ptr.is_aligned_to(4));
-    ///
-    /// assert!(ptr.wrapping_byte_add(2).is_aligned_to(2));
-    /// assert!(!ptr.wrapping_byte_add(2).is_aligned_to(4));
-    ///
-    /// assert_ne!(ptr.is_aligned_to(8), ptr.wrapping_add(1).is_aligned_to(8));
-    /// ```
-    ///
-    /// # At compiletime
-    /// **Note: Alignment at compiletime is experimental and subject to change. See the
-    /// [tracking issue] for details.**
-    ///
-    /// At compiletime, the compiler may not know where a value will end up in memory.
-    /// Calling this function on a pointer created from a reference at compiletime will only
-    /// return `true` if the pointer is guaranteed to be aligned. This means that the pointer
-    /// cannot be stricter aligned than the reference's underlying allocation.
-    ///
-    /// ```
-    /// #![feature(pointer_is_aligned)]
-    /// #![feature(const_pointer_is_aligned)]
-    ///
-    /// // On some platforms, the alignment of i32 is less than 4.
-    /// #[repr(align(4))]
-    /// struct AlignedI32(i32);
-    ///
-    /// const _: () = {
-    ///     let data = AlignedI32(42);
-    ///     let ptr = &data as *const AlignedI32;
-    ///
-    ///     assert!(ptr.is_aligned_to(1));
-    ///     assert!(ptr.is_aligned_to(2));
-    ///     assert!(ptr.is_aligned_to(4));
-    ///
-    ///     // At compiletime, we know for sure that the pointer isn't aligned to 8.
-    ///     assert!(!ptr.is_aligned_to(8));
-    ///     assert!(!ptr.wrapping_add(1).is_aligned_to(8));
-    /// };
-    /// ```
-    ///
-    /// Due to this behavior, it is possible that a runtime pointer derived from a compiletime
-    /// pointer is aligned, even if the compiletime pointer wasn't aligned.
-    ///
-    /// ```
-    /// #![feature(pointer_is_aligned)]
-    /// #![feature(const_pointer_is_aligned)]
-    ///
-    /// // On some platforms, the alignment of i32 is less than 4.
-    /// #[repr(align(4))]
-    /// struct AlignedI32(i32);
-    ///
-    /// // At compiletime, neither `COMPTIME_PTR` nor `COMPTIME_PTR + 1` is aligned.
-    /// const COMPTIME_PTR: *const AlignedI32 = &AlignedI32(42);
-    /// const _: () = assert!(!COMPTIME_PTR.is_aligned_to(8));
-    /// const _: () = assert!(!COMPTIME_PTR.wrapping_add(1).is_aligned_to(8));
-    ///
-    /// // At runtime, either `runtime_ptr` or `runtime_ptr + 1` is aligned.
-    /// let runtime_ptr = COMPTIME_PTR;
-    /// assert_ne!(
-    ///     runtime_ptr.is_aligned_to(8),
-    ///     runtime_ptr.wrapping_add(1).is_aligned_to(8),
-    /// );
-    /// ```
-    ///
-    /// If a pointer is created from a fixed address, this function behaves the same during
-    /// runtime and compiletime.
-    ///
-    /// ```
-    /// #![feature(pointer_is_aligned)]
-    /// #![feature(const_pointer_is_aligned)]
-    ///
-    /// const _: () = {
-    ///     let ptr = 40 as *const u8;
-    ///     assert!(ptr.is_aligned_to(1));
-    ///     assert!(ptr.is_aligned_to(2));
-    ///     assert!(ptr.is_aligned_to(4));
-    ///     assert!(ptr.is_aligned_to(8));
-    ///     assert!(!ptr.is_aligned_to(16));
-    /// };
-    /// ```
-    ///
-    /// [tracking issue]: https://github.com/rust-lang/rust/issues/104203
     #[must_use]
     #[inline]
     #[unstable(feature = "pointer_is_aligned", issue = "96284")]
-    #[rustc_const_unstable(feature = "const_pointer_is_aligned", issue = "104203")]
-    pub const fn is_aligned_to(self, align: usize) -> bool {
+    pub fn is_aligned_to(self, align: usize) -> bool {
         if !align.is_power_of_two() {
             panic!("is_aligned_to: align is not a power-of-two");
         }
 
-        #[inline]
-        fn runtime_impl(ptr: *const (), align: usize) -> bool {
-            ptr.addr() & (align - 1) == 0
-        }
-
-        #[inline]
-        const fn const_impl(ptr: *const (), align: usize) -> bool {
-            // We can't use the address of `self` in a `const fn`, so we use `align_offset` instead.
-            // The cast to `()` is used to
-            //   1. deal with fat pointers; and
-            //   2. ensure that `align_offset` doesn't actually try to compute an offset.
-            ptr.align_offset(align) == 0
-        }
-
-        // SAFETY: The two versions are equivalent at runtime.
-        unsafe { const_eval_select((self.cast::<()>(), align), const_impl, runtime_impl) }
+        // Cast is needed for `T: !Sized`
+        self.cast::<u8>().addr() & align - 1 == 0
     }
 }
 
@@ -1652,10 +1428,11 @@ impl<T> *const [T] {
     /// }
     /// ```
     #[unstable(feature = "slice_ptr_get", issue = "74265")]
+    #[rustc_const_unstable(feature = "const_slice_index", issue = "none")]
     #[inline]
-    pub unsafe fn get_unchecked<I>(self, index: I) -> *const I::Output
+    pub const unsafe fn get_unchecked<I>(self, index: I) -> *const I::Output
     where
-        I: SliceIndex<[T]>,
+        I: ~const SliceIndex<[T]>,
     {
         // SAFETY: the caller ensures that `self` is dereferenceable and `index` in-bounds.
         unsafe { index.get_unchecked(self) }

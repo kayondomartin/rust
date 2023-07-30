@@ -10,7 +10,6 @@
 #![feature(rustc_attrs)]
 #![feature(try_blocks)]
 #![recursion_limit = "256"]
-#![deny(rustc::untranslatable_diagnostic)]
 
 #[macro_use]
 extern crate rustc_macros;
@@ -19,9 +18,6 @@ extern crate rustc_macros;
 extern crate tracing;
 
 extern crate proc_macro as pm;
-
-use rustc_errors::{DiagnosticMessage, SubdiagnosticMessage};
-use rustc_fluent_macro::fluent_messages;
 
 mod placeholders;
 mod proc_macro_server;
@@ -35,13 +31,8 @@ pub mod config;
 pub mod errors;
 pub mod expand;
 pub mod module;
-
-// FIXME(Nilstrieb) Translate proc_macro diagnostics
-#[allow(rustc::untranslatable_diagnostic)]
 pub mod proc_macro;
 
-// FIXME(Nilstrieb) Translate macro_rules diagnostics
-#[allow(rustc::untranslatable_diagnostic)]
 pub(crate) mod mbe;
 
 // HACK(Centril, #64197): These shouldn't really be here.
@@ -63,5 +54,3 @@ mod tokenstream {
 mod mut_visit {
     mod tests;
 }
-
-fluent_messages! { "../messages.ftl" }

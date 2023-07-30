@@ -7,45 +7,42 @@ use crate::sys_common::lazy_box::{LazyBox, LazyInit};
 use super::waitqueue::{
     try_lock_or_false, NotifiedTcs, SpinMutex, SpinMutexGuard, WaitQueue, WaitVariable,
 };
-use crate::alloc::Layout;
+use crate::mem;
 
-struct AllocatedRwLock {
+pub struct RwLock {
     readers: SpinMutex<WaitVariable<Option<NonZeroUsize>>>,
     writer: SpinMutex<WaitVariable<bool>>,
 }
 
-pub struct RwLock {
-    inner: LazyBox<AllocatedRwLock>,
-}
+pub(crate) type MovableRwLock = LazyBox<RwLock>;
 
-impl LazyInit for AllocatedRwLock {
+impl LazyInit for RwLock {
     fn init() -> Box<Self> {
-        Box::new(AllocatedRwLock {
-            readers: SpinMutex::new(WaitVariable::new(None)),
-            writer: SpinMutex::new(WaitVariable::new(false)),
-        })
+        Box::new(Self::new())
     }
 }
 
-// Check at compile time that RwLock's size and alignment matches the C definition
-// in libunwind (see also `test_c_rwlock_initializer` in `tests`).
-const _: () = {
-    let rust = Layout::new::<RwLock>();
-    let c = Layout::new::<*mut ()>();
-    assert!(rust.size() == c.size());
-    assert!(rust.align() == c.align());
-};
+// Check at compile time that RwLock size matches C definition (see test_c_rwlock_initializer below)
+//
+// # Safety
+// Never called, as it is a compile time check.
+#[allow(dead_code)]
+unsafe fn rw_lock_size_assert(r: RwLock) {
+    unsafe { mem::transmute::<RwLock, [u8; 144]>(r) };
+}
 
 impl RwLock {
     pub const fn new() -> RwLock {
-        RwLock { inner: LazyBox::new() }
+        RwLock {
+            readers: SpinMutex::new(WaitVariable::new(None)),
+            writer: SpinMutex::new(WaitVariable::new(false)),
+        }
     }
 
     #[inline]
-    pub fn read(&self) {
-        let lock = &*self.inner;
-        let mut rguard = lock.readers.lock();
-        let wguard = lock.writer.lock();
+    pub unsafe fn read(&self) {
+        let mut rguard = self.readers.lock();
+        let wguard = self.writer.lock();
         if *wguard.lock_var() || !wguard.queue_empty() {
             // Another thread has or is waiting for the write lock, wait
             drop(wguard);
@@ -60,9 +57,8 @@ impl RwLock {
 
     #[inline]
     pub unsafe fn try_read(&self) -> bool {
-        let lock = &*self.inner;
-        let mut rguard = try_lock_or_false!(lock.readers);
-        let wguard = try_lock_or_false!(lock.writer);
+        let mut rguard = try_lock_or_false!(self.readers);
+        let wguard = try_lock_or_false!(self.writer);
         if *wguard.lock_var() || !wguard.queue_empty() {
             // Another thread has or is waiting for the write lock
             false
@@ -75,10 +71,9 @@ impl RwLock {
     }
 
     #[inline]
-    pub fn write(&self) {
-        let lock = &*self.inner;
-        let rguard = lock.readers.lock();
-        let mut wguard = lock.writer.lock();
+    pub unsafe fn write(&self) {
+        let rguard = self.readers.lock();
+        let mut wguard = self.writer.lock();
         if *wguard.lock_var() || rguard.lock_var().is_some() {
             // Another thread has the lock, wait
             drop(rguard);
@@ -91,10 +86,9 @@ impl RwLock {
     }
 
     #[inline]
-    pub fn try_write(&self) -> bool {
-        let lock = &*self.inner;
-        let rguard = try_lock_or_false!(lock.readers);
-        let mut wguard = try_lock_or_false!(lock.writer);
+    pub unsafe fn try_write(&self) -> bool {
+        let rguard = try_lock_or_false!(self.readers);
+        let mut wguard = try_lock_or_false!(self.writer);
         if *wguard.lock_var() || rguard.lock_var().is_some() {
             // Another thread has the lock
             false
@@ -128,9 +122,8 @@ impl RwLock {
 
     #[inline]
     pub unsafe fn read_unlock(&self) {
-        let lock = &*self.inner;
-        let rguard = lock.readers.lock();
-        let wguard = lock.writer.lock();
+        let rguard = self.readers.lock();
+        let wguard = self.writer.lock();
         unsafe { self.__read_unlock(rguard, wguard) };
     }
 
@@ -165,9 +158,8 @@ impl RwLock {
 
     #[inline]
     pub unsafe fn write_unlock(&self) {
-        let lock = &*self.inner;
-        let rguard = lock.readers.lock();
-        let wguard = lock.writer.lock();
+        let rguard = self.readers.lock();
+        let wguard = self.writer.lock();
         unsafe { self.__write_unlock(rguard, wguard) };
     }
 
@@ -175,9 +167,8 @@ impl RwLock {
     #[inline]
     #[cfg_attr(test, allow(dead_code))]
     unsafe fn unlock(&self) {
-        let lock = &*self.inner;
-        let rguard = lock.readers.lock();
-        let wguard = lock.writer.lock();
+        let rguard = self.readers.lock();
+        let wguard = self.writer.lock();
         if *wguard.lock_var() == true {
             unsafe { self.__write_unlock(rguard, wguard) };
         } else {
@@ -210,7 +201,6 @@ pub unsafe extern "C" fn __rust_rwlock_wrlock(p: *mut RwLock) -> i32 {
     unsafe { (*p).write() };
     return 0;
 }
-
 #[cfg(not(test))]
 #[no_mangle]
 pub unsafe extern "C" fn __rust_rwlock_unlock(p: *mut RwLock) -> i32 {

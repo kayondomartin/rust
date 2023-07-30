@@ -1,19 +1,17 @@
 //! Error Reporting for `impl` items that do not match the obligations from their `trait`.
 
-use crate::errors::{ConsiderBorrowingParamHelp, RelationshipHelp, TraitImplDiff};
 use crate::infer::error_reporting::nice_region_error::NiceRegionError;
 use crate::infer::lexical_region_resolve::RegionResolutionError;
-use crate::infer::{Subtype, ValuePairs};
+use crate::infer::Subtype;
 use crate::traits::ObligationCauseCode::CompareImplItemObligation;
-use rustc_errors::ErrorGuaranteed;
+use rustc_errors::{ErrorGuaranteed, MultiSpan};
 use rustc_hir as hir;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::Visitor;
 use rustc_middle::hir::nested_filter;
-use rustc_middle::ty::error::ExpectedFound;
 use rustc_middle::ty::print::RegionHighlightMode;
-use rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitor};
+use rustc_middle::ty::{self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitor};
 use rustc_span::Span;
 
 use std::ops::ControlFlow;
@@ -24,27 +22,22 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         let error = self.error.as_ref()?;
         debug!("try_report_impl_not_conforming_to_trait {:?}", error);
         if let RegionResolutionError::SubSupConflict(
-            _,
-            var_origin,
-            sub_origin,
-            _sub,
-            sup_origin,
-            _sup,
-            _,
-        ) = error.clone()
+                _,
+                var_origin,
+                sub_origin,
+                _sub,
+                sup_origin,
+                _sup,
+                _,
+            ) = error.clone()
             && let (Subtype(sup_trace), Subtype(sub_trace)) = (&sup_origin, &sub_origin)
+            && let sub_expected_found @ Some((sub_expected, sub_found)) = sub_trace.values.ty()
+            && let sup_expected_found @ Some(_) = sup_trace.values.ty()
             && let CompareImplItemObligation { trait_item_def_id, .. } = sub_trace.cause.code()
-            && sub_trace.values == sup_trace.values
-            && let ValuePairs::Sigs(ExpectedFound { expected, found }) = sub_trace.values
+            && sup_expected_found == sub_expected_found
         {
-            // FIXME(compiler-errors): Don't like that this needs `Ty`s, but
-            // all of the region highlighting machinery only deals with those.
-            let guar = self.emit_err(
-                var_origin.span(),
-                Ty::new_fn_ptr(self.cx.tcx,ty::Binder::dummy(expected)),
-                Ty::new_fn_ptr(self.cx.tcx,ty::Binder::dummy(found)),
-                *trait_item_def_id,
-            );
+            let guar =
+                self.emit_err(var_origin.span(), sub_expected, sub_found, *trait_item_def_id);
             return Some(guar);
         }
         None
@@ -58,6 +51,10 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         trait_def_id: DefId,
     ) -> ErrorGuaranteed {
         let trait_sp = self.tcx().def_span(trait_def_id);
+        let mut err = self
+            .tcx()
+            .sess
+            .struct_span_err(sp, "`impl` item signature doesn't match `trait` item signature");
 
         // Mark all unnamed regions in the type with a number.
         // This diagnostic is called in response to lifetime errors, so be informative.
@@ -75,13 +72,13 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
             }
         }
 
-        impl<'tcx> ty::visit::TypeVisitor<TyCtxt<'tcx>> for HighlightBuilder<'tcx> {
+        impl<'tcx> ty::visit::TypeVisitor<'tcx> for HighlightBuilder<'tcx> {
             fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
                 if !r.has_name() && self.counter <= 3 {
                     self.highlight.highlighting_region(r, self.counter);
                     self.counter += 1;
                 }
-                ControlFlow::Continue(())
+                r.super_visit_with(self)
             }
         }
 
@@ -93,6 +90,9 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         let found_highlight = HighlightBuilder::build(self.tcx(), found);
         let found =
             self.cx.extract_inference_diagnostics_data(found.into(), Some(found_highlight)).name;
+
+        err.span_label(sp, &format!("found `{}`", found));
+        err.span_label(trait_sp, &format!("expected `{}`", expected));
 
         // Get the span of all the used type parameters in the method.
         let assoc_item = self.tcx().associated_item(trait_def_id);
@@ -110,18 +110,26 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
             }
             _ => {}
         }
+        let mut type_param_span: MultiSpan = visitor.types.to_vec().into();
+        for &span in &visitor.types {
+            type_param_span
+                .push_span_label(span, "consider borrowing this type parameter in the trait");
+        }
 
-        let diag = TraitImplDiff {
-            sp,
-            trait_sp,
-            note: (),
-            param_help: ConsiderBorrowingParamHelp { spans: visitor.types.to_vec() },
-            rel_help: visitor.types.is_empty().then_some(RelationshipHelp),
-            expected,
-            found,
-        };
+        err.note(&format!("expected `{}`\n   found `{}`", expected, found));
 
-        self.tcx().sess.emit_err(diag)
+        err.span_help(
+            type_param_span,
+            "the lifetime requirements from the `impl` do not correspond to the requirements in \
+             the `trait`",
+        );
+        if visitor.types.is_empty() {
+            err.help(
+                "verify the lifetime relationships in the `trait` and `impl` between the `self` \
+                 argument, the other inputs and its output",
+            );
+        }
+        err.emit()
     }
 }
 
@@ -139,7 +147,7 @@ impl<'tcx> Visitor<'tcx> for TypeParamSpanVisitor<'tcx> {
 
     fn visit_ty(&mut self, arg: &'tcx hir::Ty<'tcx>) {
         match arg.kind {
-            hir::TyKind::Ref(_, ref mut_ty) => {
+            hir::TyKind::Rptr(_, ref mut_ty) => {
                 // We don't want to suggest looking into borrowing `&T` or `&Self`.
                 hir::intravisit::walk_ty(self, mut_ty.ty);
                 return;

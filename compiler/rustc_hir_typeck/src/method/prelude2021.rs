@@ -5,9 +5,10 @@ use crate::{
 use hir::def_id::DefId;
 use hir::HirId;
 use hir::ItemKind;
+use rustc_ast::Mutability;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
-use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
+use rustc_middle::ty::subst::InternalSubsts;
 use rustc_middle::ty::{Adt, Array, Ref, Ty};
 use rustc_session::lint::builtin::RUST_2021_PRELUDE_COLLISIONS;
 use rustc_span::symbol::kw::{Empty, Underscore};
@@ -87,9 +88,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     let derefs = "*".repeat(pick.autoderefs);
 
                     let autoref = match pick.autoref_or_ptr_adjustment {
-                        Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl, .. }) => {
-                            mutbl.ref_prefix_str()
-                        }
+                        Some(probe::AutorefOrPtrAdjustment::Autoref {
+                            mutbl: Mutability::Mut,
+                            ..
+                        }) => "&mut ",
+                        Some(probe::AutorefOrPtrAdjustment::Autoref {
+                            mutbl: Mutability::Not,
+                            ..
+                        }) => "&",
                         Some(probe::AutorefOrPtrAdjustment::ToConstPtr) | None => "",
                     };
                     if let Ok(self_expr) = self.sess().source_map().span_to_snippet(self_expr.span)
@@ -118,7 +124,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         };
                         lint.span_help(
                             sp,
-                            format!("disambiguate the method call with `({})`", self_adjusted,),
+                            &format!("disambiguate the method call with `({})`", self_adjusted,),
                         );
                     }
 
@@ -180,7 +186,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     } else {
                         lint.span_help(
                             sp,
-                            format!(
+                            &format!(
                                 "disambiguate the associated function with `{}::{}(...)`",
                                 trait_name, segment.ident,
                             ),
@@ -221,13 +227,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // If we know it does not, we don't need to warn.
         if method_name.name == sym::from_iter {
             if let Some(trait_def_id) = self.tcx.get_diagnostic_item(sym::FromIterator) {
-                let any_type = self.infcx.next_ty_var(TypeVariableOrigin {
-                    kind: TypeVariableOriginKind::MiscVariable,
-                    span,
-                });
                 if !self
                     .infcx
-                    .type_implements_trait(trait_def_id, [self_ty, any_type], self.param_env)
+                    .type_implements_trait(
+                        trait_def_id,
+                        self_ty,
+                        InternalSubsts::empty(),
+                        self.param_env,
+                    )
                     .may_apply()
                 {
                     return;
@@ -341,7 +348,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // Find an identifier with which this trait was imported (note that `_` doesn't count).
         let any_id = import_items
             .iter()
-            .find_map(|item| if item.ident.name != Underscore { Some(item.ident) } else { None });
+            .filter_map(|item| if item.ident.name != Underscore { Some(item.ident) } else { None })
+            .next();
         if let Some(any_id) = any_id {
             if any_id.name == Empty {
                 // Glob import, so just use its name.
@@ -379,7 +387,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let derefs = "*".repeat(pick.autoderefs);
 
         let autoref = match pick.autoref_or_ptr_adjustment {
-            Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl, .. }) => mutbl.ref_prefix_str(),
+            Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl: Mutability::Mut, .. }) => "&mut ",
+            Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl: Mutability::Not, .. }) => "&",
             Some(probe::AutorefOrPtrAdjustment::ToConstPtr) | None => "",
         };
 

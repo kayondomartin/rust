@@ -1,24 +1,29 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
-// SPDX-FileCopyrightText: The Rust Project Developers (see https://thanks.rust-lang.org)
-
+// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
+// file at the top-level directory of this distribution and at
+// http://rust-lang.org/COPYRIGHT.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
 #![no_std]
 #![feature(allocator_api, rustc_private)]
 #![cfg_attr(any(unix, target_os = "redox"), feature(libc))]
 
 // The minimum alignment guaranteed by the architecture. This value is used to
 // add fast paths for low alignment values.
-#[cfg(any(target_arch = "x86",
+#[cfg(all(any(target_arch = "x86",
               target_arch = "arm",
               target_arch = "mips",
               target_arch = "powerpc",
-              target_arch = "powerpc64"))]
+              target_arch = "powerpc64")))]
 const MIN_ALIGN: usize = 8;
-#[cfg(any(target_arch = "x86_64",
+#[cfg(all(any(target_arch = "x86_64",
               target_arch = "aarch64",
-              target_arch = "loongarch64",
               target_arch = "mips64",
               target_arch = "s390x",
-              target_arch = "sparc64"))]
+              target_arch = "sparc64")))]
 const MIN_ALIGN: usize = 16;
 
 pub struct System;

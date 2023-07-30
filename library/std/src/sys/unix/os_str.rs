@@ -89,7 +89,6 @@ impl IntoInner<Vec<u8>> for Buf {
 }
 
 impl AsInner<[u8]> for Buf {
-    #[inline]
     fn as_inner(&self) -> &[u8] {
         &self.inner
     }
@@ -193,22 +192,17 @@ impl Buf {
 
 impl Slice {
     #[inline]
-    pub fn as_os_str_bytes(&self) -> &[u8] {
-        &self.inner
-    }
-
-    #[inline]
-    pub unsafe fn from_os_str_bytes_unchecked(s: &[u8]) -> &Slice {
+    fn from_u8_slice(s: &[u8]) -> &Slice {
         unsafe { mem::transmute(s) }
     }
 
     #[inline]
     pub fn from_str(s: &str) -> &Slice {
-        unsafe { Slice::from_os_str_bytes_unchecked(s.as_bytes()) }
+        Slice::from_u8_slice(s.as_bytes())
     }
 
-    pub fn to_str(&self) -> Result<&str, crate::str::Utf8Error> {
-        str::from_utf8(&self.inner)
+    pub fn to_str(&self) -> Option<&str> {
+        str::from_utf8(&self.inner).ok()
     }
 
     pub fn to_string_lossy(&self) -> Cow<'_, str> {

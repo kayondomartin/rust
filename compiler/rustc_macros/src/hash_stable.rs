@@ -1,6 +1,6 @@
 use proc_macro2::{self, Ident};
 use quote::quote;
-use syn::{self, parse_quote};
+use syn::{self, parse_quote, Meta, NestedMeta};
 
 struct Attributes {
     ignore: bool,
@@ -10,29 +10,32 @@ struct Attributes {
 fn parse_attributes(field: &syn::Field) -> Attributes {
     let mut attrs = Attributes { ignore: false, project: None };
     for attr in &field.attrs {
-        let meta = &attr.meta;
-        if !meta.path().is_ident("stable_hasher") {
-            continue;
-        }
-        let mut any_attr = false;
-        let _ = attr.parse_nested_meta(|nested| {
-            if nested.path.is_ident("ignore") {
-                attrs.ignore = true;
-                any_attr = true;
+        if let Ok(meta) = attr.parse_meta() {
+            if !meta.path().is_ident("stable_hasher") {
+                continue;
             }
-            if nested.path.is_ident("project") {
-                let _ = nested.parse_nested_meta(|meta| {
-                    if attrs.project.is_none() {
-                        attrs.project = meta.path.get_ident().cloned();
+            let mut any_attr = false;
+            if let Meta::List(list) = meta {
+                for nested in list.nested.iter() {
+                    if let NestedMeta::Meta(meta) = nested {
+                        if meta.path().is_ident("ignore") {
+                            attrs.ignore = true;
+                            any_attr = true;
+                        }
+                        if meta.path().is_ident("project") {
+                            if let Meta::List(list) = meta {
+                                if let Some(NestedMeta::Meta(meta)) = list.nested.iter().next() {
+                                    attrs.project = meta.path().get_ident().cloned();
+                                    any_attr = true;
+                                }
+                            }
+                        }
                     }
-                    any_attr = true;
-                    Ok(())
-                });
+                }
             }
-            Ok(())
-        });
-        if !any_attr {
-            panic!("error parsing stable_hasher");
+            if !any_attr {
+                panic!("error parsing stable_hasher");
+            }
         }
     }
     attrs

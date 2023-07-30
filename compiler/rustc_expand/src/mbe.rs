@@ -3,7 +3,6 @@
 //! why we call this module `mbe`. For external documentation, prefer the
 //! official terminology: "declarative macros".
 
-pub(crate) mod diagnostics;
 pub(crate) mod macro_check;
 pub(crate) mod macro_parser;
 pub(crate) mod macro_rules;
@@ -53,7 +52,7 @@ impl KleeneToken {
 /// A Kleene-style [repetition operator](https://en.wikipedia.org/wiki/Kleene_star)
 /// for token sequences.
 #[derive(Clone, PartialEq, Encodable, Decodable, Debug, Copy)]
-pub(crate) enum KleeneOp {
+enum KleeneOp {
     /// Kleene star (`*`) for zero or more repetitions
     ZeroOrMore,
     /// Kleene plus (`+`) for one or more repetitions

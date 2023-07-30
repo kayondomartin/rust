@@ -28,9 +28,7 @@ pub struct ConstGoto;
 
 impl<'tcx> MirPass<'tcx> for ConstGoto {
     fn is_enabled(&self, sess: &rustc_session::Session) -> bool {
-        // This pass participates in some as-of-yet untested unsoundness found
-        // in https://github.com/rust-lang/rust/issues/112460
-        sess.mir_opt_level() >= 2 && sess.opts.unstable_opts.unsound_mir_opts
+        sess.mir_opt_level() >= 4
     }
 
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
@@ -59,15 +57,6 @@ impl<'tcx> MirPass<'tcx> for ConstGoto {
 }
 
 impl<'tcx> Visitor<'tcx> for ConstGotoOptimizationFinder<'_, 'tcx> {
-    fn visit_basic_block_data(&mut self, block: BasicBlock, data: &BasicBlockData<'tcx>) {
-        if data.is_cleanup {
-            // Because of the restrictions around control flow in cleanup blocks, we don't perform
-            // this optimization at all in such blocks.
-            return;
-        }
-        self.super_basic_block_data(block, data);
-    }
-
     fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {
         let _: Option<_> = try {
             let target = terminator.kind.as_goto()?;
@@ -93,9 +82,8 @@ impl<'tcx> Visitor<'tcx> for ConstGotoOptimizationFinder<'_, 'tcx> {
                 }
 
                 let target_bb_terminator = target_bb.terminator();
-                let (discr, targets) = target_bb_terminator.kind.as_switch()?;
+                let (discr, switch_ty, targets) = target_bb_terminator.kind.as_switch()?;
                 if discr.place() == Some(*place) {
-                    let switch_ty = place.ty(self.body.local_decls(), self.tcx).ty;
                     // We now know that the Switch matches on the const place, and it is statementless
                     // Now find which value in the Switch matches the const value.
                     let const_value =

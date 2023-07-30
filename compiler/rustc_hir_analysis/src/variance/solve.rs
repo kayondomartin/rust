@@ -5,7 +5,8 @@
 //! optimal solution to the constraints. The final variance for each
 //! inferred is then written into the `variance_map` in the tcx.
 
-use rustc_hir::def_id::DefIdMap;
+use rustc_data_structures::fx::FxHashMap;
+use rustc_hir::def_id::DefId;
 use rustc_middle::ty;
 
 use super::constraints::*;
@@ -27,8 +28,8 @@ pub fn solve_constraints<'tcx>(
     let ConstraintContext { terms_cx, constraints, .. } = constraints_cx;
 
     let mut solutions = vec![ty::Bivariant; terms_cx.inferred_terms.len()];
-    for (id, variances) in &terms_cx.lang_items {
-        let InferredIndex(start) = terms_cx.inferred_starts[id];
+    for &(id, ref variances) in &terms_cx.lang_items {
+        let InferredIndex(start) = terms_cx.inferred_starts[&id];
         for (i, &variance) in variances.iter().enumerate() {
             solutions[start + i] = variance;
         }
@@ -43,7 +44,7 @@ pub fn solve_constraints<'tcx>(
 
 impl<'a, 'tcx> SolveContext<'a, 'tcx> {
     fn solve(&mut self) {
-        // Propagate constraints until a fixed point is reached. Note
+        // Propagate constraints until a fixed point is reached.  Note
         // that the maximum number of iterations is 2C where C is the
         // number of constraints (each variable can change values at most
         // twice). Since number of constraints is linear in size of the
@@ -88,12 +89,14 @@ impl<'a, 'tcx> SolveContext<'a, 'tcx> {
         }
     }
 
-    fn create_map(&self) -> DefIdMap<&'tcx [ty::Variance]> {
+    fn create_map(&self) -> FxHashMap<DefId, &'tcx [ty::Variance]> {
         let tcx = self.terms_cx.tcx;
 
         let solutions = &self.solutions;
-        DefIdMap::from(self.terms_cx.inferred_starts.items().map(
-            |(&def_id, &InferredIndex(start))| {
+        self.terms_cx
+            .inferred_starts
+            .iter()
+            .map(|(&def_id, &InferredIndex(start))| {
                 let generics = tcx.generics_of(def_id);
                 let count = generics.count();
 
@@ -103,7 +106,7 @@ impl<'a, 'tcx> SolveContext<'a, 'tcx> {
                 self.enforce_const_invariance(generics, variances);
 
                 // Functions are permitted to have unused generic parameters: make those invariant.
-                if let ty::FnDef(..) = tcx.type_of(def_id).subst_identity().kind() {
+                if let ty::FnDef(..) = tcx.type_of(def_id).kind() {
                     for variance in variances.iter_mut() {
                         if *variance == ty::Bivariant {
                             *variance = ty::Invariant;
@@ -112,8 +115,8 @@ impl<'a, 'tcx> SolveContext<'a, 'tcx> {
                 }
 
                 (def_id.to_def_id(), &*variances)
-            },
-        ))
+            })
+            .collect()
     }
 
     fn evaluate(&self, term: VarianceTermPtr<'a>) -> ty::Variance {

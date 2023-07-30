@@ -340,9 +340,9 @@ pub macro debug_assert_matches($($arg:tt)*) {
 #[stable(feature = "matches_macro", since = "1.42.0")]
 #[cfg_attr(not(test), rustc_diagnostic_item = "matches_macro")]
 macro_rules! matches {
-    ($expression:expr, $pattern:pat $(if $guard:expr)? $(,)?) => {
+    ($expression:expr, $(|)? $( $pattern:pat_param )|+ $( if $guard: expr )? $(,)?) => {
         match $expression {
-            $pattern $(if $guard)? => true,
+            $( $pattern )|+ $( if $guard )? => true,
             _ => false
         }
     };
@@ -498,6 +498,7 @@ macro_rules! r#try {
 /// In a `no_std` setup you are responsible for the implementation details of the components.
 ///
 /// ```no_run
+/// # extern crate core;
 /// use core::fmt::Write;
 ///
 /// struct Example;
@@ -711,8 +712,8 @@ macro_rules! unimplemented {
 
 /// Indicates unfinished code.
 ///
-/// This can be useful if you are prototyping and just
-/// want a placeholder to let your code pass type analysis.
+/// This can be useful if you are prototyping and are just looking to have your
+/// code typecheck.
 ///
 /// The difference between [`unimplemented!`] and `todo!` is that while `todo!` conveys
 /// an intent of implementing the functionality later and the message is "not yet
@@ -819,6 +820,7 @@ pub(crate) mod builtin {
     #[stable(feature = "compile_error_macro", since = "1.20.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "compile_error_macro")]
     macro_rules! compile_error {
         ($msg:expr $(,)?) => {{ /* compiler built-in */ }};
     }
@@ -942,6 +944,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "env_macro")]
     macro_rules! env {
         ($name:expr $(,)?) => {{ /* compiler built-in */ }};
         ($name:expr, $error_msg:expr $(,)?) => {{ /* compiler built-in */ }};
@@ -960,8 +963,6 @@ pub(crate) mod builtin {
     ///
     /// A compile time error is never emitted when using this macro regardless
     /// of whether the environment variable is present or not.
-    /// To emit a compile error if the environment variable is not present,
-    /// use the [`env!`] macro instead.
     ///
     /// # Examples
     ///
@@ -972,6 +973,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "option_env_macro")]
     macro_rules! option_env {
         ($name:expr $(,)?) => {{ /* compiler built-in */ }};
     }
@@ -1056,6 +1058,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "concat_macro")]
     macro_rules! concat {
         ($($e:expr),* $(,)?) => {{ /* compiler built-in */ }};
     }
@@ -1081,6 +1084,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "line_macro")]
     macro_rules! line {
         () => {
             /* compiler built-in */
@@ -1120,6 +1124,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "column_macro")]
     macro_rules! column {
         () => {
             /* compiler built-in */
@@ -1145,6 +1150,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "file_macro")]
     macro_rules! file {
         () => {
             /* compiler built-in */
@@ -1169,6 +1175,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "stringify_macro")]
     macro_rules! stringify {
         ($($t:tt)*) => {
             /* compiler built-in */
@@ -1275,6 +1282,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "module_path_macro")]
     macro_rules! module_path {
         () => {
             /* compiler built-in */
@@ -1308,6 +1316,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "cfg_macro")]
     macro_rules! cfg {
         ($($cfg:tt)*) => {
             /* compiler built-in */
@@ -1316,41 +1325,22 @@ pub(crate) mod builtin {
 
     /// Parses a file as an expression or an item according to the context.
     ///
-    /// **Warning**: For multi-file Rust projects, the `include!` macro is probably not what you
-    /// are looking for. Usually, multi-file Rust projects use
-    /// [modules](https://doc.rust-lang.org/reference/items/modules.html). Multi-file projects and
-    /// modules are explained in the Rust-by-Example book
-    /// [here](https://doc.rust-lang.org/rust-by-example/mod/split.html) and the module system is
-    /// explained in the Rust Book
-    /// [here](https://doc.rust-lang.org/book/ch07-02-defining-modules-to-control-scope-and-privacy.html).
+    /// The file is located relative to the current file (similarly to how
+    /// modules are found). The provided path is interpreted in a platform-specific
+    /// way at compile time. So, for instance, an invocation with a Windows path
+    /// containing backslashes `\` would not compile correctly on Unix.
     ///
-    /// The included file is placed in the surrounding code
-    /// [unhygienically](https://doc.rust-lang.org/reference/macros-by-example.html#hygiene). If
-    /// the included file is parsed as an expression and variables or functions share names across
-    /// both files, it could result in variables or functions being different from what the
-    /// included file expected.
-    ///
-    /// The included file is located relative to the current file (similarly to how modules are
-    /// found). The provided path is interpreted in a platform-specific way at compile time. So,
-    /// for instance, an invocation with a Windows path containing backslashes `\` would not
-    /// compile correctly on Unix.
-    ///
-    /// # Uses
-    ///
-    /// The `include!` macro is primarily used for two purposes. It is used to include
-    /// documentation that is written in a separate file and it is used to include [build artifacts
-    /// usually as a result from the `build.rs`
-    /// script](https://doc.rust-lang.org/cargo/reference/build-scripts.html#outputs-of-the-build-script).
-    ///
-    /// When using the `include` macro to include stretches of documentation, remember that the
-    /// included file still needs to be a valid rust syntax. It is also possible to
-    /// use the [`include_str`] macro as `#![doc = include_str!("...")]` (at the module level) or
-    /// `#[doc = include_str!("...")]` (at the item level) to include documentation from a plain
-    /// text or markdown file.
+    /// Using this macro is often a bad idea, because if the file is
+    /// parsed as an expression, it is going to be placed in the
+    /// surrounding code unhygienically. This could result in variables
+    /// or functions being different from what the file expected if
+    /// there are variables or functions that have the same name in
+    /// the current file.
     ///
     /// # Examples
     ///
-    /// Assume there are two files in the same directory with the following contents:
+    /// Assume there are two files in the same directory with the following
+    /// contents:
     ///
     /// File 'monkeys.in':
     ///
@@ -1377,6 +1367,7 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     #[macro_export]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "include_macro")]
     macro_rules! include {
         ($file:expr $(,)?) => {{ /* compiler built-in */ }};
     }
@@ -1429,7 +1420,7 @@ pub(crate) mod builtin {
     #[rustc_builtin_macro]
     #[macro_export]
     #[rustc_diagnostic_item = "assert_macro"]
-    #[allow_internal_unstable(core_panic, edition_panic, generic_assert_internals)]
+    #[allow_internal_unstable(core_panic, edition_panic)]
     macro_rules! assert {
         ($cond:expr $(,)?) => {{ /* compiler built-in */ }};
         ($cond:expr, $($arg:tt)+) => {{ /* compiler built-in */ }};
@@ -1470,18 +1461,6 @@ pub(crate) mod builtin {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_builtin_macro]
     pub macro derive($item:item) {
-        /* compiler built-in */
-    }
-
-    /// Attribute macro used to apply derive macros for implementing traits
-    /// in a const context.
-    ///
-    /// See [the reference] for more info.
-    ///
-    /// [the reference]: ../../../reference/attributes/derive.html
-    #[unstable(feature = "derive_const", issue = "none")]
-    #[rustc_builtin_macro]
-    pub macro derive_const($item:item) {
         /* compiler built-in */
     }
 
@@ -1535,6 +1514,7 @@ pub(crate) mod builtin {
     /// Attribute macro applied to a function to register it as a handler for allocation failure.
     ///
     /// See also [`std::alloc::handle_alloc_error`](../../../std/alloc/fn.handle_alloc_error.html).
+    #[cfg(not(bootstrap))]
     #[unstable(feature = "alloc_error_handler", issue = "51540")]
     #[allow_internal_unstable(rustc_attrs)]
     #[rustc_builtin_macro]
@@ -1561,17 +1541,6 @@ pub(crate) mod builtin {
     )]
     #[rustc_builtin_macro]
     pub macro cfg_eval($($tt:tt)*) {
-        /* compiler built-in */
-    }
-
-    /// Unstable placeholder for type ascription.
-    #[rustc_builtin_macro]
-    #[unstable(
-        feature = "type_ascription",
-        issue = "23416",
-        reason = "placeholder syntax for type ascription"
-    )]
-    pub macro type_ascribe($expr:expr, $ty:ty) {
         /* compiler built-in */
     }
 

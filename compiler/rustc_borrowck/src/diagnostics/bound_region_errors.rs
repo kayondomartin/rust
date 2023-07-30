@@ -1,6 +1,3 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
-
 use rustc_errors::{DiagnosticBuilder, ErrorGuaranteed};
 use rustc_infer::infer::canonical::Canonical;
 use rustc_infer::infer::error_reporting::nice_region_error::NiceRegionError;
@@ -106,7 +103,7 @@ impl<'tcx> ToUniverseInfo<'tcx>
     }
 }
 
-impl<'tcx, T: Copy + fmt::Display + TypeFoldable<TyCtxt<'tcx>> + 'tcx> ToUniverseInfo<'tcx>
+impl<'tcx, T: Copy + fmt::Display + TypeFoldable<'tcx> + 'tcx> ToUniverseInfo<'tcx>
     for Canonical<'tcx, ty::ParamEnvAnd<'tcx, type_op::Normalize<T>>>
 {
     fn to_universe_info(self, base_universe: ty::UniverseIndex) -> UniverseInfo<'tcx> {
@@ -128,7 +125,7 @@ impl<'tcx> ToUniverseInfo<'tcx>
     }
 }
 
-impl<'tcx, F> ToUniverseInfo<'tcx> for Canonical<'tcx, type_op::custom::CustomTypeOp<F>> {
+impl<'tcx, F, G> ToUniverseInfo<'tcx> for Canonical<'tcx, type_op::custom::CustomTypeOp<F, G>> {
     fn to_universe_info(self, _base_universe: ty::UniverseIndex) -> UniverseInfo<'tcx> {
         // We can't rerun custom type ops.
         UniverseInfo::other()
@@ -161,7 +158,6 @@ trait TypeOpInfo<'tcx> {
         error_region: Option<ty::Region<'tcx>>,
     ) -> Option<DiagnosticBuilder<'tcx, ErrorGuaranteed>>;
 
-    #[instrument(level = "debug", skip(self, mbcx))]
     fn report_error(
         &self,
         mbcx: &mut MirBorrowckCtxt<'_, 'tcx>,
@@ -171,7 +167,6 @@ trait TypeOpInfo<'tcx> {
     ) {
         let tcx = mbcx.infcx.tcx;
         let base_universe = self.base_universe();
-        debug!(?base_universe);
 
         let Some(adjusted_universe) =
             placeholder.universe.as_u32().checked_sub(base_universe.as_u32())
@@ -180,25 +175,24 @@ trait TypeOpInfo<'tcx> {
             return;
         };
 
-        let placeholder_region = ty::Region::new_placeholder(
-            tcx,
-            ty::Placeholder { universe: adjusted_universe.into(), bound: placeholder.bound },
-        );
+        let placeholder_region = tcx.mk_region(ty::RePlaceholder(ty::Placeholder {
+            name: placeholder.name,
+            universe: adjusted_universe.into(),
+        }));
 
-        let error_region = if let RegionElement::PlaceholderRegion(error_placeholder) =
-            error_element
-        {
-            let adjusted_universe =
-                error_placeholder.universe.as_u32().checked_sub(base_universe.as_u32());
-            adjusted_universe.map(|adjusted| {
-                ty::Region::new_placeholder(
-                    tcx,
-                    ty::Placeholder { universe: adjusted.into(), bound: error_placeholder.bound },
-                )
-            })
-        } else {
-            None
-        };
+        let error_region =
+            if let RegionElement::PlaceholderRegion(error_placeholder) = error_element {
+                let adjusted_universe =
+                    error_placeholder.universe.as_u32().checked_sub(base_universe.as_u32());
+                adjusted_universe.map(|adjusted| {
+                    tcx.mk_region(ty::RePlaceholder(ty::Placeholder {
+                        name: error_placeholder.name,
+                        universe: adjusted.into(),
+                    }))
+                })
+            } else {
+                None
+            };
 
         debug!(?placeholder_region);
 
@@ -244,9 +238,9 @@ impl<'tcx> TypeOpInfo<'tcx> for PredicateQuery<'tcx> {
         placeholder_region: ty::Region<'tcx>,
         error_region: Option<ty::Region<'tcx>>,
     ) -> Option<DiagnosticBuilder<'tcx, ErrorGuaranteed>> {
-        let (infcx, key, _) =
+        let (ref infcx, key, _) =
             mbcx.infcx.tcx.infer_ctxt().build_with_canonical(cause.span, &self.canonical_query);
-        let ocx = ObligationCtxt::new(&infcx);
+        let ocx = ObligationCtxt::new(infcx);
         type_op_prove_predicate_with_cause(&ocx, key, cause);
         try_extract_error_from_fulfill_cx(&ocx, placeholder_region, error_region)
     }
@@ -259,7 +253,7 @@ struct NormalizeQuery<'tcx, T> {
 
 impl<'tcx, T> TypeOpInfo<'tcx> for NormalizeQuery<'tcx, T>
 where
-    T: Copy + fmt::Display + TypeFoldable<TyCtxt<'tcx>> + 'tcx,
+    T: Copy + fmt::Display + TypeFoldable<'tcx> + 'tcx,
 {
     fn fallback_error(
         &self,
@@ -285,18 +279,18 @@ where
         placeholder_region: ty::Region<'tcx>,
         error_region: Option<ty::Region<'tcx>>,
     ) -> Option<DiagnosticBuilder<'tcx, ErrorGuaranteed>> {
-        let (infcx, key, _) =
+        let (ref infcx, key, _) =
             mbcx.infcx.tcx.infer_ctxt().build_with_canonical(cause.span, &self.canonical_query);
-        let ocx = ObligationCtxt::new(&infcx);
+        let ocx = ObligationCtxt::new(infcx);
 
         // FIXME(lqd): Unify and de-duplicate the following with the actual
         // `rustc_traits::type_op::type_op_normalize` query to allow the span we need in the
         // `ObligationCause`. The normalization results are currently different between
-        // `QueryNormalizeExt::query_normalize` used in the query and `normalize` called below:
-        // the former fails to normalize the `nll/relate_tys/impl-fn-ignore-binder-via-bottom.rs` test.
-        // Check after #85499 lands to see if its fixes have erased this difference.
+        // `AtExt::normalize` used in the query and `normalize` called below: the former fails
+        // to normalize the `nll/relate_tys/impl-fn-ignore-binder-via-bottom.rs` test. Check
+        // after #85499 lands to see if its fixes have erased this difference.
         let (param_env, value) = key.into_parts();
-        let _ = ocx.normalize(&cause, param_env, value.value);
+        let _ = ocx.normalize(cause, param_env, value.value);
 
         try_extract_error_from_fulfill_cx(&ocx, placeholder_region, error_region)
     }
@@ -329,9 +323,9 @@ impl<'tcx> TypeOpInfo<'tcx> for AscribeUserTypeQuery<'tcx> {
         placeholder_region: ty::Region<'tcx>,
         error_region: Option<ty::Region<'tcx>>,
     ) -> Option<DiagnosticBuilder<'tcx, ErrorGuaranteed>> {
-        let (infcx, key, _) =
+        let (ref infcx, key, _) =
             mbcx.infcx.tcx.infer_ctxt().build_with_canonical(cause.span, &self.canonical_query);
-        let ocx = ObligationCtxt::new(&infcx);
+        let ocx = ObligationCtxt::new(infcx);
         type_op_ascribe_user_type_with_span(&ocx, key, Some(cause.span)).ok()?;
         try_extract_error_from_fulfill_cx(&ocx, placeholder_region, error_region)
     }
@@ -391,11 +385,10 @@ fn try_extract_error_from_fulfill_cx<'tcx>(
         error_region,
         &region_constraints,
         |vid| ocx.infcx.region_var_origin(vid),
-        |vid| ocx.infcx.universe_of_region(ty::Region::new_var(ocx.infcx.tcx, vid)),
+        |vid| ocx.infcx.universe_of_region(ocx.infcx.tcx.mk_region(ty::ReVar(vid))),
     )
 }
 
-#[instrument(level = "debug", skip(infcx, region_var_origin, universe_of_region))]
 fn try_extract_error_from_region_constraints<'tcx>(
     infcx: &InferCtxt<'tcx>,
     placeholder_region: ty::Region<'tcx>,
@@ -412,7 +405,7 @@ fn try_extract_error_from_region_constraints<'tcx>(
                 }
                 // FIXME: Should this check the universe of the var?
                 Constraint::VarSubReg(vid, sup) if sup == placeholder_region => {
-                    Some((ty::Region::new_var(infcx.tcx, vid), cause.clone()))
+                    Some((infcx.tcx.mk_region(ty::ReVar(vid)), cause.clone()))
                 }
                 _ => None,
             }

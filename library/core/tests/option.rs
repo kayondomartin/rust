@@ -57,7 +57,7 @@ fn test_get_resource() {
 }
 
 #[test]
-#[allow(for_loops_over_fallibles)]
+#[cfg_attr(not(bootstrap), allow(for_loops_over_fallibles))]
 fn test_option_dance() {
     let x = Some(());
     let mut y = Some(5);
@@ -88,7 +88,6 @@ fn test_and() {
     assert_eq!(x.and(Some(2)), None);
     assert_eq!(x.and(None::<isize>), None);
 
-    /* FIXME(#110395)
     const FOO: Option<isize> = Some(1);
     const A: Option<isize> = FOO.and(Some(2));
     const B: Option<isize> = FOO.and(None);
@@ -100,7 +99,6 @@ fn test_and() {
     const D: Option<isize> = BAR.and(None);
     assert_eq!(C, None);
     assert_eq!(D, None);
-    */
 }
 
 #[test]
@@ -121,7 +119,6 @@ fn test_and_then() {
     assert_eq!(x.and_then(plus_one), None);
     assert_eq!(x.and_then(none), None);
 
-    /* FIXME(#110395)
     const FOO: Option<isize> = Some(1);
     const A: Option<isize> = FOO.and_then(plus_one);
     const B: Option<isize> = FOO.and_then(none);
@@ -133,7 +130,6 @@ fn test_and_then() {
     const D: Option<isize> = BAR.and_then(none);
     assert_eq!(C, None);
     assert_eq!(D, None);
-    */
 }
 
 #[test]
@@ -146,7 +142,6 @@ fn test_or() {
     assert_eq!(x.or(Some(2)), Some(2));
     assert_eq!(x.or(None), None);
 
-    /* FIXME(#110395)
     const FOO: Option<isize> = Some(1);
     const A: Option<isize> = FOO.or(Some(2));
     const B: Option<isize> = FOO.or(None);
@@ -158,7 +153,6 @@ fn test_or() {
     const D: Option<isize> = BAR.or(None);
     assert_eq!(C, Some(2));
     assert_eq!(D, None);
-    */
 }
 
 #[test]
@@ -179,7 +173,6 @@ fn test_or_else() {
     assert_eq!(x.or_else(two), Some(2));
     assert_eq!(x.or_else(none), None);
 
-/* FIXME(#110395)
     const FOO: Option<isize> = Some(1);
     const A: Option<isize> = FOO.or_else(two);
     const B: Option<isize> = FOO.or_else(none);
@@ -191,7 +184,6 @@ fn test_or_else() {
     const D: Option<isize> = BAR.or_else(none);
     assert_eq!(C, Some(2));
     assert_eq!(D, None);
-*/
 }
 
 #[test]
@@ -223,12 +215,10 @@ fn test_unwrap_or() {
     let x: Option<isize> = None;
     assert_eq!(x.unwrap_or(2), 2);
 
-    /* FIXME(#110395)
     const A: isize = Some(1).unwrap_or(2);
     const B: isize = None.unwrap_or(2);
     assert_eq!(A, 1);
     assert_eq!(B, 2);
-    */
 }
 
 #[test]
@@ -243,12 +233,10 @@ fn test_unwrap_or_else() {
     let x: Option<isize> = None;
     assert_eq!(x.unwrap_or_else(two), 2);
 
-    /* FIXME(#110395)
     const A: isize = Some(1).unwrap_or_else(two);
     const B: isize = None.unwrap_or_else(two);
     assert_eq!(A, 1);
     assert_eq!(B, 2);
-    */
 }
 
 #[test]
@@ -451,15 +439,14 @@ fn option_const() {
     const OPTION: Option<usize> = Some(32);
     assert_eq!(OPTION, Some(32));
 
-    // FIXME(#110395)
-    // const OPTION_FROM: Option<usize> = Option::from(32);
-    // assert_eq!(OPTION_FROM, Some(32));
+    const OPTION_FROM: Option<usize> = Option::from(32);
+    assert_eq!(OPTION_FROM, Some(32));
 
     const REF: Option<&usize> = OPTION.as_ref();
     assert_eq!(REF, Some(&32));
 
-    // const REF_FROM: Option<&usize> = Option::from(&OPTION);
-    // assert_eq!(REF_FROM, Some(&32));
+    const REF_FROM: Option<&usize> = Option::from(&OPTION);
+    assert_eq!(REF_FROM, Some(&32));
 
     const IS_SOME: bool = OPTION.is_some();
     assert!(IS_SOME);
@@ -487,7 +474,7 @@ const fn option_const_mut() {
             None => unreachable!(),
         }
     }
-/* FIXME(const-hack)
+
     {
         let as_mut: Option<&mut usize> = Option::from(&mut option);
         match as_mut {
@@ -495,7 +482,6 @@ const fn option_const_mut() {
             None => unreachable!(),
         }
     }
-*/
 }
 
 #[test]

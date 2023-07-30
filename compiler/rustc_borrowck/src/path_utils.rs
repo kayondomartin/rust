@@ -1,5 +1,3 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 use crate::borrow_set::{BorrowData, BorrowSet, TwoPhaseActivation};
 use crate::places_conflict;
 use crate::AccessDepth;
@@ -7,9 +5,8 @@ use crate::BorrowIndex;
 use crate::Upvar;
 use rustc_data_structures::graph::dominators::Dominators;
 use rustc_middle::mir::BorrowKind;
-use rustc_middle::mir::{BasicBlock, Body, Location, Place, PlaceRef, ProjectionElem};
+use rustc_middle::mir::{BasicBlock, Body, Field, Location, Place, PlaceRef, ProjectionElem};
 use rustc_middle::ty::TyCtxt;
-use rustc_target::abi::FieldIdx;
 
 /// Returns `true` if the borrow represented by `kind` is
 /// allowed to be split into separate Reservation and
@@ -149,7 +146,7 @@ pub(crate) fn is_upvar_field_projection<'tcx>(
     upvars: &[Upvar<'tcx>],
     place_ref: PlaceRef<'tcx>,
     body: &Body<'tcx>,
-) -> Option<FieldIdx> {
+) -> Option<Field> {
     let mut place_ref = place_ref;
     let mut by_ref = false;
 

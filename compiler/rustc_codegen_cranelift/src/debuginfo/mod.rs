@@ -20,14 +20,6 @@ use indexmap::IndexSet;
 pub(crate) use emit::{DebugReloc, DebugRelocName};
 pub(crate) use unwind::UnwindContext;
 
-pub(crate) fn producer() -> String {
-    format!(
-        "cg_clif (rustc {}, cranelift {})",
-        rustc_interface::util::rustc_version_str().unwrap_or("unknown version"),
-        cranelift_codegen::VERSION,
-    )
-}
-
 pub(crate) struct DebugContext {
     endian: RunTimeEndian,
 
@@ -65,14 +57,18 @@ impl DebugContext {
 
         let mut dwarf = DwarfUnit::new(encoding);
 
-        let producer = producer();
+        let producer = format!(
+            "cg_clif (rustc {}, cranelift {})",
+            rustc_interface::util::version_str().unwrap_or("unknown version"),
+            cranelift_codegen::VERSION,
+        );
         let comp_dir = tcx
             .sess
             .opts
             .working_dir
             .to_string_lossy(FileNameDisplayPreference::Remapped)
             .into_owned();
-        let (name, file_info) = match tcx.sess.local_crate_source_file() {
+        let (name, file_info) = match tcx.sess.local_crate_source_file.clone() {
             Some(path) => {
                 let name = path.to_string_lossy().into_owned();
                 (name, None)

@@ -1,6 +1,7 @@
 //! Serialization for client-server communication.
 
 use std::any::Any;
+use std::char;
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::str;

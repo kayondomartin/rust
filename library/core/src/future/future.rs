@@ -37,7 +37,6 @@ use crate::task::{Context, Poll};
 pub trait Future {
     /// The type of value produced on completion.
     #[stable(feature = "futures_api", since = "1.36.0")]
-    #[rustc_diagnostic_item = "FutureOutput"]
     type Output;
 
     /// Attempt to resolve the future to a final value, registering

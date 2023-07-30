@@ -3,14 +3,22 @@
 // Run-time:
 //   status: 0
 
-#![feature(const_black_box)]
+#![feature(const_black_box, core_intrinsics, start)]
+
+#![no_std]
+
+#[panic_handler]
+fn panic_handler(_: &core::panic::PanicInfo) -> ! {
+    core::intrinsics::abort();
+}
 
 /*
  * Code
  */
 
-fn main() {
-    use std::hint::black_box;
+#[start]
+fn main(_argc: isize, _argv: *const *const u8) -> isize {
+    use core::hint::black_box;
 
     macro_rules! check {
         ($ty:ty, $expr:expr) => {
@@ -327,4 +335,6 @@ fn main() {
         const VAL5: T = 73236519889708027473620326106273939584_i128;
         check_ops128!();
     }
+
+    0
 }

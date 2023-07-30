@@ -16,13 +16,14 @@ fn test_symbols() {
     let m: &syn::ItemMacro = file
         .items
         .iter()
-        .find_map(|i| {
+        .filter_map(|i| {
             if let syn::Item::Macro(m) = i {
                 if m.mac.path == symbols_path { Some(m) } else { None }
             } else {
                 None
             }
         })
+        .next()
         .expect("did not find `symbols!` macro invocation.");
 
     let body_tokens = m.mac.tokens.clone();

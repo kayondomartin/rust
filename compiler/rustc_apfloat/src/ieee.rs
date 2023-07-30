@@ -2,6 +2,7 @@ use crate::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
 use crate::{Float, FloatConvert, ParseError, Round, Status, StatusAnd};
 
 use core::cmp::{self, Ordering};
+use core::convert::TryFrom;
 use core::fmt::{self, Write};
 use core::marker::PhantomData;
 use core::mem;

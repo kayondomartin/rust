@@ -18,7 +18,7 @@ pub fn test_layout(tcx: TyCtxt<'_>) {
                 tcx.def_kind(id.owner_id),
                 DefKind::TyAlias | DefKind::Enum | DefKind::Struct | DefKind::Union
             ) {
-                for attr in tcx.get_attrs(id.owner_id, sym::rustc_layout) {
+                for attr in tcx.get_attrs(id.owner_id.to_def_id(), sym::rustc_layout) {
                     dump_layout_of(tcx, id.owner_id.def_id, attr);
                 }
             }
@@ -26,10 +26,10 @@ pub fn test_layout(tcx: TyCtxt<'_>) {
     }
 }
 
-fn dump_layout_of(tcx: TyCtxt<'_>, item_def_id: LocalDefId, attr: &Attribute) {
+fn dump_layout_of<'tcx>(tcx: TyCtxt<'tcx>, item_def_id: LocalDefId, attr: &Attribute) {
     let tcx = tcx;
     let param_env = tcx.param_env(item_def_id);
-    let ty = tcx.type_of(item_def_id).subst_identity();
+    let ty = tcx.type_of(item_def_id);
     match tcx.layout_of(param_env.and(ty)) {
         Ok(ty_layout) => {
             // Check out the `#[rustc_layout(..)]` attribute to tell what to dump.
@@ -93,8 +93,7 @@ fn dump_layout_of(tcx: TyCtxt<'_>, item_def_id: LocalDefId, attr: &Attribute) {
 
         Err(layout_error) => {
             tcx.sess.emit_fatal(Spanned {
-                node: layout_error.into_diagnostic(),
-
+                node: layout_error,
                 span: tcx.def_span(item_def_id.to_def_id()),
             });
         }
@@ -110,7 +109,12 @@ impl<'tcx> LayoutOfHelpers<'tcx> for UnwrapLayoutCx<'tcx> {
     type LayoutOfResult = TyAndLayout<'tcx>;
 
     fn handle_layout_err(&self, err: LayoutError<'tcx>, span: Span, ty: Ty<'tcx>) -> ! {
-        span_bug!(span, "`#[rustc_layout(..)]` test resulted in `layout_of({ty}) = Err({err})`",);
+        span_bug!(
+            span,
+            "`#[rustc_layout(..)]` test resulted in `layout_of({}) = Err({})`",
+            ty,
+            err
+        );
     }
 }
 

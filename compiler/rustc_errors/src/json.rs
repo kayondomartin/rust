@@ -17,7 +17,6 @@ use crate::translation::{to_fluent_args, Translate};
 use crate::DiagnosticId;
 use crate::{
     CodeSuggestion, FluentBundle, LazyFallbackBundle, MultiSpan, SpanLabel, SubDiagnostic,
-    TerminalUrl,
 };
 use rustc_lint_defs::Applicability;
 
@@ -25,7 +24,6 @@ use rustc_data_structures::sync::Lrc;
 use rustc_error_messages::FluentArgs;
 use rustc_span::hygiene::ExpnData;
 use rustc_span::Span;
-use std::error::Report;
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -48,7 +46,6 @@ pub struct JsonEmitter {
     diagnostic_width: Option<usize>,
     macro_backtrace: bool,
     track_diagnostics: bool,
-    terminal_url: TerminalUrl,
 }
 
 impl JsonEmitter {
@@ -62,7 +59,6 @@ impl JsonEmitter {
         diagnostic_width: Option<usize>,
         macro_backtrace: bool,
         track_diagnostics: bool,
-        terminal_url: TerminalUrl,
     ) -> JsonEmitter {
         JsonEmitter {
             dst: Box::new(io::BufWriter::new(io::stderr())),
@@ -76,7 +72,6 @@ impl JsonEmitter {
             diagnostic_width,
             macro_backtrace,
             track_diagnostics,
-            terminal_url,
         }
     }
 
@@ -88,7 +83,6 @@ impl JsonEmitter {
         diagnostic_width: Option<usize>,
         macro_backtrace: bool,
         track_diagnostics: bool,
-        terminal_url: TerminalUrl,
     ) -> JsonEmitter {
         let file_path_mapping = FilePathMapping::empty();
         JsonEmitter::stderr(
@@ -101,7 +95,6 @@ impl JsonEmitter {
             diagnostic_width,
             macro_backtrace,
             track_diagnostics,
-            terminal_url,
         )
     }
 
@@ -116,7 +109,6 @@ impl JsonEmitter {
         diagnostic_width: Option<usize>,
         macro_backtrace: bool,
         track_diagnostics: bool,
-        terminal_url: TerminalUrl,
     ) -> JsonEmitter {
         JsonEmitter {
             dst,
@@ -130,7 +122,6 @@ impl JsonEmitter {
             diagnostic_width,
             macro_backtrace,
             track_diagnostics,
-            terminal_url,
         }
     }
 
@@ -145,7 +136,7 @@ impl Translate for JsonEmitter {
     }
 
     fn fallback_fluent_bundle(&self) -> &FluentBundle {
-        &self.fallback_bundle
+        &**self.fallback_bundle
     }
 }
 
@@ -330,8 +321,7 @@ impl Diagnostic {
     fn from_errors_diagnostic(diag: &crate::Diagnostic, je: &JsonEmitter) -> Diagnostic {
         let args = to_fluent_args(diag.args());
         let sugg = diag.suggestions.iter().flatten().map(|sugg| {
-            let translated_message =
-                je.translate_message(&sugg.msg, &args).map_err(Report::new).unwrap();
+            let translated_message = je.translate_message(&sugg.msg, &args);
             Diagnostic {
                 message: translated_message.to_string(),
                 code: None,
@@ -368,7 +358,6 @@ impl Diagnostic {
                 je.diagnostic_width,
                 je.macro_backtrace,
                 je.track_diagnostics,
-                je.terminal_url,
             )
             .ui_testing(je.ui_testing)
             .emit_diagnostic(diag);
@@ -422,10 +411,7 @@ impl DiagnosticSpan {
         Self::from_span_etc(
             span.span,
             span.is_primary,
-            span.label
-                .as_ref()
-                .map(|m| je.translate_message(m, args).unwrap())
-                .map(|m| m.to_string()),
+            span.label.as_ref().map(|m| je.translate_message(m, args)).map(|m| m.to_string()),
             suggestion,
             je,
         )
@@ -580,7 +566,7 @@ impl DiagnosticCode {
             let je_result =
                 je.registry.as_ref().map(|registry| registry.try_find_description(&s)).unwrap();
 
-            DiagnosticCode { code: s, explanation: je_result.ok() }
+            DiagnosticCode { code: s, explanation: je_result.unwrap_or(None) }
         })
     }
 }

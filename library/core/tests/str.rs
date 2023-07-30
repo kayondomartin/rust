@@ -1,1 +1,1 @@
-// All `str` tests live in library/alloc/tests/str.rs
+// All `str` tests live in liballoc/tests

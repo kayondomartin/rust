@@ -40,7 +40,7 @@ pub mod stdio;
 pub mod thread;
 pub mod thread_local_dtor;
 pub mod thread_local_key;
-pub mod thread_parking;
+pub mod thread_parker;
 pub mod time;
 
 #[cfg(target_os = "espidf")]
@@ -88,19 +88,13 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
             // The poll on Darwin doesn't set POLLNVAL for closed fds.
             target_os = "macos",
             target_os = "ios",
-            target_os = "tvos",
             target_os = "watchos",
             target_os = "redox",
             target_os = "l4re",
             target_os = "horizon",
-            target_os = "vita",
         )))]
         'poll: {
             use crate::sys::os::errno;
-            #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-            use libc::open as open64;
-            #[cfg(all(target_os = "linux", target_env = "gnu"))]
-            use libc::open64;
             let pfds: &mut [_] = &mut [
                 libc::pollfd { fd: 0, events: 0, revents: 0 },
                 libc::pollfd { fd: 1, events: 0, revents: 0 },
@@ -122,7 +116,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
                 if pfd.revents & libc::POLLNVAL == 0 {
                     continue;
                 }
-                if open64("/dev/null\0".as_ptr().cast(), libc::O_RDWR, 0) == -1 {
+                if libc::open("/dev/null\0".as_ptr().cast(), libc::O_RDWR, 0) == -1 {
                     // If the stream is closed but we failed to reopen it, abort the
                     // process. Otherwise we wouldn't preserve the safety of
                     // operations on the corresponding Rust object Stdin, Stdout, or
@@ -142,17 +136,12 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
             target_os = "vxworks",
             target_os = "l4re",
             target_os = "horizon",
-            target_os = "vita",
         )))]
         {
             use crate::sys::os::errno;
-            #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-            use libc::open as open64;
-            #[cfg(all(target_os = "linux", target_env = "gnu"))]
-            use libc::open64;
             for fd in 0..3 {
                 if libc::fcntl(fd, libc::F_GETFD) == -1 && errno() == libc::EBADF {
-                    if open64("/dev/null\0".as_ptr().cast(), libc::O_RDWR, 0) == -1 {
+                    if libc::open("/dev/null\0".as_ptr().cast(), libc::O_RDWR, 0) == -1 {
                         // If the stream is closed but we failed to reopen it, abort the
                         // process. Otherwise we wouldn't preserve the safety of
                         // operations on the corresponding Rust object Stdin, Stdout, or
@@ -167,7 +156,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
     unsafe fn reset_sigpipe(#[allow(unused_variables)] sigpipe: u8) {
         #[cfg(not(any(target_os = "emscripten", target_os = "fuchsia", target_os = "horizon")))]
         {
-            // We don't want to add this as a public type to std, nor do we
+            // We don't want to add this as a public type to libstd, nor do we
             // want to `include!` a file from the compiler (which would break
             // Miri and xargo for example), so we choose to duplicate these
             // constants from `compiler/rustc_session/src/config/sigpipe.rs`.
@@ -187,7 +176,12 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
                 sigpipe::SIG_DFL => (true, Some(libc::SIG_DFL)),
                 _ => unreachable!(),
             };
-            if sigpipe_attr_specified {
+            // The bootstrap compiler doesn't know about sigpipe::DEFAULT, and always passes in
+            // SIG_IGN. This causes some tests to fail because they expect SIGPIPE to be reset to
+            // default on process spawning (which doesn't happen if #[unix_sigpipe] is specified).
+            // Since we can't differentiate between the cases here, treat SIG_IGN as DEFAULT
+            // unconditionally.
+            if sigpipe_attr_specified && !(cfg!(bootstrap) && sigpipe == sigpipe::SIG_IGN) {
                 UNIX_SIGPIPE_ATTR_SPECIFIED.store(true, crate::sync::atomic::Ordering::Relaxed);
             }
             if let Some(handler) = handler {
@@ -202,7 +196,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
     target_os = "espidf",
     target_os = "emscripten",
     target_os = "fuchsia",
-    target_os = "horizon",
+    target_os = "horizon"
 )))]
 static UNIX_SIGPIPE_ATTR_SPECIFIED: crate::sync::atomic::AtomicBool =
     crate::sync::atomic::AtomicBool::new(false);
@@ -211,7 +205,7 @@ static UNIX_SIGPIPE_ATTR_SPECIFIED: crate::sync::atomic::AtomicBool =
     target_os = "espidf",
     target_os = "emscripten",
     target_os = "fuchsia",
-    target_os = "horizon",
+    target_os = "horizon"
 )))]
 pub(crate) fn unix_sigpipe_attr_specified() -> bool {
     UNIX_SIGPIPE_ATTR_SPECIFIED.load(crate::sync::atomic::Ordering::Relaxed)
@@ -332,7 +326,7 @@ pub fn cvt_nz(error: libc::c_int) -> crate::io::Result<()> {
 // do so.  In 1003.1-2004 this was fixed.
 //
 // glibc's implementation did the flush, unsafely, before glibc commit
-// 91e7cf982d01 `abort: Do not flush stdio streams [BZ #15436]` by Florian
+// 91e7cf982d01 `abort: Do not flush stdio streams [BZ #15436]' by Florian
 // Weimer.  According to glibc's NEWS:
 //
 //    The abort function terminates the process immediately, without flushing
@@ -389,7 +383,7 @@ cfg_if::cfg_if! {
     } else if #[cfg(target_os = "macos")] {
         #[link(name = "System")]
         extern "C" {}
-    } else if #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "watchos"))] {
+    } else if #[cfg(any(target_os = "ios", target_os = "watchos"))] {
         #[link(name = "System")]
         #[link(name = "objc")]
         #[link(name = "Security", kind = "framework")]
@@ -402,13 +396,10 @@ cfg_if::cfg_if! {
     } else if #[cfg(all(target_os = "linux", target_env = "uclibc"))] {
         #[link(name = "dl")]
         extern "C" {}
-    } else if #[cfg(target_os = "vita")] {
-        #[link(name = "pthread", kind = "static", modifiers = "-bundle")]
-        extern "C" {}
     }
 }
 
-#[cfg(any(target_os = "espidf", target_os = "horizon", target_os = "vita"))]
+#[cfg(any(target_os = "espidf", target_os = "horizon"))]
 mod unsupported {
     use crate::io;
 

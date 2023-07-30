@@ -13,13 +13,10 @@ use rustc_hir::def_id::DefId;
 use rustc_hir::hir_id::HirIdSet;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{Arm, Expr, ExprKind, Guard, HirId, Pat, PatKind};
-use rustc_infer::infer::{DefineOpaqueTypes, RegionVariableOrigin};
 use rustc_middle::middle::region::{self, Scope, ScopeData, YieldData};
-use rustc_middle::ty::fold::FnMutDelegate;
-use rustc_middle::ty::{self, BoundVariableKind, RvalueScopes, Ty, TyCtxt, TypeVisitableExt};
+use rustc_middle::ty::{self, RvalueScopes, Ty, TyCtxt, TypeVisitable};
 use rustc_span::symbol::sym;
 use rustc_span::Span;
-use smallvec::{smallvec, SmallVec};
 
 mod drop_ranges;
 
@@ -71,8 +68,10 @@ impl<'a, 'tcx> InteriorVisitor<'a, 'tcx> {
                                 yield_data.expr_and_pat_count, self.expr_count, source_span
                             );
 
-                            if self
-                                .is_dropped_at_yield_location(hir_id, yield_data.expr_and_pat_count)
+                            if self.fcx.sess().opts.unstable_opts.drop_tracking
+                                && self
+                                    .drop_ranges
+                                    .is_dropped_at(hir_id, yield_data.expr_and_pat_count)
                             {
                                 debug!("value is dropped at yield point; not recording");
                                 return false;
@@ -96,8 +95,8 @@ impl<'a, 'tcx> InteriorVisitor<'a, 'tcx> {
                 expr, scope, ty, self.expr_count, yield_data.span
             );
 
-            if let Some((unresolved_term, unresolved_type_span)) =
-                self.fcx.first_unresolved_const_or_ty_var(&ty)
+            if let Some((unresolved_type, unresolved_type_span)) =
+                self.fcx.unresolved_type_vars(&ty)
             {
                 // If unresolved type isn't a ty_var then unresolved_type_span is None
                 let span = self
@@ -106,23 +105,22 @@ impl<'a, 'tcx> InteriorVisitor<'a, 'tcx> {
 
                 // If we encounter an int/float variable, then inference fallback didn't
                 // finish due to some other error. Don't emit spurious additional errors.
-                if let Some(unresolved_ty) = unresolved_term.ty()
-                    && let ty::Infer(ty::InferTy::IntVar(_) | ty::InferTy::FloatVar(_)) = unresolved_ty.kind()
+                if let ty::Infer(ty::InferTy::IntVar(_) | ty::InferTy::FloatVar(_)) =
+                    unresolved_type.kind()
                 {
                     self.fcx
                         .tcx
                         .sess
-                        .delay_span_bug(span, format!("Encountered var {:?}", unresolved_term));
+                        .delay_span_bug(span, &format!("Encountered var {:?}", unresolved_type));
                 } else {
                     let note = format!(
                         "the type is part of the {} because of this {}",
-                        self.kind.descr(),
-                        yield_data.source
+                        self.kind, yield_data.source
                     );
 
                     self.fcx
-                        .need_type_info_err_in_generator(self.kind, span, unresolved_term)
-                        .span_note(yield_data.span, note)
+                        .need_type_info_err_in_generator(self.kind, span, unresolved_type)
+                        .span_note(yield_data.span, &*note)
                         .emit();
                 }
             } else {
@@ -161,7 +159,7 @@ impl<'a, 'tcx> InteriorVisitor<'a, 'tcx> {
                 expr.map(|e| e.span)
             );
             if let Some((unresolved_type, unresolved_type_span)) =
-                self.fcx.first_unresolved_const_or_ty_var(&ty)
+                self.fcx.unresolved_type_vars(&ty)
             {
                 debug!(
                     "remained unresolved_type = {:?}, unresolved_type_span: {:?}",
@@ -170,18 +168,6 @@ impl<'a, 'tcx> InteriorVisitor<'a, 'tcx> {
                 self.prev_unresolved_span = unresolved_type_span;
             }
         }
-    }
-
-    /// If drop tracking is enabled, consult drop_ranges to see if a value is
-    /// known to be dropped at a yield point and therefore can be omitted from
-    /// the generator witness.
-    fn is_dropped_at_yield_location(&self, value_hir_id: HirId, yield_location: usize) -> bool {
-        // short-circuit if drop tracking is not enabled.
-        if !self.fcx.sess().opts.unstable_opts.drop_tracking {
-            return false;
-        }
-
-        self.drop_ranges.is_dropped_at(value_hir_id, yield_location)
     }
 }
 
@@ -225,95 +211,45 @@ pub fn resolve_interior<'a, 'tcx>(
 
     debug!("types in generator {:?}, span = {:?}", types, body.value.span);
 
-    // We want to deduplicate if the lifetimes are the same modulo some non-informative counter.
-    // So, we need to actually do two passes: first by type to anonymize (preserving information
-    // required for diagnostics), then a second pass over all captured types to reassign disjoint
-    // region indices.
+    let mut counter = 0;
     let mut captured_tys = FxHashSet::default();
     let type_causes: Vec<_> = types
         .into_iter()
         .filter_map(|mut cause| {
-            // Replace all regions inside the generator interior with late bound regions.
-            // Note that each region slot in the types gets a new fresh late bound region,
-            // which means that none of the regions inside relate to any other, even if
-            // typeck had previously found constraints that would cause them to be related.
+            // Erase regions and canonicalize late-bound regions to deduplicate as many types as we
+            // can.
+            let ty = fcx.normalize_associated_types_in(cause.span, cause.ty);
+            let erased = fcx.tcx.erase_regions(ty);
+            if captured_tys.insert(erased) {
+                // Replace all regions inside the generator interior with late bound regions.
+                // Note that each region slot in the types gets a new fresh late bound region,
+                // which means that none of the regions inside relate to any other, even if
+                // typeck had previously found constraints that would cause them to be related.
+                let folded = fcx.tcx.fold_regions(erased, |_, current_depth| {
+                    let br = ty::BoundRegion {
+                        var: ty::BoundVar::from_u32(counter),
+                        kind: ty::BrAnon(counter),
+                    };
+                    let r = fcx.tcx.mk_region(ty::ReLateBound(current_depth, br));
+                    counter += 1;
+                    r
+                });
 
-            let mut counter = 0;
-            let mut mk_bound_region = |kind| {
-                let var = ty::BoundVar::from_u32(counter);
-                counter += 1;
-                ty::BoundRegion { var, kind }
-            };
-            let ty = fcx.normalize(cause.span, cause.ty);
-            let ty = fcx.tcx.fold_regions(ty, |region, current_depth| {
-                let br = match region.kind() {
-                    ty::ReVar(vid) => {
-                        let origin = fcx.region_var_origin(vid);
-                        match origin {
-                            RegionVariableOrigin::EarlyBoundRegion(span, _) => {
-                                mk_bound_region(ty::BrAnon(Some(span)))
-                            }
-                            _ => mk_bound_region(ty::BrAnon(None)),
-                        }
-                    }
-                    ty::ReEarlyBound(region) => {
-                        mk_bound_region(ty::BrNamed(region.def_id, region.name))
-                    }
-                    ty::ReLateBound(_, ty::BoundRegion { kind, .. })
-                    | ty::ReFree(ty::FreeRegion { bound_region: kind, .. }) => match kind {
-                        ty::BoundRegionKind::BrAnon(span) => mk_bound_region(ty::BrAnon(span)),
-                        ty::BoundRegionKind::BrNamed(def_id, sym) => {
-                            mk_bound_region(ty::BrNamed(def_id, sym))
-                        }
-                        ty::BoundRegionKind::BrEnv => mk_bound_region(ty::BrAnon(None)),
-                    },
-                    _ => mk_bound_region(ty::BrAnon(None)),
-                };
-                let r = ty::Region::new_late_bound(fcx.tcx, current_depth, br);
-                r
-            });
-            captured_tys.insert(ty).then(|| {
-                cause.ty = ty;
-                cause
-            })
+                cause.ty = folded;
+                Some(cause)
+            } else {
+                None
+            }
         })
         .collect();
 
-    let mut bound_vars: SmallVec<[BoundVariableKind; 4]> = smallvec![];
-    let mut counter = 0;
-    // Optimization: If there is only one captured type, then we don't actually
-    // need to fold and reindex (since the first type doesn't change).
-    let type_causes = if captured_tys.len() > 0 {
-        // Optimization: Use `replace_escaping_bound_vars_uncached` instead of
-        // `fold_regions`, since we only have late bound regions, and it skips
-        // types without bound regions.
-        fcx.tcx.replace_escaping_bound_vars_uncached(
-            type_causes,
-            FnMutDelegate {
-                regions: &mut |br| {
-                    let kind = br.kind;
-                    let var = ty::BoundVar::from_usize(bound_vars.len());
-                    bound_vars.push(ty::BoundVariableKind::Region(kind));
-                    counter += 1;
-                    ty::Region::new_late_bound(
-                        fcx.tcx,
-                        ty::INNERMOST,
-                        ty::BoundRegion { var, kind },
-                    )
-                },
-                types: &mut |b| bug!("unexpected bound ty in binder: {b:?}"),
-                consts: &mut |b, ty| bug!("unexpected bound ct in binder: {b:?} {ty}"),
-            },
-        )
-    } else {
-        type_causes
-    };
-
     // Extract type components to build the witness type.
-    let type_list = fcx.tcx.mk_type_list_from_iter(type_causes.iter().map(|cause| cause.ty));
-    let bound_vars = fcx.tcx.mk_bound_variable_kinds(&bound_vars);
+    let type_list = fcx.tcx.mk_type_list(type_causes.iter().map(|cause| cause.ty));
+    let bound_vars = fcx.tcx.mk_bound_variable_kinds(
+        (0..counter).map(|i| ty::BoundVariableKind::Region(ty::BrAnon(i))),
+    );
     let witness =
-        Ty::new_generator_witness(fcx.tcx, ty::Binder::bind_with_vars(type_list, bound_vars));
+        fcx.tcx.mk_generator_witness(ty::Binder::bind_with_vars(type_list, bound_vars.clone()));
 
     drop(typeck_results);
     // Store the generator types and spans into the typeck results for this generator.
@@ -326,11 +262,7 @@ pub fn resolve_interior<'a, 'tcx>(
     );
 
     // Unify the type variable inside the generator with the new witness
-    match fcx.at(&fcx.misc(body.value.span), fcx.param_env).eq(
-        DefineOpaqueTypes::No,
-        interior,
-        witness,
-    ) {
+    match fcx.at(&fcx.misc(body.value.span), fcx.param_env).eq(interior, witness) {
         Ok(ok) => fcx.register_infer_ok_obligations(ok),
         _ => bug!("failed to relate {interior} and {witness}"),
     }
@@ -362,11 +294,10 @@ impl<'a, 'tcx> Visitor<'tcx> for InteriorVisitor<'a, 'tcx> {
                             let ty =
                                 self.interior_visitor.fcx.typeck_results.borrow().node_type(id);
                             let tcx = self.interior_visitor.fcx.tcx;
-                            let ty = Ty::new_ref(
-                                tcx,
+                            let ty = tcx.mk_ref(
                                 // Use `ReErased` as `resolve_interior` is going to replace all the
                                 // regions anyway.
-                                tcx.lifetimes.re_erased,
+                                tcx.mk_region(ty::ReErased),
                                 ty::TypeAndMut { ty, mutbl: hir::Mutability::Not },
                             );
                             self.interior_visitor.record(
@@ -460,17 +391,17 @@ impl<'a, 'tcx> Visitor<'tcx> for InteriorVisitor<'a, 'tcx> {
         // the yield, even if it's not borrowed or referenced after the yield. Ideally this would
         // *only* happen for types with observable drop, not all types which wrap them, but that
         // doesn't match the behavior of MIR borrowck and causes ICEs. See the FIXME comment in
-        // tests/ui/generator/drop-tracking-parent-expression.rs.
+        // src/test/ui/generator/drop-tracking-parent-expression.rs.
         let scope = if self.drop_ranges.is_borrowed_temporary(expr)
             || ty.map_or(true, |ty| {
                 // Avoid ICEs in needs_drop.
                 let ty = self.fcx.resolve_vars_if_possible(ty);
                 let ty = self.fcx.tcx.erase_regions(ty);
-                if ty.has_infer() {
+                if ty.needs_infer() {
                     self.fcx
                         .tcx
                         .sess
-                        .delay_span_bug(expr.span, format!("inference variables in {ty}"));
+                        .delay_span_bug(expr.span, &format!("inference variables in {ty}"));
                     true
                 } else {
                     ty.needs_drop(self.fcx.tcx, self.fcx.param_env)
@@ -555,10 +486,10 @@ fn check_must_not_suspend_ty<'tcx>(
     data: SuspendCheckData<'_, 'tcx>,
 ) -> bool {
     if ty.is_unit()
-    // FIXME: should this check `Ty::is_inhabited_from`. This query is not available in this stage
+    // FIXME: should this check `is_ty_uninhabited_from`. This query is not available in this stage
     // of typeck (before ReVar and RePlaceholder are removed), but may remove noise, like in
     // `must_use`
-    // || !ty.is_inhabited_from(fcx.tcx, fcx.tcx.parent_module(hir_id).to_def_id(), fcx.param_env)
+    // || fcx.tcx.is_ty_uninhabited_from(fcx.tcx.parent_module(hir_id).to_def_id(), ty, fcx.param_env)
     {
         return false;
     }
@@ -575,11 +506,11 @@ fn check_must_not_suspend_ty<'tcx>(
         }
         ty::Adt(def, _) => check_must_not_suspend_def(fcx.tcx, def.did(), hir_id, data),
         // FIXME: support adding the attribute to TAITs
-        ty::Alias(ty::Opaque, ty::AliasTy { def_id: def, .. }) => {
+        ty::Opaque(def, _) => {
             let mut has_emitted = false;
-            for &(predicate, _) in fcx.tcx.explicit_item_bounds(def).skip_binder() {
+            for &(predicate, _) in fcx.tcx.explicit_item_bounds(def) {
                 // We only look at the `DefId`, so it is safe to skip the binder here.
-                if let ty::ClauseKind::Trait(ref poly_trait_predicate) =
+                if let ty::PredicateKind::Trait(ref poly_trait_predicate) =
                     predicate.kind().skip_binder()
                 {
                     let def_id = poly_trait_predicate.trait_ref.def_id;
@@ -619,7 +550,10 @@ fn check_must_not_suspend_ty<'tcx>(
         ty::Tuple(fields) => {
             let mut has_emitted = false;
             let comps = match data.expr.map(|e| &e.kind) {
-                Some(hir::ExprKind::Tup(comps)) if comps.len() == fields.len() => Some(comps),
+                Some(hir::ExprKind::Tup(comps)) => {
+                    debug_assert_eq!(comps.len(), fields.len());
+                    Some(comps)
+                }
                 _ => None,
             };
             for (i, ty) in fields.iter().enumerate() {
@@ -649,14 +583,13 @@ fn check_must_not_suspend_ty<'tcx>(
                 hir_id,
                 SuspendCheckData {
                     descr_pre,
-                    plural_len: len.try_eval_target_usize(fcx.tcx, fcx.param_env).unwrap_or(0)
-                        as usize
+                    plural_len: len.try_eval_usize(fcx.tcx, fcx.param_env).unwrap_or(0) as usize
                         + 1,
                     ..data
                 },
             )
         }
-        // If drop tracking is enabled, we want to look through references, since the referent
+        // If drop tracking is enabled, we want to look through references, since the referrent
         // may not be considered live across the await point.
         ty::Ref(_region, ty, _mutability) if fcx.sess().opts.unstable_opts.drop_tracking => {
             let descr_pre = &format!("{}reference{} to ", data.descr_pre, plural_suffix);
@@ -692,7 +625,7 @@ fn check_must_not_suspend_def(
                 // Add optional reason note
                 if let Some(note) = attr.value_str() {
                     // FIXME(guswynn): consider formatting this better
-                    lint.span_note(data.source_span, note.to_string());
+                    lint.span_note(data.source_span, note.as_str());
                 }
 
                 // Add some quick suggestions on what to do

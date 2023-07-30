@@ -1,7 +1,7 @@
-use crate::fluent_generated as fluent;
-use rustc_errors::{ErrorGuaranteed, Handler, IntoDiagnostic};
+use rustc_errors::{fluent, ErrorGuaranteed, Handler, IntoDiagnostic};
 use rustc_macros::Diagnostic;
 use rustc_middle::ty::{self, PolyTraitRef, Ty};
+use rustc_session::Limit;
 use rustc_span::{Span, Symbol};
 
 #[derive(Diagnostic)]
@@ -19,6 +19,18 @@ pub struct UnableToConstructConstantValue<'a> {
     #[primary_span]
     pub span: Span,
     pub unevaluated: ty::UnevaluatedConst<'a>,
+}
+
+#[derive(Diagnostic)]
+#[help]
+#[diag(trait_selection_auto_deref_reached_recursion_limit, code = "E0055")]
+pub struct AutoDerefReachedRecursionLimit<'a> {
+    #[primary_span]
+    #[label]
+    pub span: Span,
+    pub ty: Ty<'a>,
+    pub suggested_limit: Limit,
+    pub crate_name: Symbol,
 }
 
 #[derive(Diagnostic)]
@@ -46,10 +58,10 @@ pub struct NoValueInOnUnimplemented {
     pub span: Span,
 }
 
-pub struct NegativePositiveConflict<'tcx> {
+pub struct NegativePositiveConflict<'a> {
     pub impl_span: Span,
-    pub trait_desc: ty::TraitRef<'tcx>,
-    pub self_ty: Option<Ty<'tcx>>,
+    pub trait_desc: &'a str,
+    pub self_desc: &'a Option<String>,
     pub negative_impl_span: Result<Span, Symbol>,
     pub positive_impl_span: Result<Span, Symbol>,
 }
@@ -61,39 +73,31 @@ impl IntoDiagnostic<'_> for NegativePositiveConflict<'_> {
         handler: &Handler,
     ) -> rustc_errors::DiagnosticBuilder<'_, ErrorGuaranteed> {
         let mut diag = handler.struct_err(fluent::trait_selection_negative_positive_conflict);
-        diag.set_arg("trait_desc", self.trait_desc.print_only_trait_path().to_string());
+        diag.set_arg("trait_desc", self.trait_desc);
         diag.set_arg(
             "self_desc",
-            self.self_ty.map_or_else(|| "none".to_string(), |ty| ty.to_string()),
+            self.self_desc.clone().map_or_else(|| String::from("none"), |ty| ty),
         );
         diag.set_span(self.impl_span);
         diag.code(rustc_errors::error_code!(E0751));
         match self.negative_impl_span {
             Ok(span) => {
-                diag.span_label(span, fluent::trait_selection_negative_implementation_here);
+                diag.span_label(span, fluent::negative_implementation_here);
             }
             Err(cname) => {
-                diag.note(fluent::trait_selection_negative_implementation_in_crate);
+                diag.note(fluent::negative_implementation_in_crate);
                 diag.set_arg("negative_impl_cname", cname.to_string());
             }
         }
         match self.positive_impl_span {
             Ok(span) => {
-                diag.span_label(span, fluent::trait_selection_positive_implementation_here);
+                diag.span_label(span, fluent::positive_implementation_here);
             }
             Err(cname) => {
-                diag.note(fluent::trait_selection_positive_implementation_in_crate);
+                diag.note(fluent::positive_implementation_in_crate);
                 diag.set_arg("positive_impl_cname", cname.to_string());
             }
         }
         diag
     }
-}
-
-#[derive(Diagnostic)]
-#[diag(trait_selection_inherent_projection_normalization_overflow)]
-pub struct InherentProjectionNormalizationOverflow {
-    #[primary_span]
-    pub span: Span,
-    pub ty: String,
 }

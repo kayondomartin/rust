@@ -24,55 +24,39 @@ impl fmt::Debug for Byte {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
             Self::Uninit => f.write_str("??u8"),
-            Self::Init(b) => write!(f, "{b:#04x}u8"),
+            Self::Init(b) => write!(f, "{:#04x}u8", b),
         }
     }
 }
 
 pub(crate) trait Def: Debug + Hash + Eq + PartialEq + Copy + Clone {}
-pub trait Ref: Debug + Hash + Eq + PartialEq + Copy + Clone {
-    fn min_align(&self) -> usize;
-
-    fn is_mutable(&self) -> bool;
-}
+pub trait Ref: Debug + Hash + Eq + PartialEq + Copy + Clone {}
 
 impl Def for ! {}
-impl Ref for ! {
-    fn min_align(&self) -> usize {
-        unreachable!()
-    }
-    fn is_mutable(&self) -> bool {
-        unreachable!()
-    }
-}
+impl Ref for ! {}
 
 #[cfg(feature = "rustc")]
-pub mod rustc {
+pub(crate) mod rustc {
     use rustc_middle::mir::Mutability;
-    use rustc_middle::ty::{self, Ty};
+    use rustc_middle::ty;
+    use rustc_middle::ty::Region;
+    use rustc_middle::ty::Ty;
 
     /// A reference in the layout.
     #[derive(Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Clone, Copy)]
     pub struct Ref<'tcx> {
-        pub lifetime: ty::Region<'tcx>,
-        pub ty: Ty<'tcx>,
-        pub mutability: Mutability,
-        pub align: usize,
+        lifetime: Region<'tcx>,
+        ty: Ty<'tcx>,
+        mutability: Mutability,
     }
 
-    impl<'tcx> super::Ref for Ref<'tcx> {
-        fn min_align(&self) -> usize {
-            self.align
-        }
+    impl<'tcx> super::Ref for Ref<'tcx> {}
 
-        fn is_mutable(&self) -> bool {
-            match self.mutability {
-                Mutability::Mut => true,
-                Mutability::Not => false,
-            }
+    impl<'tcx> Ref<'tcx> {
+        pub fn min_align(&self) -> usize {
+            todo!()
         }
     }
-    impl<'tcx> Ref<'tcx> {}
 
     /// A visibility node in the layout.
     #[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]

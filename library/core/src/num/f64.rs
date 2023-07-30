@@ -401,7 +401,6 @@ impl f64 {
     /// This constant isn't guaranteed to equal to any specific NaN bitpattern,
     /// and the stability of its representation over Rust versions
     /// and target platforms isn't guaranteed.
-    #[rustc_diagnostic_item = "f64_nan"]
     #[stable(feature = "assoc_int_consts", since = "1.43.0")]
     pub const NAN: f64 = 0.0_f64 / 0.0_f64;
     /// Infinity (∞).
@@ -428,7 +427,7 @@ impl f64 {
         self != self
     }
 
-    // FIXME(#50145): `abs` is publicly unavailable in core due to
+    // FIXME(#50145): `abs` is publicly unavailable in libcore due to
     // concerns about portability, so this implementation is for
     // private use internally.
     #[inline]
@@ -952,42 +951,6 @@ impl f64 {
         }
     }
 
-    /// Calculates the middle point of `self` and `rhs`.
-    ///
-    /// This returns NaN when *either* argument is NaN or if a combination of
-    /// +inf and -inf is provided as arguments.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(num_midpoint)]
-    /// assert_eq!(1f64.midpoint(4.0), 2.5);
-    /// assert_eq!((-5.5f64).midpoint(8.0), 1.25);
-    /// ```
-    #[unstable(feature = "num_midpoint", issue = "110840")]
-    pub fn midpoint(self, other: f64) -> f64 {
-        const LO: f64 = f64::MIN_POSITIVE * 2.;
-        const HI: f64 = f64::MAX / 2.;
-
-        let (a, b) = (self, other);
-        let abs_a = a.abs_private();
-        let abs_b = b.abs_private();
-
-        if abs_a <= HI && abs_b <= HI {
-            // Overflow is impossible
-            (a + b) / 2.
-        } else if abs_a < LO {
-            // Not safe to halve a
-            a + (b / 2.)
-        } else if abs_b < LO {
-            // Not safe to halve b
-            (a / 2.) + b
-        } else {
-            // Not safe to halve a and b
-            (a / 2.) + (b / 2.)
-        }
-    }
-
     /// Rounds toward zero and converts to any primitive integer type,
     /// assuming that the value is finite and fits in that type.
     ///
@@ -1426,7 +1389,7 @@ impl f64 {
     #[stable(feature = "clamp", since = "1.50.0")]
     #[inline]
     pub fn clamp(mut self, min: f64, max: f64) -> f64 {
-        assert!(min <= max, "min > max, or either was NaN. min = {min:?}, max = {max:?}");
+        assert!(min <= max);
         if self < min {
             self = min;
         }

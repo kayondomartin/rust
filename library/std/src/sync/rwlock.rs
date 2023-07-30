@@ -1,12 +1,14 @@
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests;
 
+use core::ptr::metadata_update::MetaUpdate;
+
 use crate::cell::UnsafeCell;
 use crate::fmt;
 use crate::ops::{Deref, DerefMut};
 use crate::ptr::NonNull;
 use crate::sync::{poison, LockResult, TryLockError, TryLockResult};
-use crate::sys::locks as sys;
+use crate::sys_common::rwlock as sys;
 
 /// A reader-writer lock
 ///
@@ -78,7 +80,7 @@ use crate::sys::locks as sys;
 #[stable(feature = "rust1", since = "1.0.0")]
 #[cfg_attr(not(test), rustc_diagnostic_item = "RwLock")]
 pub struct RwLock<T: ?Sized> {
-    inner: sys::RwLock,
+    inner: sys::MovableRwLock,
     poison: poison::Flag,
     data: UnsafeCell<T>,
 }
@@ -88,6 +90,26 @@ unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for RwLock<T> {
+    fn synchronize(&self) -> bool {
+        true
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for RwLockReadGuard<'_, T>{
+    fn synchronize(&self) -> bool {
+        true
+    }
+}
+
+#[unstable(feature = "metadata_update", issue = "none")]
+impl<T: ?Sized> MetaUpdate for RwLockWriteGuard<'_, T>{
+    fn synchronize(&self) -> bool {
+        true
+    }
+}
 /// RAII structure used to release the shared read access of a lock when
 /// dropped.
 ///
@@ -109,7 +131,7 @@ pub struct RwLockReadGuard<'a, T: ?Sized + 'a> {
     // `NonNull` is also covariant over `T`, just like we would have with `&T`. `NonNull`
     // is preferable over `const* T` to allow for niche optimization.
     data: NonNull<T>,
-    inner_lock: &'a sys::RwLock,
+    inner_lock: &'a sys::MovableRwLock,
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -158,7 +180,11 @@ impl<T> RwLock<T> {
     #[rustc_const_stable(feature = "const_locks", since = "1.63.0")]
     #[inline]
     pub const fn new(t: T) -> RwLock<T> {
-        RwLock { inner: sys::RwLock::new(), poison: poison::Flag::new(), data: UnsafeCell::new(t) }
+        RwLock {
+            inner: sys::MovableRwLock::new(),
+            poison: poison::Flag::new(),
+            data: UnsafeCell::new(t),
+        }
     }
 }
 

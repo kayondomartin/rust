@@ -282,14 +282,14 @@ pub(crate) fn expand(
                 );
             }
             SetVar => {
-                if cur.is_ascii_uppercase() {
+                if cur >= 'A' && cur <= 'Z' {
                     if let Some(arg) = stack.pop() {
                         let idx = (cur as u8) - b'A';
                         vars.sta_va[idx as usize] = arg;
                     } else {
                         return Err("stack is empty".to_string());
                     }
-                } else if cur.is_ascii_lowercase() {
+                } else if cur >= 'a' && cur <= 'z' {
                     if let Some(arg) = stack.pop() {
                         let idx = (cur as u8) - b'a';
                         vars.dyn_va[idx as usize] = arg;
@@ -301,10 +301,10 @@ pub(crate) fn expand(
                 }
             }
             GetVar => {
-                if cur.is_ascii_uppercase() {
+                if cur >= 'A' && cur <= 'Z' {
                     let idx = (cur as u8) - b'A';
                     stack.push(vars.sta_va[idx as usize].clone());
-                } else if cur.is_ascii_lowercase() {
+                } else if cur >= 'a' && cur <= 'z' {
                     let idx = (cur as u8) - b'a';
                     stack.push(vars.dyn_va[idx as usize].clone());
                 } else {

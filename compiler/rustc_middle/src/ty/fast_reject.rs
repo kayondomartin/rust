@@ -1,23 +1,33 @@
 use crate::mir::Mutability;
 use crate::ty::subst::GenericArgKind;
-use crate::ty::{self, SubstsRef, Ty, TyCtxt, TypeVisitableExt};
+use crate::ty::{self, Ty, TyCtxt, TypeVisitable};
 use rustc_hir::def_id::DefId;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::iter;
 
-use self::SimplifiedType::*;
+use self::SimplifiedTypeGen::*;
 
-/// See `simplify_type`.
+pub type SimplifiedType = SimplifiedTypeGen<DefId>;
+
+/// See `simplify_type`
+///
+/// Note that we keep this type generic over the type of identifier it uses
+/// because we sometimes need to use SimplifiedTypeGen values as stable sorting
+/// keys (in which case we use a DefPathHash as id-type) but in the general case
+/// the non-stable but fast to construct DefId-version is the better choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
-pub enum SimplifiedType {
+pub enum SimplifiedTypeGen<D>
+where
+    D: Copy + Debug + Eq,
+{
     BoolSimplifiedType,
     CharSimplifiedType,
     IntSimplifiedType(ty::IntTy),
     UintSimplifiedType(ty::UintTy),
     FloatSimplifiedType(ty::FloatTy),
-    AdtSimplifiedType(DefId),
-    ForeignSimplifiedType(DefId),
+    AdtSimplifiedType(D),
+    ForeignSimplifiedType(D),
     StrSimplifiedType,
     ArraySimplifiedType,
     SliceSimplifiedType,
@@ -28,11 +38,11 @@ pub enum SimplifiedType {
     /// A trait object, all of whose components are markers
     /// (e.g., `dyn Send + Sync`).
     MarkerTraitObjectSimplifiedType,
-    TraitSimplifiedType(DefId),
-    ClosureSimplifiedType(DefId),
-    GeneratorSimplifiedType(DefId),
+    TraitSimplifiedType(D),
+    ClosureSimplifiedType(D),
+    GeneratorSimplifiedType(D),
     GeneratorWitnessSimplifiedType(usize),
-    GeneratorWitnessMIRSimplifiedType(DefId),
+    OpaqueSimplifiedType(D),
     FunctionSimplifiedType(usize),
     PlaceholderSimplifiedType,
 }
@@ -51,36 +61,15 @@ pub enum SimplifiedType {
 /// generic parameters as if they were inference variables in that case.
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum TreatParams {
-    /// Treat parameters as infer vars. This is the correct mode for caching
-    /// an impl's type for lookup.
-    AsCandidateKey,
-    /// Treat parameters as placeholders in the given environment. This is the
-    /// correct mode for *lookup*, as during candidate selection.
+    /// Treat parameters as placeholders in the given environment.
     ///
-    /// This also treats projections with inference variables as infer vars
-    /// since they could be further normalized.
-    ForLookup,
-    /// Treat parameters as placeholders in the given environment. This is the
-    /// correct mode for *lookup*, as during candidate selection.
-    ///
-    /// N.B. during deep rejection, this acts identically to `ForLookup`.
-    NextSolverLookup,
-}
-
-/// During fast-rejection, we have the choice of treating projection types
-/// as either simplifiable or not, depending on whether we expect the projection
-/// to be normalized/rigid.
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
-pub enum TreatProjections {
-    /// In the old solver we don't try to normalize projections
-    /// when looking up impls and only access them by using the
-    /// current self type. This means that if the self type is
-    /// a projection which could later be normalized, we must not
-    /// treat it as rigid.
-    ForLookup,
-    /// We can treat projections in the self type as opaque as
-    /// we separately look up impls for the normalized self type.
-    NextSolverLookup,
+    /// Note that this also causes us to treat projections as if they were
+    /// placeholders. This is only correct if the given projection cannot
+    /// be normalized in the current context. Even if normalization fails,
+    /// it may still succeed later if the projection contains any inference
+    /// variables.
+    AsPlaceholder,
+    AsInfer,
 }
 
 /// Tries to simplify a type by only returning the outermost injective¹ layer, if one exists.
@@ -130,42 +119,72 @@ pub fn simplify_type<'tcx>(
         ty::FnDef(def_id, _) | ty::Closure(def_id, _) => Some(ClosureSimplifiedType(def_id)),
         ty::Generator(def_id, _, _) => Some(GeneratorSimplifiedType(def_id)),
         ty::GeneratorWitness(tys) => Some(GeneratorWitnessSimplifiedType(tys.skip_binder().len())),
-        ty::GeneratorWitnessMIR(def_id, _) => Some(GeneratorWitnessMIRSimplifiedType(def_id)),
         ty::Never => Some(NeverSimplifiedType),
         ty::Tuple(tys) => Some(TupleSimplifiedType(tys.len())),
         ty::FnPtr(f) => Some(FunctionSimplifiedType(f.skip_binder().inputs().len())),
         ty::Placeholder(..) => Some(PlaceholderSimplifiedType),
         ty::Param(_) => match treat_params {
-            TreatParams::ForLookup | TreatParams::NextSolverLookup => {
-                Some(PlaceholderSimplifiedType)
-            }
-            TreatParams::AsCandidateKey => None,
+            TreatParams::AsPlaceholder => Some(PlaceholderSimplifiedType),
+            TreatParams::AsInfer => None,
         },
-        ty::Alias(..) => match treat_params {
+        ty::Projection(_) => match treat_params {
             // When treating `ty::Param` as a placeholder, projections also
             // don't unify with anything else as long as they are fully normalized.
             //
             // We will have to be careful with lazy normalization here.
-            // FIXME(lazy_normalization): This is probably not right...
-            TreatParams::ForLookup if !ty.has_non_region_infer() => Some(PlaceholderSimplifiedType),
-            TreatParams::NextSolverLookup => Some(PlaceholderSimplifiedType),
-            TreatParams::ForLookup | TreatParams::AsCandidateKey => None,
+            TreatParams::AsPlaceholder if !ty.has_non_region_infer() => {
+                debug!("treating `{}` as a placeholder", ty);
+                Some(PlaceholderSimplifiedType)
+            }
+            TreatParams::AsPlaceholder | TreatParams::AsInfer => None,
         },
+        ty::Opaque(def_id, _) => Some(OpaqueSimplifiedType(def_id)),
         ty::Foreign(def_id) => Some(ForeignSimplifiedType(def_id)),
         ty::Bound(..) | ty::Infer(_) | ty::Error(_) => None,
     }
 }
 
-impl SimplifiedType {
-    pub fn def(self) -> Option<DefId> {
+impl<D: Copy + Debug + Eq> SimplifiedTypeGen<D> {
+    pub fn def(self) -> Option<D> {
         match self {
             AdtSimplifiedType(d)
             | ForeignSimplifiedType(d)
             | TraitSimplifiedType(d)
             | ClosureSimplifiedType(d)
             | GeneratorSimplifiedType(d)
-            | GeneratorWitnessMIRSimplifiedType(d) => Some(d),
+            | OpaqueSimplifiedType(d) => Some(d),
             _ => None,
+        }
+    }
+
+    pub fn map_def<U, F>(self, map: F) -> SimplifiedTypeGen<U>
+    where
+        F: Fn(D) -> U,
+        U: Copy + Debug + Eq,
+    {
+        match self {
+            BoolSimplifiedType => BoolSimplifiedType,
+            CharSimplifiedType => CharSimplifiedType,
+            IntSimplifiedType(t) => IntSimplifiedType(t),
+            UintSimplifiedType(t) => UintSimplifiedType(t),
+            FloatSimplifiedType(t) => FloatSimplifiedType(t),
+            AdtSimplifiedType(d) => AdtSimplifiedType(map(d)),
+            ForeignSimplifiedType(d) => ForeignSimplifiedType(map(d)),
+            StrSimplifiedType => StrSimplifiedType,
+            ArraySimplifiedType => ArraySimplifiedType,
+            SliceSimplifiedType => SliceSimplifiedType,
+            RefSimplifiedType(m) => RefSimplifiedType(m),
+            PtrSimplifiedType(m) => PtrSimplifiedType(m),
+            NeverSimplifiedType => NeverSimplifiedType,
+            MarkerTraitObjectSimplifiedType => MarkerTraitObjectSimplifiedType,
+            TupleSimplifiedType(n) => TupleSimplifiedType(n),
+            TraitSimplifiedType(d) => TraitSimplifiedType(map(d)),
+            ClosureSimplifiedType(d) => ClosureSimplifiedType(map(d)),
+            GeneratorSimplifiedType(d) => GeneratorSimplifiedType(map(d)),
+            GeneratorWitnessSimplifiedType(n) => GeneratorWitnessSimplifiedType(n),
+            OpaqueSimplifiedType(d) => OpaqueSimplifiedType(map(d)),
+            FunctionSimplifiedType(n) => FunctionSimplifiedType(n),
+            PlaceholderSimplifiedType => PlaceholderSimplifiedType,
         }
     }
 }
@@ -188,31 +207,29 @@ pub struct DeepRejectCtxt {
 }
 
 impl DeepRejectCtxt {
-    pub fn substs_refs_may_unify<'tcx>(
+    pub fn generic_args_may_unify<'tcx>(
         self,
-        obligation_substs: SubstsRef<'tcx>,
-        impl_substs: SubstsRef<'tcx>,
+        obligation_arg: ty::GenericArg<'tcx>,
+        impl_arg: ty::GenericArg<'tcx>,
     ) -> bool {
-        iter::zip(obligation_substs, impl_substs).all(|(obl, imp)| {
-            match (obl.unpack(), imp.unpack()) {
-                // We don't fast reject based on regions for now.
-                (GenericArgKind::Lifetime(_), GenericArgKind::Lifetime(_)) => true,
-                (GenericArgKind::Type(obl), GenericArgKind::Type(imp)) => {
-                    self.types_may_unify(obl, imp)
-                }
-                (GenericArgKind::Const(obl), GenericArgKind::Const(imp)) => {
-                    self.consts_may_unify(obl, imp)
-                }
-                _ => bug!("kind mismatch: {obl} {imp}"),
+        match (obligation_arg.unpack(), impl_arg.unpack()) {
+            // We don't fast reject based on regions for now.
+            (GenericArgKind::Lifetime(_), GenericArgKind::Lifetime(_)) => true,
+            (GenericArgKind::Type(obl), GenericArgKind::Type(imp)) => {
+                self.types_may_unify(obl, imp)
             }
-        })
+            (GenericArgKind::Const(obl), GenericArgKind::Const(imp)) => {
+                self.consts_may_unify(obl, imp)
+            }
+            _ => bug!("kind mismatch: {obligation_arg} {impl_arg}"),
+        }
     }
 
     pub fn types_may_unify<'tcx>(self, obligation_ty: Ty<'tcx>, impl_ty: Ty<'tcx>) -> bool {
         match impl_ty.kind() {
             // Start by checking whether the type in the impl may unify with
             // pretty much everything. Just return `true` in that case.
-            ty::Param(_) | ty::Error(_) | ty::Alias(..) => return true,
+            ty::Param(_) | ty::Projection(_) | ty::Error(_) => return true,
             // These types only unify with inference variables or their own
             // variant.
             ty::Bool
@@ -230,12 +247,12 @@ impl DeepRejectCtxt {
             | ty::Never
             | ty::Tuple(..)
             | ty::FnPtr(..)
-            | ty::Foreign(..) => {}
+            | ty::Foreign(..)
+            | ty::Opaque(..) => {}
             ty::FnDef(..)
             | ty::Closure(..)
             | ty::Generator(..)
             | ty::GeneratorWitness(..)
-            | ty::GeneratorWitnessMIR(..)
             | ty::Placeholder(..)
             | ty::Bound(..)
             | ty::Infer(_) => bug!("unexpected impl_ty: {impl_ty}"),
@@ -260,7 +277,9 @@ impl DeepRejectCtxt {
             },
             ty::Adt(obl_def, obl_substs) => match k {
                 &ty::Adt(impl_def, impl_substs) => {
-                    obl_def == impl_def && self.substs_refs_may_unify(obl_substs, impl_substs)
+                    obl_def == impl_def
+                        && iter::zip(obl_substs, impl_substs)
+                            .all(|(obl, imp)| self.generic_args_may_unify(obl, imp))
                 }
                 _ => false,
             },
@@ -309,22 +328,22 @@ impl DeepRejectCtxt {
                 _ => false,
             },
 
+            // Opaque types in impls should be forbidden, but that doesn't
+            // stop compilation. So this match arm should never return true
+            // if compilation succeeds.
+            ty::Opaque(..) => matches!(k, ty::Opaque(..)),
+
             // Impls cannot contain these types as these cannot be named directly.
             ty::FnDef(..) | ty::Closure(..) | ty::Generator(..) => false,
 
-            // Placeholder types don't unify with anything on their own
-            ty::Placeholder(..) | ty::Bound(..) => false,
+            ty::Placeholder(..) => false,
 
             // Depending on the value of `treat_obligation_params`, we either
             // treat generic parameters like placeholders or like inference variables.
             ty::Param(_) => match self.treat_obligation_params {
-                TreatParams::ForLookup | TreatParams::NextSolverLookup => false,
-                TreatParams::AsCandidateKey => true,
+                TreatParams::AsPlaceholder => false,
+                TreatParams::AsInfer => true,
             },
-
-            ty::Infer(ty::IntVar(_)) => impl_ty.is_integral(),
-
-            ty::Infer(ty::FloatVar(_)) => impl_ty.is_floating_point(),
 
             ty::Infer(_) => true,
 
@@ -333,11 +352,11 @@ impl DeepRejectCtxt {
             // projections can unify with other stuff.
             //
             // Looking forward to lazy normalization this is the safer strategy anyways.
-            ty::Alias(..) => true,
+            ty::Projection(_) => true,
 
             ty::Error(_) => true,
 
-            ty::GeneratorWitness(..) | ty::GeneratorWitnessMIR(..) => {
+            ty::GeneratorWitness(..) | ty::Bound(..) => {
                 bug!("unexpected obligation type: {:?}", obligation_ty)
             }
         }
@@ -345,10 +364,7 @@ impl DeepRejectCtxt {
 
     pub fn consts_may_unify(self, obligation_ct: ty::Const<'_>, impl_ct: ty::Const<'_>) -> bool {
         match impl_ct.kind() {
-            ty::ConstKind::Expr(_)
-            | ty::ConstKind::Param(_)
-            | ty::ConstKind::Unevaluated(_)
-            | ty::ConstKind::Error(_) => {
+            ty::ConstKind::Param(_) | ty::ConstKind::Unevaluated(_) | ty::ConstKind::Error(_) => {
                 return true;
             }
             ty::ConstKind::Value(_) => {}
@@ -360,18 +376,13 @@ impl DeepRejectCtxt {
         let k = impl_ct.kind();
         match obligation_ct.kind() {
             ty::ConstKind::Param(_) => match self.treat_obligation_params {
-                TreatParams::ForLookup | TreatParams::NextSolverLookup => false,
-                TreatParams::AsCandidateKey => true,
+                TreatParams::AsPlaceholder => false,
+                TreatParams::AsInfer => true,
             },
-
-            // Placeholder consts don't unify with anything on their own
-            ty::ConstKind::Placeholder(_) => false,
 
             // As we don't necessarily eagerly evaluate constants,
             // they might unify with any value.
-            ty::ConstKind::Expr(_) | ty::ConstKind::Unevaluated(_) | ty::ConstKind::Error(_) => {
-                true
-            }
+            ty::ConstKind::Unevaluated(_) | ty::ConstKind::Error(_) => true,
             ty::ConstKind::Value(obl) => match k {
                 ty::ConstKind::Value(imp) => obl == imp,
                 _ => true,
@@ -379,7 +390,7 @@ impl DeepRejectCtxt {
 
             ty::ConstKind::Infer(_) => true,
 
-            ty::ConstKind::Bound(..) => {
+            ty::ConstKind::Bound(..) | ty::ConstKind::Placeholder(_) => {
                 bug!("unexpected obl const: {:?}", obligation_ct)
             }
         }

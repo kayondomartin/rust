@@ -17,6 +17,18 @@ impl IntoDiagnosticArg for ExitCode {
 }
 
 #[derive(Diagnostic)]
+#[diag(codegen_gcc_ranlib_failure)]
+pub(crate) struct RanlibFailure {
+    exit_code: ExitCode,
+}
+
+impl RanlibFailure {
+    pub fn new(exit_code: Option<i32>) -> Self {
+        RanlibFailure { exit_code: ExitCode(exit_code) }
+    }
+}
+
+#[derive(Diagnostic)]
 #[diag(codegen_gcc_invalid_monomorphization_basic_integer, code = "E0511")]
 pub(crate) struct InvalidMonomorphizationBasicInteger<'a> {
     #[primary_span]
@@ -212,6 +224,13 @@ pub(crate) struct InvalidMonomorphizationUnsupportedOperation<'a> {
 }
 
 #[derive(Diagnostic)]
+#[diag(codegen_gcc_linkage_const_or_mut_type)]
+pub(crate) struct LinkageConstOrMutType {
+    #[primary_span]
+    pub span: Span
+}
+
+#[derive(Diagnostic)]
 #[diag(codegen_gcc_lto_not_supported)]
 pub(crate) struct LTONotSupported;
 
@@ -219,20 +238,5 @@ pub(crate) struct LTONotSupported;
 #[diag(codegen_gcc_unwinding_inline_asm)]
 pub(crate) struct UnwindingInlineAsm {
     #[primary_span]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(codegen_gcc_invalid_minimum_alignment)]
-pub(crate) struct InvalidMinimumAlignment {
-    pub err: String,
-}
-
-#[derive(Diagnostic)]
-#[diag(codegen_gcc_tied_target_features)]
-#[help]
-pub(crate) struct TiedTargetFeatures {
-    #[primary_span]
-    pub span: Span,
-    pub features: String,
+    pub span: Span
 }

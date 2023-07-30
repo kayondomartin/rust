@@ -20,7 +20,7 @@ struct UseFactsExtractor<'me, 'tcx> {
 }
 
 // A Visitor to walk through the MIR and extract point-wise facts
-impl<'tcx> UseFactsExtractor<'_, 'tcx> {
+impl UseFactsExtractor<'_, '_> {
     fn location_to_index(&self, location: Location) -> LocationIndex {
         self.location_table.mid_index(location)
     }
@@ -45,7 +45,7 @@ impl<'tcx> UseFactsExtractor<'_, 'tcx> {
         self.path_accessed_at_base.push((path, self.location_to_index(location)));
     }
 
-    fn place_to_mpi(&self, place: &Place<'tcx>) -> Option<MovePathIndex> {
+    fn place_to_mpi(&self, place: &Place<'_>) -> Option<MovePathIndex> {
         match self.move_data.rev_lookup.find(place.as_ref()) {
             LookupResult::Exact(mpi) => Some(mpi),
             LookupResult::Parent(mmpi) => mmpi,
@@ -121,8 +121,8 @@ pub(super) fn populate_access_facts<'a, 'tcx>(
     }
 }
 
-/// For every potentially drop()-touched region `region` in `local`'s type
-/// (`kind`), emit a Polonius `use_of_var_derefs_origin(local, origin)` fact.
+// For every potentially drop()-touched region `region` in `local`'s type
+// (`kind`), emit a Polonius `use_of_var_derefs_origin(local, origin)` fact.
 pub(super) fn add_drop_of_var_derefs_origin<'tcx>(
     typeck: &mut TypeChecker<'_, 'tcx>,
     local: Local,

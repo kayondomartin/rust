@@ -113,7 +113,7 @@ impl Writer for WriterRelocate {
                     offset: offset as u32,
                     size,
                     name: DebugRelocName::Symbol(symbol),
-                    addend,
+                    addend: addend as i64,
                     kind: object::RelocationKind::Absolute,
                 });
                 self.write_udata(0, size)

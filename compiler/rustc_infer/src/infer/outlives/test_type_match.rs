@@ -1,7 +1,7 @@
 use std::collections::hash_map::Entry;
 
 use rustc_data_structures::fx::FxHashMap;
-use rustc_middle::ty::TypeVisitableExt;
+use rustc_middle::ty::TypeVisitable;
 use rustc_middle::ty::{
     self,
     error::TypeError,
@@ -13,11 +13,9 @@ use crate::infer::region_constraints::VerifyIfEq;
 
 /// Given a "verify-if-eq" type test like:
 ///
-/// ```rust,ignore (pseudo-Rust)
-/// exists<'a...> {
-///     verify_if_eq(some_type, bound_region)
-/// }
-/// ```
+///     exists<'a...> {
+///         verify_if_eq(some_type, bound_region)
+///     }
 ///
 /// and the type `test_ty` that the type test is being tested against,
 /// returns:
@@ -138,7 +136,6 @@ impl<'tcx> TypeRelation<'tcx> for Match<'tcx> {
     fn tag(&self) -> &'static str {
         "Match"
     }
-
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
@@ -149,17 +146,14 @@ impl<'tcx> TypeRelation<'tcx> for Match<'tcx> {
         true
     } // irrelevant
 
-    #[instrument(level = "trace", skip(self))]
     fn relate_with_variance<T: Relate<'tcx>>(
         &mut self,
-        variance: ty::Variance,
+        _: ty::Variance,
         _: ty::VarianceDiagInfo<'tcx>,
         a: T,
         b: T,
     ) -> RelateResult<'tcx, T> {
-        // Opaque types substs have lifetime parameters.
-        // We must not check them to be equal, as we never insert anything to make them so.
-        if variance != ty::Bivariant { self.relate(a, b) } else { Ok(a) }
+        self.relate(a, b)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -180,14 +174,13 @@ impl<'tcx> TypeRelation<'tcx> for Match<'tcx> {
 
     #[instrument(skip(self), level = "debug")]
     fn tys(&mut self, pattern: Ty<'tcx>, value: Ty<'tcx>) -> RelateResult<'tcx, Ty<'tcx>> {
-        // FIXME(non_lifetime_binders): What to do here?
-        if matches!(pattern.kind(), ty::Error(_) | ty::Bound(..)) {
+        if let ty::Error(_) = pattern.kind() {
             // Unlike normal `TypeRelation` rules, `ty::Error` does not equal any type.
             self.no_match()
         } else if pattern == value {
             Ok(pattern)
         } else {
-            relate::structurally_relate_tys(self, pattern, value)
+            relate::super_relate_tys(self, pattern, value)
         }
     }
 
@@ -201,7 +194,7 @@ impl<'tcx> TypeRelation<'tcx> for Match<'tcx> {
         if pattern == value {
             Ok(pattern)
         } else {
-            relate::structurally_relate_consts(self, pattern, value)
+            relate::super_relate_consts(self, pattern, value)
         }
     }
 

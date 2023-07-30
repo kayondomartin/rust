@@ -20,7 +20,7 @@ use hir::{Body, HirId, HirIdMap, Node};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir as hir;
 use rustc_index::bit_set::BitSet;
-use rustc_index::IndexVec;
+use rustc_index::vec::IndexVec;
 use rustc_middle::hir::map::Map;
 use rustc_middle::hir::place::{PlaceBase, PlaceWithHirId};
 use rustc_middle::ty;
@@ -43,9 +43,9 @@ pub fn compute_drop_ranges<'a, 'tcx>(
         let typeck_results = &fcx.typeck_results.borrow();
         let num_exprs = fcx.tcx.region_scope_tree(def_id).body_expr_count(body.id()).unwrap_or(0);
         let (mut drop_ranges, borrowed_temporaries) = build_control_flow_graph(
-            &fcx,
+            fcx.tcx.hir(),
+            fcx.tcx,
             typeck_results,
-            fcx.param_env,
             consumed_borrowed_places,
             body,
             num_exprs,
@@ -79,7 +79,7 @@ pub fn compute_drop_ranges<'a, 'tcx>(
 /// result of `foo`. On the other hand, if `place` points to `x` then `f` will
 /// be called both on the `ExprKind::Path` node that represents the expression
 /// as well as the HirId of the local `x` itself.
-fn for_each_consumable(hir: Map<'_>, place: TrackedValue, mut f: impl FnMut(TrackedValue)) {
+fn for_each_consumable<'tcx>(hir: Map<'tcx>, place: TrackedValue, mut f: impl FnMut(TrackedValue)) {
     f(place);
     let node = hir.find(place.hir_id());
     if let Some(Node::Expr(expr)) = node {
@@ -96,13 +96,15 @@ fn for_each_consumable(hir: Map<'_>, place: TrackedValue, mut f: impl FnMut(Trac
 }
 
 rustc_index::newtype_index! {
-    #[debug_format = "id({})"]
-    pub struct PostOrderId {}
+    pub struct PostOrderId {
+        DEBUG_FORMAT = "id({})",
+    }
 }
 
 rustc_index::newtype_index! {
-    #[debug_format = "hidx({})"]
-    pub struct TrackedValueIndex {}
+    pub struct TrackedValueIndex {
+        DEBUG_FORMAT = "hidx({})",
+    }
 }
 
 /// Identifies a value whose drop state we need to track.
@@ -193,7 +195,7 @@ impl DropRanges {
             .get(&TrackedValue::Temporary(hir_id))
             .or(self.tracked_value_map.get(&TrackedValue::Variable(hir_id)))
             .cloned()
-            .is_some_and(|tracked_value_id| {
+            .map_or(false, |tracked_value_id| {
                 self.expect_node(location.into()).drop_state.contains(tracked_value_id)
             })
     }
@@ -268,7 +270,8 @@ impl DropRangesBuilder {
 
     fn node_mut(&mut self, id: PostOrderId) -> &mut NodeInfo {
         let size = self.num_values();
-        self.nodes.ensure_contains_elem(id, || NodeInfo::new(size))
+        self.nodes.ensure_contains_elem(id, || NodeInfo::new(size));
+        &mut self.nodes[id]
     }
 
     fn add_control_edge(&mut self, from: PostOrderId, to: PostOrderId) {

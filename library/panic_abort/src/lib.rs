@@ -29,7 +29,7 @@ pub unsafe extern "C" fn __rust_panic_cleanup(_: *mut u8) -> *mut (dyn Any + Sen
 
 // "Leak" the payload and shim to the relevant abort on the platform in question.
 #[rustc_std_internal_symbol]
-pub unsafe fn __rust_start_panic(_payload: &mut dyn BoxMeUp) -> u32 {
+pub unsafe fn __rust_start_panic(_payload: *mut &mut dyn BoxMeUp) -> u32 {
     // Android has the ability to attach a message as part of the abort.
     #[cfg(target_os = "android")]
     android::android_set_abort_message(_payload);
@@ -61,7 +61,7 @@ pub unsafe fn __rust_start_panic(_payload: &mut dyn BoxMeUp) -> u32 {
             //
             // https://docs.microsoft.com/en-us/cpp/intrinsics/fastfail
             //
-            // Note: this is the same implementation as in std's `abort_internal`
+            // Note: this is the same implementation as in libstd's `abort_internal`
             unsafe fn abort() -> ! {
                 #[allow(unused)]
                 const FAST_FAIL_FATAL_APP_EXIT: usize = 7;
@@ -89,7 +89,7 @@ pub unsafe fn __rust_start_panic(_payload: &mut dyn BoxMeUp) -> u32 {
 // This... is a bit of an oddity. The tl;dr; is that this is required to link
 // correctly, the longer explanation is below.
 //
-// Right now the binaries of core/std that we ship are all compiled with
+// Right now the binaries of libcore/libstd that we ship are all compiled with
 // `-C panic=unwind`. This is done to ensure that the binaries are maximally
 // compatible with as many situations as possible. The compiler, however,
 // requires a "personality function" for all functions compiled with `-C
@@ -109,7 +109,7 @@ pub unsafe fn __rust_start_panic(_payload: &mut dyn BoxMeUp) -> u32 {
 // library just defines this symbol so there's at least some personality
 // somewhere.
 //
-// Essentially this symbol is just defined to get wired up to core/std
+// Essentially this symbol is just defined to get wired up to libcore/libstd
 // binaries, but it should never be called as we don't link in an unwinding
 // runtime at all.
 pub mod personalities {

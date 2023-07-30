@@ -265,13 +265,16 @@ where
 
     /// Interleave two vectors.
     ///
-    /// The resulting vectors contain lanes taken alternatively from `self` and `other`, first
-    /// filling the first result, and then the second.
+    /// Produces two vectors with lanes taken alternately from `self` and `other`.
     ///
-    /// The reverse of this operation is [`Simd::deinterleave`].
+    /// The first result contains the first `LANES / 2` lanes from `self` and `other`,
+    /// alternating, starting with the first lane of `self`.
+    ///
+    /// The second result contains the last `LANES / 2` lanes from `self` and `other`,
+    /// alternating, starting with the lane `LANES / 2` from the start of `self`.
     ///
     /// ```
-    /// # #![feature(portable_simd)]
+    /// #![feature(portable_simd)]
     /// # use core::simd::Simd;
     /// let a = Simd::from_array([0, 1, 2, 3]);
     /// let b = Simd::from_array([4, 5, 6, 7]);
@@ -282,17 +285,29 @@ where
     #[inline]
     #[must_use = "method returns a new vector and does not mutate the original inputs"]
     pub fn interleave(self, other: Self) -> (Self, Self) {
-        const fn interleave<const LANES: usize>(high: bool) -> [Which; LANES] {
+        const fn lo<const LANES: usize>() -> [Which; LANES] {
             let mut idx = [Which::First(0); LANES];
             let mut i = 0;
             while i < LANES {
-                // Treat the source as a concatenated vector
-                let dst_index = if high { i + LANES } else { i };
-                let src_index = dst_index / 2 + (dst_index % 2) * LANES;
-                idx[i] = if src_index < LANES {
-                    Which::First(src_index)
+                let offset = i / 2;
+                idx[i] = if i % 2 == 0 {
+                    Which::First(offset)
                 } else {
-                    Which::Second(src_index % LANES)
+                    Which::Second(offset)
+                };
+                i += 1;
+            }
+            idx
+        }
+        const fn hi<const LANES: usize>() -> [Which; LANES] {
+            let mut idx = [Which::First(0); LANES];
+            let mut i = 0;
+            while i < LANES {
+                let offset = (LANES + i) / 2;
+                idx[i] = if i % 2 == 0 {
+                    Which::First(offset)
+                } else {
+                    Which::Second(offset)
                 };
                 i += 1;
             }
@@ -303,11 +318,11 @@ where
         struct Hi;
 
         impl<const LANES: usize> Swizzle2<LANES, LANES> for Lo {
-            const INDEX: [Which; LANES] = interleave::<LANES>(false);
+            const INDEX: [Which; LANES] = lo::<LANES>();
         }
 
         impl<const LANES: usize> Swizzle2<LANES, LANES> for Hi {
-            const INDEX: [Which; LANES] = interleave::<LANES>(true);
+            const INDEX: [Which; LANES] = hi::<LANES>();
         }
 
         (Lo::swizzle2(self, other), Hi::swizzle2(self, other))
@@ -321,10 +336,8 @@ where
     /// The second result takes every other lane of `self` and then `other`, starting with
     /// the second lane.
     ///
-    /// The reverse of this operation is [`Simd::interleave`].
-    ///
     /// ```
-    /// # #![feature(portable_simd)]
+    /// #![feature(portable_simd)]
     /// # use core::simd::Simd;
     /// let a = Simd::from_array([0, 4, 1, 5]);
     /// let b = Simd::from_array([2, 6, 3, 7]);
@@ -335,17 +348,22 @@ where
     #[inline]
     #[must_use = "method returns a new vector and does not mutate the original inputs"]
     pub fn deinterleave(self, other: Self) -> (Self, Self) {
-        const fn deinterleave<const LANES: usize>(second: bool) -> [Which; LANES] {
+        const fn even<const LANES: usize>() -> [Which; LANES] {
             let mut idx = [Which::First(0); LANES];
             let mut i = 0;
-            while i < LANES {
-                // Treat the source as a concatenated vector
-                let src_index = i * 2 + second as usize;
-                idx[i] = if src_index < LANES {
-                    Which::First(src_index)
-                } else {
-                    Which::Second(src_index % LANES)
-                };
+            while i < LANES / 2 {
+                idx[i] = Which::First(2 * i);
+                idx[i + LANES / 2] = Which::Second(2 * i);
+                i += 1;
+            }
+            idx
+        }
+        const fn odd<const LANES: usize>() -> [Which; LANES] {
+            let mut idx = [Which::First(0); LANES];
+            let mut i = 0;
+            while i < LANES / 2 {
+                idx[i] = Which::First(2 * i + 1);
+                idx[i + LANES / 2] = Which::Second(2 * i + 1);
                 i += 1;
             }
             idx
@@ -355,11 +373,11 @@ where
         struct Odd;
 
         impl<const LANES: usize> Swizzle2<LANES, LANES> for Even {
-            const INDEX: [Which; LANES] = deinterleave::<LANES>(false);
+            const INDEX: [Which; LANES] = even::<LANES>();
         }
 
         impl<const LANES: usize> Swizzle2<LANES, LANES> for Odd {
-            const INDEX: [Which; LANES] = deinterleave::<LANES>(true);
+            const INDEX: [Which; LANES] = odd::<LANES>();
         }
 
         (Even::swizzle2(self, other), Odd::swizzle2(self, other))

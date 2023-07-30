@@ -1,7 +1,7 @@
 use crate::os::windows::prelude::*;
 
 use crate::ffi::OsStr;
-use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut, Read};
+use crate::io::{self, IoSlice, IoSliceMut};
 use crate::mem;
 use crate::path::Path;
 use crate::ptr;
@@ -252,28 +252,6 @@ impl AnonPipe {
         }
     }
 
-    pub fn read_buf(&self, mut buf: BorrowedCursor<'_>) -> io::Result<()> {
-        let result = unsafe {
-            let len = crate::cmp::min(buf.capacity(), c::DWORD::MAX as usize) as c::DWORD;
-            self.alertable_io_internal(c::ReadFileEx, buf.as_mut().as_mut_ptr() as _, len)
-        };
-
-        match result {
-            // The special treatment of BrokenPipe is to deal with Windows
-            // pipe semantics, which yields this error when *reading* from
-            // a pipe after the other end has closed; we interpret that as
-            // EOF on the pipe.
-            Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-            Err(e) => Err(e),
-            Ok(n) => {
-                unsafe {
-                    buf.advance(n);
-                }
-                Ok(())
-            }
-        }
-    }
-
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         self.inner.read_vectored(bufs)
     }
@@ -281,10 +259,6 @@ impl AnonPipe {
     #[inline]
     pub fn is_read_vectored(&self) -> bool {
         self.inner.is_read_vectored()
-    }
-
-    pub fn read_to_end(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.handle().read_to_end(buf)
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
@@ -373,7 +347,7 @@ impl AnonPipe {
 
         // Asynchronous read of the pipe.
         // If successful, `callback` will be called once it completes.
-        let result = io(self.inner.as_handle(), buf, len, &mut overlapped, Some(callback));
+        let result = io(self.inner.as_handle(), buf, len, &mut overlapped, callback);
         if result == c::FALSE {
             // We can return here because the call failed.
             // After this we must not return until the I/O completes.

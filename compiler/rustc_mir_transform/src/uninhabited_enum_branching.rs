@@ -65,7 +65,7 @@ fn variant_discriminants<'tcx>(
         Variants::Multiple { variants, .. } => variants
             .iter_enumerated()
             .filter_map(|(idx, layout)| {
-                (layout.abi != Abi::Uninhabited)
+                (layout.abi() != Abi::Uninhabited)
                     .then(|| ty.discriminant_for_variant(tcx, idx).unwrap().val)
             })
             .collect(),
@@ -109,9 +109,7 @@ impl<'tcx> MirPass<'tcx> for UninhabitedEnumBranching {
                 continue;
             };
 
-            let layout = tcx.layout_of(
-                tcx.param_env_reveal_all_normalized(body.source.def_id()).and(discriminant_ty),
-            );
+            let layout = tcx.layout_of(tcx.param_env(body.source.def_id()).and(discriminant_ty));
 
             let allowed_variants = if let Ok(layout) = layout {
                 variant_discriminants(&layout, discriminant_ty, tcx)

@@ -65,36 +65,39 @@ mod task_queue {
 /// execution. The signal is sent once all TLS destructors have finished at
 /// which point no new thread locals should be created.
 pub mod wait_notify {
-    use crate::pin::Pin;
+    use super::super::waitqueue::{SpinMutex, WaitQueue, WaitVariable};
     use crate::sync::Arc;
-    use crate::sys_common::thread_parking::Parker;
 
-    pub struct Notifier(Arc<Parker>);
+    pub struct Notifier(Arc<SpinMutex<WaitVariable<bool>>>);
 
     impl Notifier {
         /// Notify the waiter. The waiter is either notified right away (if
         /// currently blocked in `Waiter::wait()`) or later when it calls the
         /// `Waiter::wait()` method.
         pub fn notify(self) {
-            Pin::new(&*self.0).unpark()
+            let mut guard = self.0.lock();
+            *guard.lock_var_mut() = true;
+            let _ = WaitQueue::notify_one(guard);
         }
     }
 
-    pub struct Waiter(Arc<Parker>);
+    pub struct Waiter(Arc<SpinMutex<WaitVariable<bool>>>);
 
     impl Waiter {
         /// Wait for a notification. If `Notifier::notify()` has already been
         /// called, this will return immediately, otherwise the current thread
         /// is blocked until notified.
         pub fn wait(self) {
-            // SAFETY:
-            // This is only ever called on one thread.
-            unsafe { Pin::new(&*self.0).park() }
+            let guard = self.0.lock();
+            if *guard.lock_var() {
+                return;
+            }
+            WaitQueue::wait(guard, || {});
         }
     }
 
     pub fn new() -> (Notifier, Waiter) {
-        let inner = Arc::new(Parker::new());
+        let inner = Arc::new(SpinMutex::new(WaitVariable::new(false)));
         (Notifier(inner.clone()), Waiter(inner))
     }
 }

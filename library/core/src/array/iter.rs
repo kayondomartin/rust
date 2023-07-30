@@ -1,11 +1,9 @@
 //! Defines the `IntoIter` owned iterator for arrays.
 
-use crate::num::NonZeroUsize;
 use crate::{
     fmt,
-    intrinsics::transmute_unchecked,
     iter::{self, ExactSizeIterator, FusedIterator, TrustedLen},
-    mem::MaybeUninit,
+    mem::{self, MaybeUninit},
     ops::{IndexRange, Range},
     ptr,
 };
@@ -64,11 +62,18 @@ impl<T, const N: usize> IntoIterator for [T; N] {
         // an array of `T`.
         //
         // With that, this initialization satisfies the invariants.
+
+        // FIXME(LukasKalbertodt): actually use `mem::transmute` here, once it
+        // works with const generics:
+        //     `mem::transmute::<[T; N], [MaybeUninit<T>; N]>(array)`
         //
-        // FIXME: If normal `transmute` ever gets smart enough to allow this
-        // directly, use it instead of `transmute_unchecked`.
-        let data: [MaybeUninit<T>; N] = unsafe { transmute_unchecked(self) };
-        IntoIter { data, alive: IndexRange::zero_to(N) }
+        // Until then, we can use `mem::transmute_copy` to create a bitwise copy
+        // as a different type, then forget `array` so that it is not dropped.
+        unsafe {
+            let iter = IntoIter { data: mem::transmute_copy(&self), alive: IndexRange::zero_to(N) };
+            mem::forget(self);
+            iter
+        }
     }
 }
 
@@ -104,8 +109,8 @@ impl<T, const N: usize> IntoIter<T, N> {
     /// use std::array::IntoIter;
     /// use std::mem::MaybeUninit;
     ///
-    /// # // Hi!  Thanks for reading the code. This is restricted to `Copy` because
-    /// # // otherwise it could leak. A fully-general version this would need a drop
+    /// # // Hi!  Thanks for reading the code.  This is restricted to `Copy` because
+    /// # // otherwise it could leak.  A fully-general version this would need a drop
     /// # // guard to handle panics from the iterator, but this works for an example.
     /// fn next_chunk<T: Copy, const N: usize>(
     ///     it: &mut impl Iterator<Item = T>,
@@ -206,7 +211,7 @@ impl<T, const N: usize> IntoIter<T, N> {
         let initialized = 0..0;
 
         // SAFETY: We're telling it that none of the elements are initialized,
-        // which is trivially true. And ∀N: usize, 0 <= N.
+        // which is trivially true.  And ∀N: usize, 0 <= N.
         unsafe { Self::new_unchecked(buffer, initialized) }
     }
 
@@ -279,11 +284,12 @@ impl<T, const N: usize> Iterator for IntoIter<T, N> {
         self.next_back()
     }
 
-    fn advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_by(&mut self, n: usize) -> Result<(), usize> {
+        let original_len = self.len();
+
         // This also moves the start, which marks them as conceptually "dropped",
         // so if anything goes bad then our drop impl won't double-free them.
         let range_to_drop = self.alive.take_prefix(n);
-        let remaining = n - range_to_drop.len();
 
         // SAFETY: These elements are currently initialized, so it's fine to drop them.
         unsafe {
@@ -291,7 +297,7 @@ impl<T, const N: usize> Iterator for IntoIter<T, N> {
             ptr::drop_in_place(MaybeUninit::slice_assume_init_mut(slice));
         }
 
-        NonZeroUsize::new(remaining).map_or(Ok(()), Err)
+        if n > original_len { Err(original_len) } else { Ok(()) }
     }
 }
 
@@ -328,11 +334,12 @@ impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, N> {
         })
     }
 
-    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_back_by(&mut self, n: usize) -> Result<(), usize> {
+        let original_len = self.len();
+
         // This also moves the end, which marks them as conceptually "dropped",
         // so if anything goes bad then our drop impl won't double-free them.
         let range_to_drop = self.alive.take_suffix(n);
-        let remaining = n - range_to_drop.len();
 
         // SAFETY: These elements are currently initialized, so it's fine to drop them.
         unsafe {
@@ -340,7 +347,7 @@ impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, N> {
             ptr::drop_in_place(MaybeUninit::slice_assume_init_mut(slice));
         }
 
-        NonZeroUsize::new(remaining).map_or(Ok(()), Err)
+        if n > original_len { Err(original_len) } else { Ok(()) }
     }
 }
 

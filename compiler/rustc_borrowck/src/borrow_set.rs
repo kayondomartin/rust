@@ -1,9 +1,8 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
+use crate::nll::ToRegionVid;
 use crate::path_utils::allow_two_phase_borrow;
 use crate::place_ext::PlaceExt;
 use crate::BorrowIndex;
-use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
 use rustc_index::bit_set::BitSet;
 use rustc_middle::mir::traversal;
 use rustc_middle::mir::visit::{MutatingUseContext, NonUseContext, PlaceContext, Visitor};
@@ -25,12 +24,12 @@ pub struct BorrowSet<'tcx> {
     /// NOTE: a given location may activate more than one borrow in the future
     /// when more general two-phase borrow support is introduced, but for now we
     /// only need to store one borrow index.
-    pub activation_map: FxIndexMap<Location, Vec<BorrowIndex>>,
+    pub activation_map: FxHashMap<Location, Vec<BorrowIndex>>,
 
     /// Map from local to all the borrows on that local.
-    pub local_map: FxIndexMap<mir::Local, FxIndexSet<BorrowIndex>>,
+    pub local_map: FxHashMap<mir::Local, FxHashSet<BorrowIndex>>,
 
-    pub locals_state_at_exit: LocalsStateAtExit,
+    pub(crate) locals_state_at_exit: LocalsStateAtExit,
 }
 
 impl<'tcx> Index<BorrowIndex> for BorrowSet<'tcx> {
@@ -72,11 +71,8 @@ impl<'tcx> fmt::Display for BorrowData<'tcx> {
         let kind = match self.kind {
             mir::BorrowKind::Shared => "",
             mir::BorrowKind::Shallow => "shallow ",
-            mir::BorrowKind::Mut { kind: mir::MutBorrowKind::ClosureCapture } => "uniq ",
-            // FIXME: differentiate `TwoPhaseBorrow`
-            mir::BorrowKind::Mut {
-                kind: mir::MutBorrowKind::Default | mir::MutBorrowKind::TwoPhaseBorrow,
-            } => "mut ",
+            mir::BorrowKind::Unique => "uniq ",
+            mir::BorrowKind::Mut { .. } => "mut ",
         };
         write!(w, "&{:?} {}{:?}", self.region, kind, self.borrowed_place)
     }
@@ -156,7 +152,7 @@ impl<'tcx> BorrowSet<'tcx> {
         self.activation_map.get(&location).map_or(&[], |activations| &activations[..])
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.location_map.len()
     }
 
@@ -177,8 +173,8 @@ struct GatherBorrows<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     body: &'a Body<'tcx>,
     location_map: FxIndexMap<Location, BorrowData<'tcx>>,
-    activation_map: FxIndexMap<Location, Vec<BorrowIndex>>,
-    local_map: FxIndexMap<mir::Local, FxIndexSet<BorrowIndex>>,
+    activation_map: FxHashMap<Location, Vec<BorrowIndex>>,
+    local_map: FxHashMap<mir::Local, FxHashSet<BorrowIndex>>,
 
     /// When we encounter a 2-phase borrow statement, it will always
     /// be assigning into a temporary TEMP:
@@ -188,7 +184,7 @@ struct GatherBorrows<'a, 'tcx> {
     /// We add TEMP into this map with `b`, where `b` is the index of
     /// the borrow. When we find a later use of this activation, we
     /// remove from the map (and add to the "tombstone" set below).
-    pending_activations: FxIndexMap<mir::Local, BorrowIndex>,
+    pending_activations: FxHashMap<mir::Local, BorrowIndex>,
 
     locals_state_at_exit: LocalsStateAtExit,
 }
@@ -200,20 +196,20 @@ impl<'a, 'tcx> Visitor<'tcx> for GatherBorrows<'a, 'tcx> {
         rvalue: &mir::Rvalue<'tcx>,
         location: mir::Location,
     ) {
-        if let &mir::Rvalue::Ref(region, kind, borrowed_place) = rvalue {
+        if let mir::Rvalue::Ref(region, kind, ref borrowed_place) = *rvalue {
             if borrowed_place.ignore_borrow(self.tcx, self.body, &self.locals_state_at_exit) {
                 debug!("ignoring_borrow of {:?}", borrowed_place);
                 return;
             }
 
-            let region = region.as_var();
+            let region = region.to_region_vid();
 
             let borrow = BorrowData {
                 kind,
                 region,
                 reserve_location: location,
                 activation_location: TwoPhaseActivation::NotTwoPhase,
-                borrowed_place,
+                borrowed_place: *borrowed_place,
                 assigned_place: *assigned_place,
             };
             let (idx, _) = self.location_map.insert_full(location, borrow);
@@ -275,14 +271,14 @@ impl<'a, 'tcx> Visitor<'tcx> for GatherBorrows<'a, 'tcx> {
     }
 
     fn visit_rvalue(&mut self, rvalue: &mir::Rvalue<'tcx>, location: mir::Location) {
-        if let &mir::Rvalue::Ref(region, kind, place) = rvalue {
+        if let mir::Rvalue::Ref(region, kind, ref place) = *rvalue {
             // double-check that we already registered a BorrowData for this
 
             let borrow_data = &self.location_map[&location];
             assert_eq!(borrow_data.reserve_location, location);
             assert_eq!(borrow_data.kind, kind);
-            assert_eq!(borrow_data.region, region.as_var());
-            assert_eq!(borrow_data.borrowed_place, place);
+            assert_eq!(borrow_data.region, region.to_region_vid());
+            assert_eq!(borrow_data.borrowed_place, *place);
         }
 
         self.super_rvalue(rvalue, location)

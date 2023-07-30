@@ -1,5 +1,5 @@
 // The classification code for the x86_64 ABI is taken from the clay language
-// https://github.com/jckarter/clay/blob/db0bd2702ab0b6e48965cd85f8859bbd5f60e48e/compiler/externals.cpp
+// https://github.com/jckarter/clay/blob/master/compiler/src/externals.cpp
 
 use crate::abi::call::{ArgAbi, CastTarget, FnAbi, Reg, RegKind};
 use crate::abi::{self, Abi, HasDataLayout, Size, TyAbiInterface, TyAndLayout};
@@ -50,7 +50,7 @@ where
             Abi::Uninhabited => return Ok(()),
 
             Abi::Scalar(scalar) => match scalar.primitive() {
-                abi::Int(..) | abi::Pointer(_) => Class::Int,
+                abi::Int(..) | abi::Pointer => Class::Int,
                 abi::F32 | abi::F64 => Class::Sse,
             },
 
@@ -153,9 +153,9 @@ fn reg_component(cls: &[Option<Class>], i: &mut usize, size: Size) -> Option<Reg
     }
 }
 
-fn cast_target(cls: &[Option<Class>], size: Size) -> Option<CastTarget> {
+fn cast_target(cls: &[Option<Class>], size: Size) -> CastTarget {
     let mut i = 0;
-    let lo = reg_component(cls, &mut i, size)?;
+    let lo = reg_component(cls, &mut i, size).unwrap();
     let offset = Size::from_bytes(8) * (i as u64);
     let mut target = CastTarget::from(lo);
     if size > offset {
@@ -164,7 +164,7 @@ fn cast_target(cls: &[Option<Class>], size: Size) -> Option<CastTarget> {
         }
     }
     assert_eq!(reg_component(cls, &mut i, Size::ZERO), None);
-    Some(target)
+    target
 }
 
 const MAX_INT_REGS: usize = 6; // RDI, RSI, RDX, RCX, R8, R9
@@ -227,9 +227,7 @@ where
                 // split into sized chunks passed individually
                 if arg.layout.is_aggregate() {
                     let size = arg.layout.size;
-                    if let Some(cast_target) = cast_target(cls, size) {
-                        arg.cast_to(cast_target);
-                    }
+                    arg.cast_to(cast_target(cls, size))
                 } else {
                     arg.extend_integer_width_to(32);
                 }

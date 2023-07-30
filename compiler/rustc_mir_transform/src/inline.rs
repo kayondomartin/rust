@@ -1,20 +1,20 @@
 //! Inlining pass for MIR functions
 use crate::deref_separator::deref_finder;
 use rustc_attr::InlineAttr;
-use rustc_hir::def_id::DefId;
+use rustc_const_eval::transform::validate::equal_up_to_regions;
 use rustc_index::bit_set::BitSet;
-use rustc_index::Idx;
+use rustc_index::vec::Idx;
 use rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc_middle::mir::visit::*;
 use rustc_middle::mir::*;
-use rustc_middle::ty::TypeVisitableExt;
 use rustc_middle::ty::{self, Instance, InstanceDef, ParamEnv, Ty, TyCtxt};
 use rustc_session::config::OptLevel;
-use rustc_target::abi::{FieldIdx, FIRST_VARIANT};
+use rustc_span::def_id::DefId;
+use rustc_span::{hygiene::ExpnKind, ExpnData, LocalExpnId, Span};
+use rustc_target::abi::VariantIdx;
 use rustc_target::spec::abi::Abi;
 
-use crate::simplify::{remove_dead_blocks, CfgSimplifier};
-use crate::util;
+use super::simplify::{remove_dead_blocks, CfgSimplifier};
 use crate::MirPass;
 use std::iter;
 use std::ops::{Range, RangeFrom};
@@ -26,7 +26,7 @@ const CALL_PENALTY: usize = 25;
 const LANDINGPAD_PENALTY: usize = 50;
 const RESUME_PENALTY: usize = 45;
 
-const TOP_DOWN_DEPTH_LIMIT: usize = 5;
+const UNKNOWN_SIZE_COST: usize = 10;
 
 pub struct Inline;
 
@@ -94,7 +94,7 @@ fn inline<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) -> bool {
         history: Vec::new(),
         changed: false,
     };
-    let blocks = START_BLOCK..body.basic_blocks.next_index();
+    let blocks = BasicBlock::new(0)..body.basic_blocks.next_index();
     this.process_blocks(body, blocks);
     this.changed
 }
@@ -116,14 +116,6 @@ struct Inliner<'tcx> {
 
 impl<'tcx> Inliner<'tcx> {
     fn process_blocks(&mut self, caller_body: &mut Body<'tcx>, blocks: Range<BasicBlock>) {
-        // How many callsites in this body are we allowed to inline? We need to limit this in order
-        // to prevent super-linear growth in MIR size
-        let inline_limit = match self.history.len() {
-            0 => usize::MAX,
-            1..=TOP_DOWN_DEPTH_LIMIT => 1,
-            _ => return,
-        };
-        let mut inlined_count = 0;
         for bb in blocks {
             let bb_data = &caller_body[bb];
             if bb_data.is_cleanup {
@@ -145,16 +137,9 @@ impl<'tcx> Inliner<'tcx> {
                 Ok(new_blocks) => {
                     debug!("inlined {}", callsite.callee);
                     self.changed = true;
-
                     self.history.push(callsite.callee.def_id());
                     self.process_blocks(caller_body, new_blocks);
                     self.history.pop();
-
-                    inlined_count += 1;
-                    if inlined_count == inline_limit {
-                        debug!("inline count reached");
-                        return;
-                    }
                 }
             }
         }
@@ -170,20 +155,8 @@ impl<'tcx> Inliner<'tcx> {
     ) -> Result<std::ops::Range<BasicBlock>, &'static str> {
         let callee_attrs = self.tcx.codegen_fn_attrs(callsite.callee.def_id());
         self.check_codegen_attributes(callsite, callee_attrs)?;
-
-        let terminator = caller_body[callsite.block].terminator.as_ref().unwrap();
-        let TerminatorKind::Call { args, destination, .. } = &terminator.kind else { bug!() };
-        let destination_ty = destination.ty(&caller_body.local_decls, self.tcx).ty;
-        for arg in args {
-            if !arg.ty(&caller_body.local_decls, self.tcx).is_sized(self.tcx, self.param_env) {
-                // We do not allow inlining functions with unsized params. Inlining these functions
-                // could create unsized locals, which are unsound and being phased out.
-                return Err("Call has unsized argument");
-            }
-        }
-
         self.check_mir_is_available(caller_body, &callsite.callee)?;
-        let callee_body = try_instance_mir(self.tcx, callsite.callee.def)?;
+        let callee_body = self.tcx.instance_mir(callsite.callee.def);
         self.check_mir_body(callsite, callee_body, callee_attrs)?;
 
         if !self.tcx.consider_optimizing(|| {
@@ -195,7 +168,7 @@ impl<'tcx> Inliner<'tcx> {
         let Ok(callee_body) = callsite.callee.try_subst_mir_and_normalize_erasing_regions(
             self.tcx,
             self.param_env,
-            ty::EarlyBinder::bind(callee_body.clone()),
+            callee_body.clone(),
         ) else {
             return Err("failed to normalize callee body");
         };
@@ -203,8 +176,11 @@ impl<'tcx> Inliner<'tcx> {
         // Check call signature compatibility.
         // Normally, this shouldn't be required, but trait normalization failure can create a
         // validation ICE.
+        let terminator = caller_body[callsite.block].terminator.as_ref().unwrap();
+        let TerminatorKind::Call { args, destination, .. } = &terminator.kind else { bug!() };
+        let destination_ty = destination.ty(&caller_body.local_decls, self.tcx).ty;
         let output_type = callee_body.return_ty();
-        if !util::is_subtype(self.tcx, self.param_env, output_type, destination_ty) {
+        if !equal_up_to_regions(self.tcx, self.param_env, output_type, destination_ty) {
             trace!(?output_type, ?destination_ty);
             return Err("failed to normalize return type");
         }
@@ -224,7 +200,7 @@ impl<'tcx> Inliner<'tcx> {
                 arg_tuple_tys.iter().zip(callee_body.args_iter().skip(skipped_args))
             {
                 let input_type = callee_body.local_decls[input].ty;
-                if !util::is_subtype(self.tcx, self.param_env, input_type, arg_ty) {
+                if !equal_up_to_regions(self.tcx, self.param_env, arg_ty, input_type) {
                     trace!(?arg_ty, ?input_type);
                     return Err("failed to normalize tuple argument type");
                 }
@@ -233,7 +209,7 @@ impl<'tcx> Inliner<'tcx> {
             for (arg, input) in args.iter().zip(callee_body.args_iter()) {
                 let input_type = callee_body.local_decls[input].ty;
                 let arg_ty = arg.ty(&caller_body.local_decls, self.tcx);
-                if !util::is_subtype(self.tcx, self.param_env, input_type, arg_ty) {
+                if !equal_up_to_regions(self.tcx, self.param_env, arg_ty, input_type) {
                     trace!(?arg_ty, ?input_type);
                     return Err("failed to normalize argument type");
                 }
@@ -280,9 +256,7 @@ impl<'tcx> Inliner<'tcx> {
             | InstanceDef::FnPtrShim(..)
             | InstanceDef::ClosureOnceShim { .. }
             | InstanceDef::DropGlue(..)
-            | InstanceDef::CloneShim(..)
-            | InstanceDef::ThreadLocalShim(..)
-            | InstanceDef::FnPtrAddrShim(..) => return Ok(()),
+            | InstanceDef::CloneShim(..) => return Ok(()),
         }
 
         if self.tcx.is_constructor(callee_def_id) {
@@ -327,7 +301,7 @@ impl<'tcx> Inliner<'tcx> {
     ) -> Option<CallSite<'tcx>> {
         // Only consider direct calls to functions
         let terminator = bb_data.terminator();
-        if let TerminatorKind::Call { ref func, target, fn_span, .. } = terminator.kind {
+        if let TerminatorKind::Call { ref func, target, .. } = terminator.kind {
             let func_ty = func.ty(caller_body, self.tcx);
             if let ty::FnDef(def_id, substs) = *func_ty.kind() {
                 // To resolve an instance its substs have to be fully normalized.
@@ -343,10 +317,15 @@ impl<'tcx> Inliner<'tcx> {
                     return None;
                 }
 
-                let fn_sig = self.tcx.fn_sig(def_id).subst(self.tcx, substs);
-                let source_info = SourceInfo { span: fn_span, ..terminator.source_info };
+                let fn_sig = self.tcx.bound_fn_sig(def_id).subst(self.tcx, substs);
 
-                return Some(CallSite { callee, fn_sig, block: bb, target, source_info });
+                return Some(CallSite {
+                    callee,
+                    fn_sig,
+                    block: bb,
+                    target,
+                    source_info: terminator.source_info,
+                });
             }
         }
 
@@ -360,8 +339,14 @@ impl<'tcx> Inliner<'tcx> {
         callsite: &CallSite<'tcx>,
         callee_attrs: &CodegenFnAttrs,
     ) -> Result<(), &'static str> {
-        if let InlineAttr::Never = callee_attrs.inline {
-            return Err("never inline hint");
+        match callee_attrs.inline {
+            InlineAttr::Never => return Err("never inline hint"),
+            InlineAttr::Always | InlineAttr::Hint => {}
+            InlineAttr::None => {
+                if self.tcx.sess.mir_opt_level() <= 2 {
+                    return Err("at mir-opt-level=2, only #[inline] is inlined");
+                }
+            }
         }
 
         // Only inline local functions if they would be eligible for cross-crate
@@ -378,6 +363,10 @@ impl<'tcx> Inliner<'tcx> {
             return Err("C variadic");
         }
 
+        if callee_attrs.flags.contains(CodegenFnAttrFlags::NAKED) {
+            return Err("naked");
+        }
+
         if callee_attrs.flags.contains(CodegenFnAttrFlags::COLD) {
             return Err("cold");
         }
@@ -386,12 +375,7 @@ impl<'tcx> Inliner<'tcx> {
             return Err("incompatible sanitizer set");
         }
 
-        // Two functions are compatible if the callee has no attribute (meaning
-        // that it's codegen agnostic), or sets an attribute that is identical
-        // to this function's attribute.
-        if callee_attrs.instruction_set.is_some()
-            && callee_attrs.instruction_set != self.codegen_fn_attrs.instruction_set
-        {
+        if callee_attrs.instruction_set != self.codegen_fn_attrs.instruction_set {
             return Err("incompatible instruction set");
         }
 
@@ -430,6 +414,13 @@ impl<'tcx> Inliner<'tcx> {
         debug!("    final inline threshold = {}", threshold);
 
         // FIXME: Give a bonus to functions with only a single caller
+        let diverges = matches!(
+            callee_body.basic_blocks[START_BLOCK].terminator().kind,
+            TerminatorKind::Unreachable | TerminatorKind::Call { target: None, .. }
+        );
+        if diverges && !matches!(callee_attrs.inline, InlineAttr::Always) {
+            return Err("callee diverges unconditionally");
+        }
 
         let mut checker = CostChecker {
             tcx: self.tcx,
@@ -452,39 +443,35 @@ impl<'tcx> Inliner<'tcx> {
             checker.visit_basic_block_data(bb, blk);
 
             let term = blk.terminator();
-            if let TerminatorKind::Drop { ref place, target, unwind, replace: _ } = term.kind {
+            if let TerminatorKind::Drop { ref place, target, unwind }
+            | TerminatorKind::DropAndReplace { ref place, target, unwind, .. } = term.kind
+            {
                 work_list.push(target);
 
                 // If the place doesn't actually need dropping, treat it like a regular goto.
-                let ty = callsite
-                    .callee
-                    .subst_mir(self.tcx, ty::EarlyBinder::bind(&place.ty(callee_body, tcx).ty));
-                if ty.needs_drop(tcx, self.param_env) && let UnwindAction::Cleanup(unwind) = unwind {
-                    work_list.push(unwind);
-                }
-            } else if callee_attrs.instruction_set != self.codegen_fn_attrs.instruction_set
-                && matches!(term.kind, TerminatorKind::InlineAsm { .. })
-            {
-                // During the attribute checking stage we allow a callee with no
-                // instruction_set assigned to count as compatible with a function that does
-                // assign one. However, during this stage we require an exact match when any
-                // inline-asm is detected. LLVM will still possibly do an inline later on
-                // if the no-attribute function ends up with the same instruction set anyway.
-                return Err("Cannot move inline-asm across instruction sets");
+                let ty = callsite.callee.subst_mir(self.tcx, &place.ty(callee_body, tcx).ty);
+                if ty.needs_drop(tcx, self.param_env) && let Some(unwind) = unwind {
+                        work_list.push(unwind);
+                    }
             } else {
                 work_list.extend(term.successors())
             }
         }
 
+        // Count up the cost of local variables and temps, if we know the size
+        // use that, otherwise we use a moderately-large dummy cost.
+        for v in callee_body.vars_and_temps_iter() {
+            checker.visit_local_decl(v, &callee_body.local_decls[v]);
+        }
+
         // Abort if type validation found anything fishy.
         checker.validation?;
 
-        // N.B. We still apply our cost threshold to #[inline(always)] functions.
-        // That attribute is often applied to very large functions that exceed LLVM's (very
-        // generous) inlining threshold. Such functions are very poor MIR inlining candidates.
-        // Always inlining #[inline(always)] functions in MIR, on net, slows down the compiler.
         let cost = checker.cost;
-        if cost <= threshold {
+        if let InlineAttr::Always = callee_attrs.inline {
+            debug!("INLINING {:?} because inline(always) [cost={}]", callsite, cost);
+            Ok(())
+        } else if cost <= threshold {
             debug!("INLINING {:?} [cost={} <= threshold={}]", callsite, cost, threshold);
             Ok(())
         } else {
@@ -501,7 +488,7 @@ impl<'tcx> Inliner<'tcx> {
     ) {
         let terminator = caller_body[callsite.block].terminator.take().unwrap();
         match terminator.kind {
-            TerminatorKind::Call { args, destination, unwind, .. } => {
+            TerminatorKind::Call { args, destination, cleanup, .. } => {
                 // If the call is something like `a[*i] = f(i)`, where
                 // `i : &mut usize`, then just duplicating the `a[*i]`
                 // Place could result in two different locations if `f`
@@ -522,7 +509,7 @@ impl<'tcx> Inliner<'tcx> {
                     trace!("creating temp for return destination");
                     let dest = Rvalue::Ref(
                         self.tcx.lifetimes.re_erased,
-                        BorrowKind::Mut { kind: MutBorrowKind::Default },
+                        BorrowKind::Mut { allow_two_phase_borrow: false },
                         destination,
                     );
                     let dest_ty = dest.ty(caller_body, self.tcx);
@@ -536,35 +523,31 @@ impl<'tcx> Inliner<'tcx> {
                     destination
                 };
 
-                // Always create a local to hold the destination, as `RETURN_PLACE` may appear
-                // where a full `Place` is not allowed.
-                let (remap_destination, destination_local) = if let Some(d) = dest.as_local() {
-                    (false, d)
-                } else {
-                    (
-                        true,
-                        self.new_call_temp(
-                            caller_body,
-                            &callsite,
-                            destination.ty(caller_body, self.tcx).ty,
-                        ),
-                    )
-                };
-
                 // Copy the arguments if needed.
                 let args: Vec<_> = self.make_call_args(args, &callsite, caller_body, &callee_body);
 
+                let mut expn_data = ExpnData::default(
+                    ExpnKind::Inlined,
+                    callsite.source_info.span,
+                    self.tcx.sess.edition(),
+                    None,
+                    None,
+                );
+                expn_data.def_site = callee_body.span;
+                let expn_data =
+                    self.tcx.with_stable_hashing_context(|hcx| LocalExpnId::fresh(expn_data, hcx));
                 let mut integrator = Integrator {
                     args: &args,
                     new_locals: Local::new(caller_body.local_decls.len())..,
                     new_scopes: SourceScope::new(caller_body.source_scopes.len())..,
                     new_blocks: BasicBlock::new(caller_body.basic_blocks.len())..,
-                    destination: destination_local,
+                    destination: dest,
                     callsite_scope: caller_body.source_scopes[callsite.source_info.scope].clone(),
                     callsite,
-                    cleanup_block: unwind,
+                    cleanup_block: cleanup,
                     in_cleanup_block: false,
                     tcx: self.tcx,
+                    expn_data,
                     always_live_locals: BitSet::new_filled(callee_body.local_decls.len()),
                 };
 
@@ -589,16 +572,6 @@ impl<'tcx> Inliner<'tcx> {
                     // To avoid repeated O(n) insert, push any new statements to the end and rotate
                     // the slice once.
                     let mut n = 0;
-                    if remap_destination {
-                        caller_body[block].statements.push(Statement {
-                            source_info: callsite.source_info,
-                            kind: StatementKind::Assign(Box::new((
-                                dest,
-                                Rvalue::Use(Operand::Move(destination_local.into())),
-                            ))),
-                        });
-                        n += 1;
-                    }
                     for local in callee_body.vars_and_temps_iter().rev() {
                         if !callee_body.local_decls[local].internal
                             && integrator.always_live_locals.contains(local)
@@ -691,7 +664,7 @@ impl<'tcx> Inliner<'tcx> {
             // The `tmp0`, `tmp1`, and `tmp2` in our example above.
             let tuple_tmp_args = tuple_tys.iter().enumerate().map(|(i, ty)| {
                 // This is e.g., `tuple_tmp.0` in our example above.
-                let tuple_field = Operand::Move(tcx.mk_place_field(tuple, FieldIdx::new(i), ty));
+                let tuple_field = Operand::Move(tcx.mk_place_field(tuple, Field::new(i), ty));
 
                 // Spill to a local to make e.g., `tmp0`.
                 self.create_temp_if_necessary(tuple_field, callsite, caller_body)
@@ -760,6 +733,14 @@ impl<'tcx> Inliner<'tcx> {
     }
 }
 
+fn type_size_of<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
+    ty: Ty<'tcx>,
+) -> Option<u64> {
+    tcx.layout_of(param_env.and(ty)).ok().map(|layout| layout.size.bytes())
+}
+
 /// Verify that the callee body is compatible with the caller.
 ///
 /// This visitor mostly computes the inlining cost,
@@ -790,42 +771,41 @@ impl<'tcx> Visitor<'tcx> for CostChecker<'_, 'tcx> {
     fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {
         let tcx = self.tcx;
         match terminator.kind {
-            TerminatorKind::Drop { ref place, unwind, .. } => {
+            TerminatorKind::Drop { ref place, unwind, .. }
+            | TerminatorKind::DropAndReplace { ref place, unwind, .. } => {
                 // If the place doesn't actually need dropping, treat it like a regular goto.
-                let ty = self
-                    .instance
-                    .subst_mir(tcx, ty::EarlyBinder::bind(&place.ty(self.callee_body, tcx).ty));
+                let ty = self.instance.subst_mir(tcx, &place.ty(self.callee_body, tcx).ty);
                 if ty.needs_drop(tcx, self.param_env) {
                     self.cost += CALL_PENALTY;
-                    if let UnwindAction::Cleanup(_) = unwind {
+                    if unwind.is_some() {
                         self.cost += LANDINGPAD_PENALTY;
                     }
                 } else {
                     self.cost += INSTR_COST;
                 }
             }
-            TerminatorKind::Call { func: Operand::Constant(ref f), unwind, .. } => {
-                let fn_ty = self.instance.subst_mir(tcx, ty::EarlyBinder::bind(&f.literal.ty()));
+            TerminatorKind::Call { func: Operand::Constant(ref f), cleanup, .. } => {
+                let fn_ty = self.instance.subst_mir(tcx, &f.literal.ty());
                 self.cost += if let ty::FnDef(def_id, _) = *fn_ty.kind() && tcx.is_intrinsic(def_id) {
                     // Don't give intrinsics the extra penalty for calls
                     INSTR_COST
                 } else {
                     CALL_PENALTY
                 };
-                if let UnwindAction::Cleanup(_) = unwind {
+                if cleanup.is_some() {
                     self.cost += LANDINGPAD_PENALTY;
                 }
             }
-            TerminatorKind::Assert { unwind, .. } => {
+            TerminatorKind::Assert { cleanup, .. } => {
                 self.cost += CALL_PENALTY;
-                if let UnwindAction::Cleanup(_) = unwind {
+                if cleanup.is_some() {
                     self.cost += LANDINGPAD_PENALTY;
                 }
             }
             TerminatorKind::Resume => self.cost += RESUME_PENALTY,
-            TerminatorKind::InlineAsm { unwind, .. } => {
+            TerminatorKind::InlineAsm { cleanup, .. } => {
                 self.cost += INSTR_COST;
-                if let UnwindAction::Cleanup(_) = unwind {
+                if cleanup.is_some() {
                     self.cost += LANDINGPAD_PENALTY;
                 }
             }
@@ -835,19 +815,39 @@ impl<'tcx> Visitor<'tcx> for CostChecker<'_, 'tcx> {
         self.super_terminator(terminator, location);
     }
 
+    /// Count up the cost of local variables and temps, if we know the size
+    /// use that, otherwise we use a moderately-large dummy cost.
+    fn visit_local_decl(&mut self, local: Local, local_decl: &LocalDecl<'tcx>) {
+        let tcx = self.tcx;
+        let ptr_size = tcx.data_layout.pointer_size.bytes();
+
+        let ty = self.instance.subst_mir(tcx, &local_decl.ty);
+        // Cost of the var is the size in machine-words, if we know
+        // it.
+        if let Some(size) = type_size_of(tcx, self.param_env, ty) {
+            self.cost += ((size + ptr_size - 1) / ptr_size) as usize;
+        } else {
+            self.cost += UNKNOWN_SIZE_COST;
+        }
+
+        self.super_local_decl(local, local_decl)
+    }
+
     /// This method duplicates code from MIR validation in an attempt to detect type mismatches due
     /// to normalization failure.
     fn visit_projection_elem(
         &mut self,
-        place_ref: PlaceRef<'tcx>,
+        local: Local,
+        proj_base: &[PlaceElem<'tcx>],
         elem: PlaceElem<'tcx>,
         context: PlaceContext,
         location: Location,
     ) {
         if let ProjectionElem::Field(f, ty) = elem {
-            let parent_ty = place_ref.ty(&self.callee_body.local_decls, self.tcx);
+            let parent = Place { local, projection: self.tcx.intern_place_elems(proj_base) };
+            let parent_ty = parent.ty(&self.callee_body.local_decls, self.tcx);
             let check_equal = |this: &mut Self, f_ty| {
-                if !util::is_equal_up_to_subtyping(this.tcx, this.param_env, ty, f_ty) {
+                if !equal_up_to_regions(this.tcx, this.param_env, ty, f_ty) {
                     trace!(?ty, ?f_ty);
                     this.validation = Err("failed to normalize projection type");
                     return;
@@ -855,8 +855,8 @@ impl<'tcx> Visitor<'tcx> for CostChecker<'_, 'tcx> {
             };
 
             let kind = match parent_ty.ty.kind() {
-                &ty::Alias(ty::Opaque, ty::AliasTy { def_id, substs, .. }) => {
-                    self.tcx.type_of(def_id).subst(self.tcx, substs).kind()
+                &ty::Opaque(def_id, substs) => {
+                    self.tcx.bound_type_of(def_id).subst(self.tcx, substs).kind()
                 }
                 kind => kind,
             };
@@ -870,8 +870,8 @@ impl<'tcx> Visitor<'tcx> for CostChecker<'_, 'tcx> {
                     check_equal(self, *f_ty);
                 }
                 ty::Adt(adt_def, substs) => {
-                    let var = parent_ty.variant_index.unwrap_or(FIRST_VARIANT);
-                    let Some(field) = adt_def.variant(var).fields.get(f) else {
+                    let var = parent_ty.variant_index.unwrap_or(VariantIdx::from_u32(0));
+                    let Some(field) = adt_def.variant(var).fields.get(f.as_usize()) else {
                         self.validation = Err("malformed MIR");
                         return;
                     };
@@ -903,12 +903,12 @@ impl<'tcx> Visitor<'tcx> for CostChecker<'_, 'tcx> {
                             return;
                         };
 
-                        let Some(f_ty) = layout.field_tys.get(local) else {
+                        let Some(&f_ty) = layout.field_tys.get(local) else {
                             self.validation = Err("malformed MIR");
                             return;
                         };
 
-                        f_ty.ty
+                        f_ty
                     } else {
                         let Some(f_ty) = substs.as_generator().prefix_tys().nth(f.index()) else {
                             self.validation = Err("malformed MIR");
@@ -924,7 +924,7 @@ impl<'tcx> Visitor<'tcx> for CostChecker<'_, 'tcx> {
             }
         }
 
-        self.super_projection_elem(place_ref, elem, context, location);
+        self.super_projection_elem(local, proj_base, elem, context, location);
     }
 }
 
@@ -940,19 +940,20 @@ struct Integrator<'a, 'tcx> {
     new_locals: RangeFrom<Local>,
     new_scopes: RangeFrom<SourceScope>,
     new_blocks: RangeFrom<BasicBlock>,
-    destination: Local,
+    destination: Place<'tcx>,
     callsite_scope: SourceScopeData<'tcx>,
     callsite: &'a CallSite<'tcx>,
-    cleanup_block: UnwindAction,
+    cleanup_block: Option<BasicBlock>,
     in_cleanup_block: bool,
     tcx: TyCtxt<'tcx>,
+    expn_data: LocalExpnId,
     always_live_locals: BitSet<Local>,
 }
 
 impl Integrator<'_, '_> {
     fn map_local(&self, local: Local) -> Local {
         let new = if local == RETURN_PLACE {
-            self.destination
+            self.destination.local
         } else {
             let idx = local.index() - 1;
             if idx < self.args.len() {
@@ -977,21 +978,18 @@ impl Integrator<'_, '_> {
         new
     }
 
-    fn map_unwind(&self, unwind: UnwindAction) -> UnwindAction {
+    fn map_unwind(&self, unwind: Option<BasicBlock>) -> Option<BasicBlock> {
         if self.in_cleanup_block {
-            match unwind {
-                UnwindAction::Cleanup(_) | UnwindAction::Continue => {
-                    bug!("cleanup on cleanup block");
-                }
-                UnwindAction::Unreachable | UnwindAction::Terminate => return unwind,
+            if unwind.is_some() {
+                bug!("cleanup on cleanup block");
             }
+            return unwind;
         }
 
         match unwind {
-            UnwindAction::Unreachable | UnwindAction::Terminate => unwind,
-            UnwindAction::Cleanup(target) => UnwindAction::Cleanup(self.map_block(target)),
+            Some(target) => Some(self.map_block(target)),
             // Add an unwind edge to the original call's cleanup block
-            UnwindAction::Continue => self.cleanup_block,
+            None => self.cleanup_block,
         }
     }
 }
@@ -1029,6 +1027,32 @@ impl<'tcx> MutVisitor<'tcx> for Integrator<'_, 'tcx> {
 
     fn visit_source_scope(&mut self, scope: &mut SourceScope) {
         *scope = self.map_scope(*scope);
+    }
+
+    fn visit_span(&mut self, span: &mut Span) {
+        // Make sure that all spans track the fact that they were inlined.
+        *span = span.fresh_expansion(self.expn_data);
+    }
+
+    fn visit_place(&mut self, place: &mut Place<'tcx>, context: PlaceContext, location: Location) {
+        for elem in place.projection {
+            // FIXME: Make sure that return place is not used in an indexing projection, since it
+            // won't be rebased as it is supposed to be.
+            assert_ne!(ProjectionElem::Index(RETURN_PLACE), elem);
+        }
+
+        // If this is the `RETURN_PLACE`, we need to rebase any projections onto it.
+        let dest_proj_len = self.destination.projection.len();
+        if place.local == RETURN_PLACE && dest_proj_len > 0 {
+            let mut projs = Vec::with_capacity(dest_proj_len + place.projection.len());
+            projs.extend(self.destination.projection);
+            projs.extend(place.projection);
+
+            place.projection = self.tcx.intern_place_elems(&*projs);
+        }
+        // Handles integrating any locals that occur in the base
+        // or projections
+        self.super_place(place, context, location)
     }
 
     fn visit_basic_block_data(&mut self, block: BasicBlock, data: &mut BasicBlockData<'tcx>) {
@@ -1073,19 +1097,20 @@ impl<'tcx> MutVisitor<'tcx> for Integrator<'_, 'tcx> {
                     *tgt = self.map_block(*tgt);
                 }
             }
-            TerminatorKind::Drop { ref mut target, ref mut unwind, .. } => {
+            TerminatorKind::Drop { ref mut target, ref mut unwind, .. }
+            | TerminatorKind::DropAndReplace { ref mut target, ref mut unwind, .. } => {
                 *target = self.map_block(*target);
                 *unwind = self.map_unwind(*unwind);
             }
-            TerminatorKind::Call { ref mut target, ref mut unwind, .. } => {
+            TerminatorKind::Call { ref mut target, ref mut cleanup, .. } => {
                 if let Some(ref mut tgt) = *target {
                     *tgt = self.map_block(*tgt);
                 }
-                *unwind = self.map_unwind(*unwind);
+                *cleanup = self.map_unwind(*cleanup);
             }
-            TerminatorKind::Assert { ref mut target, ref mut unwind, .. } => {
+            TerminatorKind::Assert { ref mut target, ref mut cleanup, .. } => {
                 *target = self.map_block(*target);
-                *unwind = self.map_unwind(*unwind);
+                *cleanup = self.map_unwind(*cleanup);
             }
             TerminatorKind::Return => {
                 terminator.kind = if let Some(tgt) = self.callsite.target {
@@ -1095,14 +1120,11 @@ impl<'tcx> MutVisitor<'tcx> for Integrator<'_, 'tcx> {
                 }
             }
             TerminatorKind::Resume => {
-                terminator.kind = match self.cleanup_block {
-                    UnwindAction::Cleanup(tgt) => TerminatorKind::Goto { target: tgt },
-                    UnwindAction::Continue => TerminatorKind::Resume,
-                    UnwindAction::Unreachable => TerminatorKind::Unreachable,
-                    UnwindAction::Terminate => TerminatorKind::Terminate,
-                };
+                if let Some(tgt) = self.cleanup_block {
+                    terminator.kind = TerminatorKind::Goto { target: tgt }
+                }
             }
-            TerminatorKind::Terminate => {}
+            TerminatorKind::Abort => {}
             TerminatorKind::Unreachable => {}
             TerminatorKind::FalseEdge { ref mut real_target, ref mut imaginary_target } => {
                 *real_target = self.map_block(*real_target);
@@ -1113,36 +1135,12 @@ impl<'tcx> MutVisitor<'tcx> for Integrator<'_, 'tcx> {
             {
                 bug!("False unwinds should have been removed before inlining")
             }
-            TerminatorKind::InlineAsm { ref mut destination, ref mut unwind, .. } => {
+            TerminatorKind::InlineAsm { ref mut destination, ref mut cleanup, .. } => {
                 if let Some(ref mut tgt) = *destination {
                     *tgt = self.map_block(*tgt);
                 }
-                *unwind = self.map_unwind(*unwind);
+                *cleanup = self.map_unwind(*cleanup);
             }
         }
-    }
-}
-
-#[instrument(skip(tcx), level = "debug")]
-fn try_instance_mir<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    instance: InstanceDef<'tcx>,
-) -> Result<&'tcx Body<'tcx>, &'static str> {
-    match instance {
-        ty::InstanceDef::DropGlue(_, Some(ty)) => match ty.kind() {
-            ty::Adt(def, substs) => {
-                let fields = def.all_fields();
-                for field in fields {
-                    let field_ty = field.ty(tcx, substs);
-                    if field_ty.has_param() && field_ty.has_projections() {
-                        return Err("cannot build drop shim for polymorphic type");
-                    }
-                }
-
-                Ok(tcx.instance_mir(instance))
-            }
-            _ => Ok(tcx.instance_mir(instance)),
-        },
-        _ => Ok(tcx.instance_mir(instance)),
     }
 }

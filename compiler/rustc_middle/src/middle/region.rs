@@ -147,8 +147,9 @@ rustc_index::newtype_index! {
     ///
     /// * The subscope with `first_statement_index == 1` is scope of `c`,
     ///   and thus does not include EXPR_2, but covers the `...`.
-    #[derive(HashStable)]
-    pub struct FirstStatementIndex {}
+    pub struct FirstStatementIndex {
+        derive [HashStable]
+    }
 }
 
 // compilation error if size of `ScopeData` is not the same as a `u32`
@@ -203,7 +204,7 @@ impl Scope {
 pub type ScopeDepth = u32;
 
 /// The region scope tree encodes information about region relationships.
-#[derive(Default, Debug)]
+#[derive(TyEncodable, TyDecodable, Default, Debug)]
 pub struct ScopeTree {
     /// If not empty, this body is the root of this region hierarchy.
     pub root_body: Option<hir::HirId>,
@@ -317,13 +318,13 @@ pub struct ScopeTree {
 /// candidates in general). In constants, the `lifetime` field is None
 /// to indicate that certain expressions escape into 'static and
 /// should have no local cleanup scope.
-#[derive(Debug, Copy, Clone, HashStable)]
+#[derive(Debug, Copy, Clone, TyEncodable, TyDecodable, HashStable)]
 pub enum RvalueCandidateType {
     Borrow { target: hir::ItemLocalId, lifetime: Option<Scope> },
     Pattern { target: hir::ItemLocalId, lifetime: Option<Scope> },
 }
 
-#[derive(Debug, Copy, Clone, HashStable)]
+#[derive(Debug, Copy, Clone, TyEncodable, TyDecodable, HashStable)]
 pub struct YieldData {
     /// The `Span` of the yield.
     pub span: Span,

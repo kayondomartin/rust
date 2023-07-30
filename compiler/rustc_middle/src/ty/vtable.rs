@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::fmt;
 
 use crate::mir::interpret::{alloc_range, AllocId, Allocation, Pointer, Scalar};
@@ -65,7 +66,7 @@ pub(super) fn vtable_allocation_provider<'tcx>(
     let layout = tcx
         .layout_of(ty::ParamEnv::reveal_all().and(ty))
         .expect("failed to build vtable representation");
-    assert!(layout.is_sized(), "can't create a vtable for an unsized type");
+    assert!(!layout.is_unsized(), "can't create a vtable for an unsized type");
     let size = layout.size.bytes();
     let align = layout.align.abi.bytes();
 
@@ -73,7 +74,7 @@ pub(super) fn vtable_allocation_provider<'tcx>(
     let ptr_align = tcx.data_layout.pointer_align.abi;
 
     let vtable_size = ptr_size * u64::try_from(vtable_entries.len()).unwrap();
-    let mut vtable = Allocation::uninit(vtable_size, ptr_align);
+    let mut vtable = Allocation::uninit(vtable_size, ptr_align, /* panic_on_fail */ true).unwrap();
 
     // No need to do any alignment checks on the memory accesses below, because we know the
     // allocation is correctly aligned as we created it above. Also we're only offsetting by
@@ -88,8 +89,8 @@ pub(super) fn vtable_allocation_provider<'tcx>(
                 let fn_ptr = Pointer::from(fn_alloc_id);
                 Scalar::from_pointer(fn_ptr, &tcx)
             }
-            VtblEntry::MetadataSize => Scalar::from_uint(size, ptr_size),
-            VtblEntry::MetadataAlign => Scalar::from_uint(align, ptr_size),
+            VtblEntry::MetadataSize => Scalar::from_uint(size, ptr_size).into(),
+            VtblEntry::MetadataAlign => Scalar::from_uint(align, ptr_size).into(),
             VtblEntry::Vacant => continue,
             VtblEntry::Method(instance) => {
                 // Prepare the fn ptr we write into the vtable.
@@ -112,5 +113,5 @@ pub(super) fn vtable_allocation_provider<'tcx>(
     }
 
     vtable.mutability = Mutability::Not;
-    tcx.create_memory_alloc(tcx.mk_const_alloc(vtable))
+    tcx.create_memory_alloc(tcx.intern_const_alloc(vtable))
 }

@@ -9,7 +9,7 @@ use crate::{cmp, fmt, hash, mem, num};
 /// Note that particularly large alignments, while representable in this type,
 /// are likely not to be supported by actual allocators and linkers.
 #[unstable(feature = "ptr_alignment_type", issue = "102070")]
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct Alignment(AlignmentEnum);
 
@@ -40,7 +40,7 @@ impl Alignment {
     /// Returns the alignment for a type.
     ///
     /// This provides the same numerical value as [`mem::align_of`],
-    /// but in an `Alignment` instead of a `usize`.
+    /// but in an `Alignment` instead of a `usize.
     #[unstable(feature = "ptr_alignment_type", issue = "102070")]
     #[inline]
     pub const fn of<T>() -> Self {
@@ -167,16 +167,14 @@ impl From<Alignment> for usize {
     }
 }
 
-#[rustc_const_unstable(feature = "const_alloc_layout", issue = "67521")]
 #[unstable(feature = "ptr_alignment_type", issue = "102070")]
 impl cmp::Ord for Alignment {
     #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.as_nonzero().get().cmp(&other.as_nonzero().get())
+        self.as_nonzero().cmp(&other.as_nonzero())
     }
 }
 
-#[rustc_const_unstable(feature = "const_alloc_layout", issue = "67521")]
 #[unstable(feature = "ptr_alignment_type", issue = "102070")]
 impl cmp::PartialOrd for Alignment {
     #[inline]
@@ -200,7 +198,7 @@ type AlignmentEnum = AlignmentEnum32;
 #[cfg(target_pointer_width = "64")]
 type AlignmentEnum = AlignmentEnum64;
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 #[repr(u16)]
 enum AlignmentEnum16 {
     _Align1Shl0 = 1 << 0,
@@ -221,7 +219,7 @@ enum AlignmentEnum16 {
     _Align1Shl15 = 1 << 15,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 #[repr(u32)]
 enum AlignmentEnum32 {
     _Align1Shl0 = 1 << 0,
@@ -258,7 +256,7 @@ enum AlignmentEnum32 {
     _Align1Shl31 = 1 << 31,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 #[repr(u64)]
 enum AlignmentEnum64 {
     _Align1Shl0 = 1 << 0,

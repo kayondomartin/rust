@@ -2,7 +2,7 @@ use crate::abi::{self, Abi, Align, FieldsShape, Size};
 use crate::abi::{HasDataLayout, TyAbiInterface, TyAndLayout};
 use crate::spec::{self, HasTargetSpec};
 use rustc_span::Symbol;
-use std::str::FromStr;
+use std::fmt;
 
 mod aarch64;
 mod amdgpu;
@@ -10,7 +10,6 @@ mod arm;
 mod avr;
 mod bpf;
 mod hexagon;
-mod loongarch;
 mod m68k;
 mod mips;
 mod mips64;
@@ -27,7 +26,7 @@ mod x86;
 mod x86_64;
 mod x86_win64;
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
+#[derive(PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub enum PassMode {
     /// Ignore the argument.
     ///
@@ -64,13 +63,18 @@ mod attr_impl {
     // The subset of llvm::Attribute needed for arguments, packed into a bitfield.
     bitflags::bitflags! {
         #[derive(Default, HashStable_Generic)]
-        pub struct ArgAttribute: u8 {
+        pub struct ArgAttribute: u16 {
             const NoAlias   = 1 << 1;
             const NoCapture = 1 << 2;
             const NonNull   = 1 << 3;
             const ReadOnly  = 1 << 4;
             const InReg     = 1 << 5;
-            const NoUndef = 1 << 6;
+            // Due to past miscompiles in LLVM, we use a separate attribute for
+            // &mut arguments, so that the codegen backend can decide whether
+            // or not to actually emit the attribute. It can also be controlled
+            // with the `-Zmutable-noalias` debugging option.
+            const NoAliasMutRef = 1 << 6;
+            const NoUndef = 1 << 7;
         }
     }
 }
@@ -171,12 +175,12 @@ impl Reg {
                 17..=32 => dl.i32_align.abi,
                 33..=64 => dl.i64_align.abi,
                 65..=128 => dl.i128_align.abi,
-                _ => panic!("unsupported integer: {self:?}"),
+                _ => panic!("unsupported integer: {:?}", self),
             },
             RegKind::Float => match self.size.bits() {
                 32 => dl.f32_align.abi,
                 64 => dl.f64_align.abi,
-                _ => panic!("unsupported float: {self:?}"),
+                _ => panic!("unsupported float: {:?}", self),
             },
             RegKind::Vector => dl.vector_align(self.size).abi,
         }
@@ -210,7 +214,7 @@ impl Uniform {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub struct CastTarget {
     pub prefix: [Option<Reg>; 8],
     pub rest: Uniform,
@@ -256,7 +260,7 @@ impl CastTarget {
         let mut size = self.rest.total;
         for i in 0..self.prefix.iter().count() {
             match self.prefix[i] {
-                Some(v) => size += v.size,
+                Some(v) => size += Size { raw: v.size.bytes() },
                 None => {}
             }
         }
@@ -345,7 +349,7 @@ impl<'a, Ty> TyAndLayout<'a, Ty> {
             // The primitive for this algorithm.
             Abi::Scalar(scalar) => {
                 let kind = match scalar.primitive() {
-                    abi::Int(..) | abi::Pointer(_) => RegKind::Integer,
+                    abi::Int(..) | abi::Pointer => RegKind::Integer,
                     abi::F32 | abi::F64 => RegKind::Float,
                 };
                 Ok(HomogeneousAggregate::Homogeneous(Reg { kind, size: self.size }))
@@ -457,7 +461,7 @@ impl<'a, Ty> TyAndLayout<'a, Ty> {
 
 /// Information about how to pass an argument to,
 /// or return a value from, a function, under some ABI.
-#[derive(Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
+#[derive(PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub struct ArgAbi<'a, Ty> {
     pub layout: TyAndLayout<'a, Ty>,
     pub mode: PassMode,
@@ -604,7 +608,7 @@ pub enum Conv {
 ///
 /// I will do my best to describe this structure, but these
 /// comments are reverse-engineered and may be inaccurate. -NDM
-#[derive(Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
+#[derive(PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub struct FnAbi<'a, Ty> {
     /// The LLVM types of each argument.
     pub args: Box<[ArgAbi<'a, Ty>]>,
@@ -630,6 +634,16 @@ pub struct FnAbi<'a, Ty> {
 pub enum AdjustForForeignAbiError {
     /// Target architecture doesn't support "foreign" (i.e. non-Rust) ABIs.
     Unsupported { arch: Symbol, abi: spec::abi::Abi },
+}
+
+impl fmt::Display for AdjustForForeignAbiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported { arch, abi } => {
+                write!(f, "target architecture {:?} does not support `extern {}` ABI", arch, abi)
+            }
+        }
+    }
 }
 
 impl<'a, Ty> FnAbi<'a, Ty> {
@@ -682,7 +696,6 @@ impl<'a, Ty> FnAbi<'a, Ty> {
             "amdgpu" => amdgpu::compute_abi_info(cx, self),
             "arm" => arm::compute_abi_info(cx, self),
             "avr" => avr::compute_abi_info(self),
-            "loongarch64" => loongarch::compute_abi_info(cx, self),
             "m68k" => m68k::compute_abi_info(self),
             "mips" => mips::compute_abi_info(cx, self),
             "mips64" => mips64::compute_abi_info(cx, self),
@@ -719,33 +732,6 @@ impl<'a, Ty> FnAbi<'a, Ty> {
         }
 
         Ok(())
-    }
-}
-
-impl FromStr for Conv {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "C" => Ok(Conv::C),
-            "Rust" => Ok(Conv::Rust),
-            "RustCold" => Ok(Conv::Rust),
-            "ArmAapcs" => Ok(Conv::ArmAapcs),
-            "CCmseNonSecureCall" => Ok(Conv::CCmseNonSecureCall),
-            "Msp430Intr" => Ok(Conv::Msp430Intr),
-            "PtxKernel" => Ok(Conv::PtxKernel),
-            "X86Fastcall" => Ok(Conv::X86Fastcall),
-            "X86Intr" => Ok(Conv::X86Intr),
-            "X86Stdcall" => Ok(Conv::X86Stdcall),
-            "X86ThisCall" => Ok(Conv::X86ThisCall),
-            "X86VectorCall" => Ok(Conv::X86VectorCall),
-            "X86_64SysV" => Ok(Conv::X86_64SysV),
-            "X86_64Win64" => Ok(Conv::X86_64Win64),
-            "AmdGpuKernel" => Ok(Conv::AmdGpuKernel),
-            "AvrInterrupt" => Ok(Conv::AvrInterrupt),
-            "AvrNonBlockingInterrupt" => Ok(Conv::AvrNonBlockingInterrupt),
-            _ => Err(format!("'{s}' is not a valid value for entry function call convention.")),
-        }
     }
 }
 

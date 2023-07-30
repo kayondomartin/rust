@@ -5,36 +5,37 @@ use crate::util;
 use crate::MirPass;
 use rustc_middle::mir::patch::MirPatch;
 
-/// This pass moves values being dropped that are within a packed
-/// struct to a separate local before dropping them, to ensure that
-/// they are dropped from an aligned address.
-///
-/// For example, if we have something like
-/// ```ignore (illustrative)
-/// #[repr(packed)]
-/// struct Foo {
-///     dealign: u8,
-///     data: Vec<u8>
-/// }
-///
-/// let foo = ...;
-/// ```
-///
-/// We want to call `drop_in_place::<Vec<u8>>` on `data` from an aligned
-/// address. This means we can't simply drop `foo.data` directly, because
-/// its address is not aligned.
-///
-/// Instead, we move `foo.data` to a local and drop that:
-/// ```ignore (illustrative)
-///     storage.live(drop_temp)
-///     drop_temp = foo.data;
-///     drop(drop_temp) -> next
-/// next:
-///     storage.dead(drop_temp)
-/// ```
-///
-/// The storage instructions are required to avoid stack space
-/// blowup.
+// This pass moves values being dropped that are within a packed
+// struct to a separate local before dropping them, to ensure that
+// they are dropped from an aligned address.
+//
+// For example, if we have something like
+// ```Rust
+//     #[repr(packed)]
+//     struct Foo {
+//         dealign: u8,
+//         data: Vec<u8>
+//     }
+//
+//     let foo = ...;
+// ```
+//
+// We want to call `drop_in_place::<Vec<u8>>` on `data` from an aligned
+// address. This means we can't simply drop `foo.data` directly, because
+// its address is not aligned.
+//
+// Instead, we move `foo.data` to a local and drop that:
+// ```
+//     storage.live(drop_temp)
+//     drop_temp = foo.data;
+//     drop(drop_temp) -> next
+// next:
+//     storage.dead(drop_temp)
+// ```
+//
+// The storage instructions are required to avoid stack space
+// blowup.
+
 pub struct AddMovesForPackedDrops;
 
 impl<'tcx> MirPass<'tcx> for AddMovesForPackedDrops {
@@ -64,6 +65,9 @@ fn add_moves_for_packed_drops_patch<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) 
             {
                 add_move_for_packed_drop(tcx, body, &mut patch, terminator, loc, data.is_cleanup);
             }
+            TerminatorKind::DropAndReplace { .. } => {
+                span_bug!(terminator.source_info.span, "replace in AddMovesForPackedDrops");
+            }
             _ => {}
         }
     }
@@ -80,7 +84,7 @@ fn add_move_for_packed_drop<'tcx>(
     is_cleanup: bool,
 ) {
     debug!("add_move_for_packed_drop({:?} @ {:?})", terminator, loc);
-    let TerminatorKind::Drop { ref place, target, unwind, replace } = terminator.kind else {
+    let TerminatorKind::Drop { ref place, target, unwind } = terminator.kind else {
         unreachable!();
     };
 
@@ -98,11 +102,6 @@ fn add_move_for_packed_drop<'tcx>(
     patch.add_assign(loc, Place::from(temp), Rvalue::Use(Operand::Move(*place)));
     patch.patch_terminator(
         loc.block,
-        TerminatorKind::Drop {
-            place: Place::from(temp),
-            target: storage_dead_block,
-            unwind,
-            replace,
-        },
+        TerminatorKind::Drop { place: Place::from(temp), target: storage_dead_block, unwind },
     );
 }

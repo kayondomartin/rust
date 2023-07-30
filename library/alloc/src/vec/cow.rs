@@ -1,4 +1,5 @@
 use crate::borrow::Cow;
+use core::iter::FromIterator;
 
 use super::Vec;
 

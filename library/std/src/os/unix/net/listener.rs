@@ -90,6 +90,7 @@ impl UnixListener {
     /// # Examples
     ///
     /// ```no_run
+    /// #![feature(unix_socket_abstract)]
     /// use std::os::unix::net::{UnixListener};
     ///
     /// fn main() -> std::io::Result<()> {
@@ -106,7 +107,7 @@ impl UnixListener {
     ///     Ok(())
     /// }
     /// ```
-    #[stable(feature = "unix_socket_abstract", since = "1.70.0")]
+    #[unstable(feature = "unix_socket_abstract", issue = "85410")]
     pub fn bind_addr(socket_addr: &SocketAddr) -> io::Result<UnixListener> {
         unsafe {
             let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;

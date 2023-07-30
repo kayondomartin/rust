@@ -39,7 +39,6 @@ enum class LLVMRustArchiveKind {
   BSD,
   DARWIN,
   COFF,
-  AIX_BIG,
 };
 
 static Archive::Kind fromRust(LLVMRustArchiveKind Kind) {
@@ -52,8 +51,6 @@ static Archive::Kind fromRust(LLVMRustArchiveKind Kind) {
     return Archive::K_DARWIN;
   case LLVMRustArchiveKind::COFF:
     return Archive::K_COFF;
-  case LLVMRustArchiveKind::AIX_BIG:
-    return Archive::K_AIXBIG;
   default:
     report_fatal_error("Bad ArchiveKind.");
   }

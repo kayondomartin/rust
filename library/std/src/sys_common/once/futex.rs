@@ -4,7 +4,6 @@ use crate::sync::atomic::{
     AtomicU32,
     Ordering::{Acquire, Relaxed, Release},
 };
-use crate::sync::once::ExclusiveState;
 use crate::sys::futex::{futex_wait, futex_wake_all};
 
 // On some platforms, the OS is very nice and handles the waiter queue for us.
@@ -77,16 +76,6 @@ impl Once {
         // Use acquire ordering to make all initialization changes visible to the
         // current thread.
         self.state.load(Acquire) == COMPLETE
-    }
-
-    #[inline]
-    pub(crate) fn state(&mut self) -> ExclusiveState {
-        match *self.state.get_mut() {
-            INCOMPLETE => ExclusiveState::Incomplete,
-            POISONED => ExclusiveState::Poisoned,
-            COMPLETE => ExclusiveState::Complete,
-            _ => unreachable!("invalid Once state"),
-        }
     }
 
     // This uses FnMut to match the API of the generic implementation. As this

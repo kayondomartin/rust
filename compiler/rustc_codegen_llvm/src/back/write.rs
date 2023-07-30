@@ -5,9 +5,6 @@ use crate::back::profiling::{
 use crate::base;
 use crate::common;
 use crate::consts;
-use crate::errors::{
-    CopyBitcode, FromLlvmDiag, FromLlvmOptimizationDiag, LlvmError, WithLlvmError, WriteBytecode,
-};
 use crate::llvm::{self, DiagnosticInfo, PassManager};
 use crate::llvm_util;
 use crate::type_::Type;
@@ -31,7 +28,6 @@ use rustc_span::symbol::sym;
 use rustc_span::InnerSpan;
 use rustc_target::spec::{CodeModel, RelocModel, SanitizerSet, SplitDebuginfo};
 
-use crate::llvm::diagnostic::OptimizationDiagnosticKind;
 use libc::{c_char, c_int, c_uint, c_void, size_t};
 use std::ffi::CString;
 use std::fs;
@@ -41,10 +37,10 @@ use std::slice;
 use std::str;
 use std::sync::Arc;
 
-pub fn llvm_err<'a>(handler: &rustc_errors::Handler, err: LlvmError<'a>) -> FatalError {
+pub fn llvm_err(handler: &rustc_errors::Handler, msg: &str) -> FatalError {
     match llvm::last_error() {
-        Some(llvm_err) => handler.emit_almost_fatal(WithLlvmError(err, llvm_err)),
-        None => handler.emit_almost_fatal(err),
+        Some(err) => handler.fatal(&format!("{}: {}", msg, err)),
+        None => handler.fatal(msg),
     }
 }
 
@@ -89,9 +85,10 @@ pub fn write_output_file<'ll>(
             }
         }
 
-        result
-            .into_result()
-            .map_err(|()| llvm_err(handler, LlvmError::WriteOutput { path: output }))
+        result.into_result().map_err(|()| {
+            let msg = format!("could not write output to {}", output.display());
+            llvm_err(handler, &msg)
+        })
     }
 }
 
@@ -101,7 +98,7 @@ pub fn create_informational_target_machine(sess: &Session) -> &'static mut llvm:
     // system/tcx is set up.
     let features = llvm_util::global_llvm_features(sess, false);
     target_machine_factory(sess, config::OptLevel::No, &features)(config)
-        .unwrap_or_else(|err| llvm_err(sess.diagnostic(), err).raise())
+        .unwrap_or_else(|err| llvm_err(sess.diagnostic(), &err).raise())
 }
 
 pub fn create_target_machine(tcx: TyCtxt<'_>, mod_name: &str) -> &'static mut llvm::TargetMachine {
@@ -120,7 +117,7 @@ pub fn create_target_machine(tcx: TyCtxt<'_>, mod_name: &str) -> &'static mut ll
         tcx.backend_optimization_level(()),
         tcx.global_backend_features(()),
     )(config)
-    .unwrap_or_else(|err| llvm_err(tcx.sess.diagnostic(), err).raise())
+    .unwrap_or_else(|err| llvm_err(tcx.sess.diagnostic(), &err).raise())
 }
 
 pub fn to_llvm_opt_settings(
@@ -206,7 +203,7 @@ pub fn target_machine_factory(
         sess.opts.unstable_opts.trap_unreachable.unwrap_or(sess.target.trap_unreachable);
     let emit_stack_size_section = sess.opts.unstable_opts.emit_stack_sizes;
 
-    let asm_comments = sess.opts.unstable_opts.asm_comments;
+    let asm_comments = sess.asm_comments();
     let relax_elf_relocations =
         sess.opts.unstable_opts.relax_elf_relocations.unwrap_or(sess.target.relax_elf_relocations);
 
@@ -214,8 +211,6 @@ pub fn target_machine_factory(
         !sess.opts.unstable_opts.use_ctors_section.unwrap_or(sess.target.use_ctors_section);
 
     let path_mapping = sess.source_map().path_mapping().clone();
-
-    let force_emulated_tls = sess.target.force_emulated_tls;
 
     Arc::new(move |config: TargetMachineFactoryConfig| {
         let split_dwarf_file =
@@ -242,11 +237,12 @@ pub fn target_machine_factory(
                 relax_elf_relocations,
                 use_init_array,
                 split_dwarf_file.as_ptr(),
-                force_emulated_tls,
             )
         };
 
-        tm.ok_or_else(|| LlvmError::CreateTargetMachine { triple: triple.clone() })
+        tm.ok_or_else(|| {
+            format!("Could not create LLVM TargetMachine for triple: {}", triple.to_str().unwrap())
+        })
     })
 }
 
@@ -268,16 +264,6 @@ pub(crate) fn save_temp_bitcode(
     }
 }
 
-/// In what context is a dignostic handler being attached to a codegen unit?
-pub enum CodegenDiagnosticsStage {
-    /// Prelink optimization stage.
-    Opt,
-    /// LTO/ThinLTO postlink optimization stage.
-    LTO,
-    /// Code generation.
-    Codegen,
-}
-
 pub struct DiagnosticHandlers<'a> {
     data: *mut (&'a CodegenContext<LlvmCodegenBackend>, &'a Handler),
     llcx: &'a llvm::Context,
@@ -289,8 +275,6 @@ impl<'a> DiagnosticHandlers<'a> {
         cgcx: &'a CodegenContext<LlvmCodegenBackend>,
         handler: &'a Handler,
         llcx: &'a llvm::Context,
-        module: &ModuleCodegen<ModuleLlvm>,
-        stage: CodegenDiagnosticsStage,
     ) -> Self {
         let remark_passes_all: bool;
         let remark_passes: Vec<CString>;
@@ -307,20 +291,6 @@ impl<'a> DiagnosticHandlers<'a> {
         };
         let remark_passes: Vec<*const c_char> =
             remark_passes.iter().map(|name: &CString| name.as_ptr()).collect();
-        let remark_file = cgcx
-            .remark_dir
-            .as_ref()
-            // Use the .opt.yaml file suffix, which is supported by LLVM's opt-viewer.
-            .map(|dir| {
-                let stage_suffix = match stage {
-                    CodegenDiagnosticsStage::Codegen => "codegen",
-                    CodegenDiagnosticsStage::Opt => "opt",
-                    CodegenDiagnosticsStage::LTO => "lto",
-                };
-                dir.join(format!("{}.{stage_suffix}.opt.yaml", module.name))
-            })
-            .and_then(|dir| dir.to_str().and_then(|p| CString::new(p).ok()));
-
         let data = Box::into_raw(Box::new((cgcx, handler)));
         unsafe {
             let old_handler = llvm::LLVMRustContextGetDiagnosticHandler(llcx);
@@ -331,9 +301,6 @@ impl<'a> DiagnosticHandlers<'a> {
                 remark_passes_all,
                 remark_passes.as_ptr(),
                 remark_passes.len(),
-                // The `as_ref()` is important here, otherwise the `CString` will be dropped
-                // too soon!
-                remark_file.as_ref().map(|dir| dir.as_ptr()).unwrap_or(std::ptr::null()),
             );
             DiagnosticHandlers { data, llcx, old_handler }
         }
@@ -388,37 +355,25 @@ unsafe extern "C" fn diagnostic_handler(info: &DiagnosticInfo, user: *mut c_void
             };
 
             if enabled {
-                diag_handler.emit_note(FromLlvmOptimizationDiag {
-                    filename: &opt.filename,
-                    line: opt.line,
-                    column: opt.column,
-                    pass_name: &opt.pass_name,
-                    kind: match opt.kind {
-                        OptimizationDiagnosticKind::OptimizationRemark => "success",
-                        OptimizationDiagnosticKind::OptimizationMissed
-                        | OptimizationDiagnosticKind::OptimizationFailure => "missed",
-                        OptimizationDiagnosticKind::OptimizationAnalysis
-                        | OptimizationDiagnosticKind::OptimizationAnalysisFPCommute
-                        | OptimizationDiagnosticKind::OptimizationAnalysisAliasing => "analysis",
-                        OptimizationDiagnosticKind::OptimizationRemarkOther => "other",
-                    },
-                    message: &opt.message,
-                });
+                diag_handler.note_without_error(&format!(
+                    "{}:{}:{}: {}: {}",
+                    opt.filename, opt.line, opt.column, opt.pass_name, opt.message,
+                ));
             }
         }
         llvm::diagnostic::PGO(diagnostic_ref) | llvm::diagnostic::Linker(diagnostic_ref) => {
-            let message = llvm::build_string(|s| {
+            let msg = llvm::build_string(|s| {
                 llvm::LLVMRustWriteDiagnosticInfoToString(diagnostic_ref, s)
             })
             .expect("non-UTF8 diagnostic");
-            diag_handler.emit_warning(FromLlvmDiag { message });
+            diag_handler.warn(&msg);
         }
         llvm::diagnostic::Unsupported(diagnostic_ref) => {
-            let message = llvm::build_string(|s| {
+            let msg = llvm::build_string(|s| {
                 llvm::LLVMRustWriteDiagnosticInfoToString(diagnostic_ref, s)
             })
             .expect("non-UTF8 diagnostic");
-            diag_handler.emit_err(FromLlvmDiag { message });
+            diag_handler.err(&msg);
         }
         llvm::diagnostic::UnknownDiagnostic(..) => {}
     }
@@ -454,7 +409,11 @@ fn get_pgo_sample_use_path(config: &ModuleConfig) -> Option<CString> {
 }
 
 fn get_instr_profile_output_path(config: &ModuleConfig) -> Option<CString> {
-    config.instrument_coverage.then(|| CString::new("default_%m_%p.profraw").unwrap())
+    if config.instrument_coverage {
+        Some(CString::new("default_%m_%p.profraw").unwrap())
+    } else {
+        None
+    }
 }
 
 pub(crate) unsafe fn llvm_optimize(
@@ -484,19 +443,16 @@ pub(crate) unsafe fn llvm_optimize(
             sanitize_thread: config.sanitizer.contains(SanitizerSet::THREAD),
             sanitize_hwaddress: config.sanitizer.contains(SanitizerSet::HWADDRESS),
             sanitize_hwaddress_recover: config.sanitizer_recover.contains(SanitizerSet::HWADDRESS),
-            sanitize_kernel_address: config.sanitizer.contains(SanitizerSet::KERNELADDRESS),
-            sanitize_kernel_address_recover: config
-                .sanitizer_recover
-                .contains(SanitizerSet::KERNELADDRESS),
         })
     } else {
         None
     };
 
-    let mut llvm_profiler = cgcx
-        .prof
-        .llvm_recording_enabled()
-        .then(|| LlvmSelfProfiler::new(cgcx.prof.get_self_profiler().unwrap()));
+    let mut llvm_profiler = if cgcx.prof.llvm_recording_enabled() {
+        Some(LlvmSelfProfiler::new(cgcx.prof.get_self_profiler().unwrap()))
+    } else {
+        None
+    };
 
     let llvm_selfprofiler =
         llvm_profiler.as_mut().map(|s| s as *mut _ as *mut c_void).unwrap_or(std::ptr::null_mut());
@@ -538,7 +494,7 @@ pub(crate) unsafe fn llvm_optimize(
         llvm_plugins.as_ptr().cast(),
         llvm_plugins.len(),
     );
-    result.into_result().map_err(|()| llvm_err(diag_handler, LlvmError::RunLlvmPasses))
+    result.into_result().map_err(|()| llvm_err(diag_handler, "failed to run LLVM passes"))
 }
 
 // Unsafe due to LLVM calls.
@@ -552,8 +508,7 @@ pub(crate) unsafe fn optimize(
 
     let llmod = module.module_llvm.llmod();
     let llcx = &*module.module_llvm.llcx;
-    let _handlers =
-        DiagnosticHandlers::new(cgcx, diag_handler, llcx, module, CodegenDiagnosticsStage::Opt);
+    let _handlers = DiagnosticHandlers::new(cgcx, diag_handler, llcx);
 
     let module_name = module.name.clone();
     let module_name = Some(&module_name[..]);
@@ -592,7 +547,8 @@ pub(crate) fn link(
         let _timer = cgcx.prof.generic_activity_with_arg("LLVM_link_module", &*module.name);
         let buffer = ModuleBuffer::new(module.module_llvm.llmod());
         linker.add(buffer.data()).map_err(|()| {
-            llvm_err(diag_handler, LlvmError::SerializeModule { name: &module.name })
+            let msg = format!("failed to serialize module {:?}", module.name);
+            llvm_err(diag_handler, &msg)
         })?;
     }
     drop(linker);
@@ -612,13 +568,7 @@ pub(crate) unsafe fn codegen(
         let tm = &*module.module_llvm.tm;
         let module_name = module.name.clone();
         let module_name = Some(&module_name[..]);
-        let _handlers = DiagnosticHandlers::new(
-            cgcx,
-            diag_handler,
-            llcx,
-            &module,
-            CodegenDiagnosticsStage::Codegen,
-        );
+        let handlers = DiagnosticHandlers::new(cgcx, diag_handler, llcx);
 
         if cgcx.msvc_imps_needed {
             create_msvc_imps(cgcx, llcx, llmod);
@@ -676,8 +626,9 @@ pub(crate) unsafe fn codegen(
                 let _timer = cgcx
                     .prof
                     .generic_activity_with_arg("LLVM_module_codegen_emit_bitcode", &*module.name);
-                if let Err(err) = fs::write(&bc_out, data) {
-                    diag_handler.emit_err(WriteBytecode { path: &bc_out, err });
+                if let Err(e) = fs::write(&bc_out, data) {
+                    let msg = format!("failed to write bytecode to {}: {}", bc_out.display(), e);
+                    diag_handler.err(&msg);
                 }
             }
 
@@ -727,9 +678,10 @@ pub(crate) unsafe fn codegen(
                 record_artifact_size(&cgcx.prof, "llvm_ir", &out);
             }
 
-            result
-                .into_result()
-                .map_err(|()| llvm_err(diag_handler, LlvmError::WriteIr { path: &out }))?;
+            result.into_result().map_err(|()| {
+                let msg = format!("failed to write LLVM IR to {}", out.display());
+                llvm_err(diag_handler, &msg)
+            })?;
         }
 
         if config.emit_asm {
@@ -797,8 +749,8 @@ pub(crate) unsafe fn codegen(
 
             EmitObj::Bitcode => {
                 debug!("copying bitcode {:?} to obj {:?}", bc_out, obj_out);
-                if let Err(err) = link_or_copy(&bc_out, &obj_out) {
-                    diag_handler.emit_err(CopyBitcode { err });
+                if let Err(e) = link_or_copy(&bc_out, &obj_out) {
+                    diag_handler.err(&format!("failed to copy bitcode to object file: {}", e));
                 }
 
                 if !config.emit_bc {
@@ -810,24 +762,14 @@ pub(crate) unsafe fn codegen(
             EmitObj::None => {}
         }
 
-        record_llvm_cgu_instructions_stats(&cgcx.prof, llmod);
+        drop(handlers);
     }
 
-    // `.dwo` files are only emitted if:
-    //
-    // - Object files are being emitted (i.e. bitcode only or metadata only compilations will not
-    //   produce dwarf objects, even if otherwise enabled)
-    // - Target supports Split DWARF
-    // - Split debuginfo is enabled
-    // - Split DWARF kind is `split` (i.e. debuginfo is split into `.dwo` files, not different
-    //   sections in the `.o` files).
-    let dwarf_object_emitted = matches!(config.emit_obj, EmitObj::ObjectCode(_))
-        && cgcx.target_can_use_split_dwarf
-        && cgcx.split_debuginfo != SplitDebuginfo::Off
-        && cgcx.split_dwarf_kind == SplitDwarfKind::Split;
     Ok(module.into_compiled_module(
         config.emit_obj != EmitObj::None,
-        dwarf_object_emitted,
+        cgcx.target_can_use_split_dwarf
+            && cgcx.split_debuginfo != SplitDebuginfo::Off
+            && cgcx.split_dwarf_kind == SplitDwarfKind::Split,
         config.emit_bc,
         &cgcx.output_filenames,
     ))
@@ -910,19 +852,14 @@ unsafe fn embed_bitcode(
     //   passed though then these sections will show up in the final output.
     //   Additionally the flag that we need to set here is `SHF_EXCLUDE`.
     //
-    // * XCOFF - AIX linker ignores content in .ipa and .info if no auxiliary
-    //   symbol associated with these sections.
-    //
     // Unfortunately, LLVM provides no way to set custom section flags. For ELF
     // and COFF we emit the sections using module level inline assembly for that
     // reason (see issue #90326 for historical background).
-    let is_aix = cgcx.opts.target_triple.triple().contains("-aix");
     let is_apple = cgcx.opts.target_triple.triple().contains("-ios")
         || cgcx.opts.target_triple.triple().contains("-darwin")
         || cgcx.opts.target_triple.triple().contains("-tvos")
         || cgcx.opts.target_triple.triple().contains("-watchos");
     if is_apple
-        || is_aix
         || cgcx.opts.target_triple.triple().starts_with("wasm")
         || cgcx.opts.target_triple.triple().starts_with("asmjs")
     {
@@ -935,13 +872,7 @@ unsafe fn embed_bitcode(
         );
         llvm::LLVMSetInitializer(llglobal, llconst);
 
-        let section = if is_apple {
-            "__LLVM,__bitcode\0"
-        } else if is_aix {
-            ".ipa\0"
-        } else {
-            ".llvmbc\0"
-        };
+        let section = if is_apple { "__LLVM,__bitcode\0" } else { ".llvmbc\0" };
         llvm::LLVMSetSection(llglobal, section.as_ptr().cast());
         llvm::LLVMRustSetLinkage(llglobal, llvm::Linkage::PrivateLinkage);
         llvm::LLVMSetGlobalConstant(llglobal, llvm::True);
@@ -953,28 +884,22 @@ unsafe fn embed_bitcode(
             "rustc.embedded.cmdline\0".as_ptr().cast(),
         );
         llvm::LLVMSetInitializer(llglobal, llconst);
-        let section = if is_apple {
-            "__LLVM,__cmdline\0"
-        } else if is_aix {
-            ".info\0"
-        } else {
-            ".llvmcmd\0"
-        };
+        let section = if is_apple { "__LLVM,__cmdline\0" } else { ".llvmcmd\0" };
         llvm::LLVMSetSection(llglobal, section.as_ptr().cast());
         llvm::LLVMRustSetLinkage(llglobal, llvm::Linkage::PrivateLinkage);
     } else {
         // We need custom section flags, so emit module-level inline assembly.
         let section_flags = if cgcx.is_pe_coff { "n" } else { "e" };
         let asm = create_section_with_flags_asm(".llvmbc", section_flags, bitcode);
-        llvm::LLVMAppendModuleInlineAsm(llmod, asm.as_ptr().cast(), asm.len());
+        llvm::LLVMRustAppendModuleInlineAsm(llmod, asm.as_ptr().cast(), asm.len());
         let asm = create_section_with_flags_asm(".llvmcmd", section_flags, cmdline.as_bytes());
-        llvm::LLVMAppendModuleInlineAsm(llmod, asm.as_ptr().cast(), asm.len());
+        llvm::LLVMRustAppendModuleInlineAsm(llmod, asm.as_ptr().cast(), asm.len());
     }
 }
 
 // Create a `__imp_<symbol> = &symbol` global for every public static `symbol`.
 // This is required to satisfy `dllimport` references to static data in .rlibs
-// when using MSVC linker. We do this only for data, as linker can fix up
+// when using MSVC linker.  We do this only for data, as linker can fix up
 // code references on its own.
 // See #26591, #27438
 fn create_msvc_imps(
@@ -1039,24 +964,4 @@ fn record_artifact_size(
         let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         self_profiler_ref.artifact_size(artifact_kind, artifact_name.to_string_lossy(), file_size);
     }
-}
-
-fn record_llvm_cgu_instructions_stats(prof: &SelfProfilerRef, llmod: &llvm::Module) {
-    if !prof.enabled() {
-        return;
-    }
-
-    let raw_stats =
-        llvm::build_string(|s| unsafe { llvm::LLVMRustModuleInstructionStats(&llmod, s) })
-            .expect("cannot get module instruction stats");
-
-    #[derive(serde::Deserialize)]
-    struct InstructionsStats {
-        module: String,
-        total: u64,
-    }
-
-    let InstructionsStats { module, total } =
-        serde_json::from_str(&raw_stats).expect("cannot parse llvm cgu instructions stats");
-    prof.artifact_size("cgu_instructions", module, total);
 }

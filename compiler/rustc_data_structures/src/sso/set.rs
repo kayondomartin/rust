@@ -1,5 +1,6 @@
 use std::fmt;
 use std::hash::Hash;
+use std::iter::FromIterator;
 
 use super::map::SsoHashMap;
 

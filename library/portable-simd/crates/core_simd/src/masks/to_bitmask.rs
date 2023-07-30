@@ -48,12 +48,10 @@ macro_rules! impl_integer_intrinsic {
         impl<T: MaskElement> ToBitMask for Mask<T, $lanes> {
             type BitMask = $int;
 
-            #[inline]
             fn to_bitmask(self) -> $int {
                 self.0.to_bitmask_integer()
             }
 
-            #[inline]
             fn from_bitmask(bitmask: $int) -> Self {
                 Self(mask_impl::Mask::from_bitmask_integer(bitmask))
             }
@@ -85,12 +83,10 @@ where
 {
     const BYTES: usize = bitmask_len(LANES);
 
-    #[inline]
     fn to_bitmask_array(self) -> [u8; Self::BYTES] {
         self.0.to_bitmask_array()
     }
 
-    #[inline]
     fn from_bitmask_array(bitmask: [u8; Self::BYTES]) -> Self {
         Mask(mask_impl::Mask::from_bitmask_array(bitmask))
     }

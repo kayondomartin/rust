@@ -1,11 +1,11 @@
 use crate::deriving::generic::ty::*;
 use crate::deriving::generic::*;
 use crate::deriving::{path_std, pathvec_std};
-use rustc_ast::{MetaItem, Mutability};
+
+use rustc_ast::{AttrVec, MetaItem, Mutability};
 use rustc_expand::base::{Annotatable, ExtCtxt};
 use rustc_span::symbol::sym;
 use rustc_span::Span;
-use thin_vec::thin_vec;
 
 pub fn expand_deriving_hash(
     cx: &mut ExtCtxt<'_>,
@@ -13,7 +13,6 @@ pub fn expand_deriving_hash(
     mitem: &MetaItem,
     item: &Annotatable,
     push: &mut dyn FnMut(Annotatable),
-    is_const: bool,
 ) {
     let path = Path::new_(pathvec_std!(hash::Hash), vec![], PathKind::Std);
 
@@ -24,8 +23,8 @@ pub fn expand_deriving_hash(
         span,
         path,
         skip_path_as_bound: false,
-        needs_copy_as_bound_if_packed: true,
         additional_bounds: Vec::new(),
+        generics: Bounds::empty(),
         supports_unions: false,
         methods: vec![MethodDef {
             name: sym::hash,
@@ -33,14 +32,13 @@ pub fn expand_deriving_hash(
             explicit_self: true,
             nonself_args: vec![(Ref(Box::new(Path(arg)), Mutability::Mut), sym::state)],
             ret_ty: Unit,
-            attributes: thin_vec![cx.attr_word(sym::inline, span)],
-            fieldless_variants_strategy: FieldlessVariantsStrategy::Unify,
+            attributes: AttrVec::new(),
+            unify_fieldless_variants: true,
             combine_substructure: combine_substructure(Box::new(|a, b, c| {
                 hash_substructure(a, b, c)
             })),
         }],
         associated_types: Vec::new(),
-        is_const,
     };
 
     hash_trait_def.expand(cx, mitem, item, push);
@@ -60,7 +58,7 @@ fn hash_substructure(
 
             cx.expr_path(cx.path_global(span, strs))
         };
-        let expr = cx.expr_call(span, hash_path, thin_vec![expr, state_expr.clone()]);
+        let expr = cx.expr_call(span, hash_path, vec![expr, state_expr.clone()]);
         cx.stmt_expr(expr)
     };
 
@@ -72,7 +70,7 @@ fn hash_substructure(
         }
         EnumTag(tag_field, match_expr) => {
             assert!(tag_field.other_selflike_exprs.is_empty());
-            let stmts = thin_vec![call_hash(tag_field.span, tag_field.self_expr.clone())];
+            let stmts = vec![call_hash(tag_field.span, tag_field.self_expr.clone())];
             (stmts, match_expr.clone())
         }
         _ => cx.span_bug(trait_span, "impossible substructure in `derive(Hash)`"),

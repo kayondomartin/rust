@@ -1,13 +1,69 @@
+//! A visiting traversal mechanism for complex data structures that contain type
+//! information.
+//!
+//! This is a read-only traversal of the data structure.
+//!
+//! This traversal has limited flexibility. Only a small number of "types of
+//! interest" within the complex data structures can receive custom
+//! visitation. These are the ones containing the most important type-related
+//! information, such as `Ty`, `Predicate`, `Region`, and `Const`.
+//!
+//! There are three groups of traits involved in each traversal.
+//! - `TypeVisitable`. This is implemented once for many types, including:
+//!   - Types of interest, for which the methods delegate to the visitor.
+//!   - All other types, including generic containers like `Vec` and `Option`.
+//!     It defines a "skeleton" of how they should be visited.
+//! - `TypeSuperVisitable`. This is implemented only for each type of interest,
+//!   and defines the visiting "skeleton" for these types.
+//! - `TypeVisitor`. This is implemented for each visitor. This defines how
+//!   types of interest are visited.
+//!
+//! This means each visit is a mixture of (a) generic visiting operations, and (b)
+//! custom visit operations that are specific to the visitor.
+//! - The `TypeVisitable` impls handle most of the traversal, and call into
+//!   `TypeVisitor` when they encounter a type of interest.
+//! - A `TypeVisitor` may call into another `TypeVisitable` impl, because some of
+//!   the types of interest are recursive and can contain other types of interest.
+//! - A `TypeVisitor` may also call into a `TypeSuperVisitable` impl, because each
+//!   visitor might provide custom handling only for some types of interest, or
+//!   only for some variants of each type of interest, and then use default
+//!   traversal for the remaining cases.
+//!
+//! For example, if you have `struct S(Ty, U)` where `S: TypeVisitable` and `U:
+//! TypeVisitable`, and an instance `s = S(ty, u)`, it would be visited like so:
+//! ```text
+//! s.visit_with(visitor) calls
+//! - ty.visit_with(visitor) calls
+//!   - visitor.visit_ty(ty) may call
+//!     - ty.super_visit_with(visitor)
+//! - u.visit_with(visitor)
+//! ```
 use crate::ty::{self, flags::FlagComputation, Binder, Ty, TyCtxt, TypeFlags};
 use rustc_errors::ErrorGuaranteed;
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sso::SsoHashSet;
+use std::fmt;
 use std::ops::ControlFlow;
 
-pub use rustc_type_ir::visit::{TypeSuperVisitable, TypeVisitable, TypeVisitor};
+/// This trait is implemented for every type that can be visited,
+/// providing the skeleton of the traversal.
+///
+/// To implement this conveniently, use the derive macro located in
+/// `rustc_macros`.
+pub trait TypeVisitable<'tcx>: fmt::Debug + Clone {
+    /// The entry point for visiting. To visit a value `t` with a visitor `v`
+    /// call: `t.visit_with(v)`.
+    ///
+    /// For most types, this just traverses the value, calling `visit_with` on
+    /// each field/element.
+    ///
+    /// For types of interest (such as `Ty`), the implementation of this method
+    /// that calls a visitor method specifically for that type (such as
+    /// `V::visit_ty`). This is where control transfers from `TypeFoldable` to
+    /// `TypeVisitor`.
+    fn visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy>;
 
-pub trait TypeVisitableExt<'tcx>: TypeVisitable<TyCtxt<'tcx>> {
     /// Returns `true` if `self` has any late-bound regions that are either
     /// bound by `binder` or bound by some binder outside of `binder`.
     /// If `binder` is `ty::INNERMOST`, this indicates whether
@@ -16,64 +72,38 @@ pub trait TypeVisitableExt<'tcx>: TypeVisitable<TyCtxt<'tcx>> {
         self.visit_with(&mut HasEscapingVarsVisitor { outer_index: binder }).is_break()
     }
 
-    /// Returns `true` if this type has any regions that escape `binder` (and
+    /// Returns `true` if this `self` has any regions that escape `binder` (and
     /// hence are not bound by it).
     fn has_vars_bound_above(&self, binder: ty::DebruijnIndex) -> bool {
         self.has_vars_bound_at_or_above(binder.shifted_in(1))
     }
 
-    /// Return `true` if this type has regions that are not a part of the type.
-    /// For example, `for<'a> fn(&'a i32)` return `false`, while `fn(&'a i32)`
-    /// would return `true`. The latter can occur when traversing through the
-    /// former.
-    ///
-    /// See [`HasEscapingVarsVisitor`] for more information.
     fn has_escaping_bound_vars(&self) -> bool {
         self.has_vars_bound_at_or_above(ty::INNERMOST)
     }
 
+    #[instrument(level = "trace", ret)]
     fn has_type_flags(&self, flags: TypeFlags) -> bool {
-        // N.B. Even though this uses a visitor, the visitor does not actually
-        //      recurse through the whole `TypeVisitable` implementor type.
-        //
-        //      Instead it stops on the first "level", visiting types, regions,
-        //      consts and predicates just fetches their type flags.
-        //
-        //      Thus this is a lot faster than it might seem and should be
-        //      optimized to a simple field access.
-        let res =
-            self.visit_with(&mut HasTypeFlagsVisitor { flags }).break_value() == Some(FoundFlags);
-        trace!(?self, ?flags, ?res, "has_type_flags");
-        res
+        self.visit_with(&mut HasTypeFlagsVisitor { flags }).break_value() == Some(FoundFlags)
     }
     fn has_projections(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_PROJECTION)
     }
-    fn has_inherent_projections(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_TY_INHERENT)
-    }
     fn has_opaque_types(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_TY_OPAQUE)
-    }
-    fn has_generators(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_TY_GENERATOR)
     }
     fn references_error(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_ERROR)
     }
     fn error_reported(&self) -> Result<(), ErrorGuaranteed> {
         if self.references_error() {
-            if let Some(reported) = ty::tls::with(|tcx| tcx.sess.is_compilation_going_to_fail()) {
-                Err(reported)
-            } else {
-                bug!("expect tcx.sess.is_compilation_going_to_fail return `Some`");
-            }
+            Err(ErrorGuaranteed::unchecked_claim_error_was_emitted())
         } else {
             Ok(())
         }
     }
     fn has_non_region_param(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_PARAM - TypeFlags::HAS_RE_PARAM)
+        self.has_type_flags(TypeFlags::NEEDS_SUBST - TypeFlags::HAS_RE_PARAM)
     }
     fn has_infer_regions(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_RE_INFER)
@@ -82,10 +112,10 @@ pub trait TypeVisitableExt<'tcx>: TypeVisitable<TyCtxt<'tcx>> {
         self.has_type_flags(TypeFlags::HAS_TY_INFER)
     }
     fn has_non_region_infer(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_INFER - TypeFlags::HAS_RE_INFER)
+        self.has_type_flags(TypeFlags::NEEDS_INFER - TypeFlags::HAS_RE_INFER)
     }
-    fn has_infer(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_INFER)
+    fn needs_infer(&self) -> bool {
+        self.has_type_flags(TypeFlags::NEEDS_INFER)
     }
     fn has_placeholders(&self) -> bool {
         self.has_type_flags(
@@ -94,11 +124,8 @@ pub trait TypeVisitableExt<'tcx>: TypeVisitable<TyCtxt<'tcx>> {
                 | TypeFlags::HAS_CT_PLACEHOLDER,
         )
     }
-    fn has_non_region_placeholders(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_TY_PLACEHOLDER | TypeFlags::HAS_CT_PLACEHOLDER)
-    }
-    fn has_param(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_PARAM)
+    fn needs_subst(&self) -> bool {
+        self.has_type_flags(TypeFlags::NEEDS_SUBST)
     }
     /// "Free" regions in this context means that it has any region
     /// that is not (a) erased or (b) late-bound.
@@ -126,14 +153,6 @@ pub trait TypeVisitableExt<'tcx>: TypeVisitable<TyCtxt<'tcx>> {
     fn has_late_bound_regions(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_RE_LATE_BOUND)
     }
-    /// True if there are any late-bound non-region variables
-    fn has_non_region_late_bound(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_LATE_BOUND - TypeFlags::HAS_RE_LATE_BOUND)
-    }
-    /// True if there are any late-bound variables
-    fn has_late_bound_vars(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_LATE_BOUND)
-    }
 
     /// Indicates whether this value still has parameters/placeholders/inference variables
     /// which could be replaced later, in a way that would change the results of `impl`
@@ -143,7 +162,45 @@ pub trait TypeVisitableExt<'tcx>: TypeVisitable<TyCtxt<'tcx>> {
     }
 }
 
-impl<'tcx, T: TypeVisitable<TyCtxt<'tcx>>> TypeVisitableExt<'tcx> for T {}
+pub trait TypeSuperVisitable<'tcx>: TypeVisitable<'tcx> {
+    /// Provides a default visit for a type of interest. This should only be
+    /// called within `TypeVisitor` methods, when a non-custom traversal is
+    /// desired for the value of the type of interest passed to that method.
+    /// For example, in `MyVisitor::visit_ty(ty)`, it is valid to call
+    /// `ty.super_visit_with(self)`, but any other visiting should be done
+    /// with `xyz.visit_with(self)`.
+    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy>;
+}
+
+/// This trait is implemented for every visiting traversal. There is a visit
+/// method defined for every type of interest. Each such method has a default
+/// that recurses into the type's fields in a non-custom fashion.
+pub trait TypeVisitor<'tcx>: Sized {
+    type BreakTy = !;
+
+    fn visit_binder<T: TypeVisitable<'tcx>>(
+        &mut self,
+        t: &Binder<'tcx, T>,
+    ) -> ControlFlow<Self::BreakTy> {
+        t.super_visit_with(self)
+    }
+
+    fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
+        t.super_visit_with(self)
+    }
+
+    fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
+        r.super_visit_with(self)
+    }
+
+    fn visit_const(&mut self, c: ty::Const<'tcx>) -> ControlFlow<Self::BreakTy> {
+        c.super_visit_with(self)
+    }
+
+    fn visit_predicate(&mut self, p: ty::Predicate<'tcx>) -> ControlFlow<Self::BreakTy> {
+        p.super_visit_with(self)
+    }
+}
 
 ///////////////////////////////////////////////////////////////////////////
 // Region folder
@@ -152,7 +209,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Invoke `callback` on every region appearing free in `value`.
     pub fn for_each_free_region(
         self,
-        value: &impl TypeVisitable<TyCtxt<'tcx>>,
+        value: &impl TypeVisitable<'tcx>,
         mut callback: impl FnMut(ty::Region<'tcx>),
     ) {
         self.any_free_region_meets(value, |r| {
@@ -164,7 +221,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Returns `true` if `callback` returns true for every region appearing free in `value`.
     pub fn all_free_regions_meet(
         self,
-        value: &impl TypeVisitable<TyCtxt<'tcx>>,
+        value: &impl TypeVisitable<'tcx>,
         mut callback: impl FnMut(ty::Region<'tcx>) -> bool,
     ) -> bool {
         !self.any_free_region_meets(value, |r| !callback(r))
@@ -173,7 +230,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Returns `true` if `callback` returns true for some region appearing free in `value`.
     pub fn any_free_region_meets(
         self,
-        value: &impl TypeVisitable<TyCtxt<'tcx>>,
+        value: &impl TypeVisitable<'tcx>,
         callback: impl FnMut(ty::Region<'tcx>) -> bool,
     ) -> bool {
         struct RegionVisitor<F> {
@@ -198,13 +255,13 @@ impl<'tcx> TyCtxt<'tcx> {
             callback: F,
         }
 
-        impl<'tcx, F> TypeVisitor<TyCtxt<'tcx>> for RegionVisitor<F>
+        impl<'tcx, F> TypeVisitor<'tcx> for RegionVisitor<F>
         where
             F: FnMut(ty::Region<'tcx>) -> bool,
         {
             type BreakTy = ();
 
-            fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(
+            fn visit_binder<T: TypeVisitable<'tcx>>(
                 &mut self,
                 t: &Binder<'tcx, T>,
             ) -> ControlFlow<Self::BreakTy> {
@@ -217,13 +274,13 @@ impl<'tcx> TyCtxt<'tcx> {
             fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
                 match *r {
                     ty::ReLateBound(debruijn, _) if debruijn < self.outer_index => {
-                        ControlFlow::Continue(())
+                        ControlFlow::CONTINUE
                     }
                     _ => {
                         if (self.callback)(r) {
-                            ControlFlow::Break(())
+                            ControlFlow::BREAK
                         } else {
-                            ControlFlow::Continue(())
+                            ControlFlow::CONTINUE
                         }
                     }
                 }
@@ -234,7 +291,7 @@ impl<'tcx> TyCtxt<'tcx> {
                 if ty.flags().intersects(TypeFlags::HAS_FREE_REGIONS) {
                     ty.super_visit_with(self)
                 } else {
-                    ControlFlow::Continue(())
+                    ControlFlow::CONTINUE
                 }
             }
         }
@@ -251,7 +308,7 @@ impl<'tcx> TyCtxt<'tcx> {
         value: &Binder<'tcx, T>,
     ) -> FxHashSet<ty::BoundRegionKind>
     where
-        T: TypeVisitable<TyCtxt<'tcx>>,
+        T: TypeVisitable<'tcx>,
     {
         self.collect_late_bound_regions(value, true)
     }
@@ -262,7 +319,7 @@ impl<'tcx> TyCtxt<'tcx> {
         value: &Binder<'tcx, T>,
     ) -> FxHashSet<ty::BoundRegionKind>
     where
-        T: TypeVisitable<TyCtxt<'tcx>>,
+        T: TypeVisitable<'tcx>,
     {
         self.collect_late_bound_regions(value, false)
     }
@@ -273,7 +330,7 @@ impl<'tcx> TyCtxt<'tcx> {
         just_constraint: bool,
     ) -> FxHashSet<ty::BoundRegionKind>
     where
-        T: TypeVisitable<TyCtxt<'tcx>>,
+        T: TypeVisitable<'tcx>,
     {
         let mut collector = LateBoundRegionsCollector::new(just_constraint);
         let result = value.as_ref().skip_binder().visit_with(&mut collector);
@@ -300,10 +357,10 @@ impl<'tcx> ValidateBoundVars<'tcx> {
     }
 }
 
-impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ValidateBoundVars<'tcx> {
+impl<'tcx> TypeVisitor<'tcx> for ValidateBoundVars<'tcx> {
     type BreakTy = ();
 
-    fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(
+    fn visit_binder<T: TypeVisitable<'tcx>>(
         &mut self,
         t: &Binder<'tcx, T>,
     ) -> ControlFlow<Self::BreakTy> {
@@ -317,7 +374,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ValidateBoundVars<'tcx> {
         if t.outer_exclusive_binder() < self.binder_index
             || !self.visited.insert((self.binder_index, t))
         {
-            return ControlFlow::Break(());
+            return ControlFlow::BREAK;
         }
         match *t.kind() {
             ty::Bound(debruijn, bound_ty) if debruijn == self.binder_index => {
@@ -375,7 +432,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ValidateBoundVars<'tcx> {
             _ => (),
         };
 
-        ControlFlow::Continue(())
+        r.super_visit_with(self)
     }
 }
 
@@ -412,10 +469,10 @@ struct HasEscapingVarsVisitor {
     outer_index: ty::DebruijnIndex,
 }
 
-impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for HasEscapingVarsVisitor {
+impl<'tcx> TypeVisitor<'tcx> for HasEscapingVarsVisitor {
     type BreakTy = FoundEscapingVars;
 
-    fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(
+    fn visit_binder<T: TypeVisitable<'tcx>>(
         &mut self,
         t: &Binder<'tcx, T>,
     ) -> ControlFlow<Self::BreakTy> {
@@ -435,7 +492,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for HasEscapingVarsVisitor {
         if t.outer_exclusive_binder() > self.outer_index {
             ControlFlow::Break(FoundEscapingVars)
         } else {
-            ControlFlow::Continue(())
+            ControlFlow::CONTINUE
         }
     }
 
@@ -447,7 +504,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for HasEscapingVarsVisitor {
         if r.bound_at_or_above_binder(self.outer_index) {
             ControlFlow::Break(FoundEscapingVars)
         } else {
-            ControlFlow::Continue(())
+            ControlFlow::CONTINUE
         }
     }
 
@@ -470,7 +527,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for HasEscapingVarsVisitor {
         if predicate.outer_exclusive_binder() > self.outer_index {
             ControlFlow::Break(FoundEscapingVars)
         } else {
-            ControlFlow::Continue(())
+            ControlFlow::CONTINUE
         }
     }
 }
@@ -489,46 +546,58 @@ impl std::fmt::Debug for HasTypeFlagsVisitor {
     }
 }
 
-impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for HasTypeFlagsVisitor {
+impl<'tcx> TypeVisitor<'tcx> for HasTypeFlagsVisitor {
     type BreakTy = FoundFlags;
 
     #[inline]
+    #[instrument(skip(self), level = "trace", ret)]
     fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
         let flags = t.flags();
+        trace!(t.flags=?t.flags());
         if flags.intersects(self.flags) {
             ControlFlow::Break(FoundFlags)
         } else {
-            ControlFlow::Continue(())
+            ControlFlow::CONTINUE
         }
     }
 
     #[inline]
+    #[instrument(skip(self), level = "trace", ret)]
     fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
         let flags = r.type_flags();
+        trace!(r.flags=?flags);
         if flags.intersects(self.flags) {
             ControlFlow::Break(FoundFlags)
         } else {
-            ControlFlow::Continue(())
+            ControlFlow::CONTINUE
         }
     }
 
     #[inline]
+    #[instrument(level = "trace", ret)]
     fn visit_const(&mut self, c: ty::Const<'tcx>) -> ControlFlow<Self::BreakTy> {
         let flags = FlagComputation::for_const(c);
         trace!(r.flags=?flags);
         if flags.intersects(self.flags) {
             ControlFlow::Break(FoundFlags)
         } else {
-            ControlFlow::Continue(())
+            ControlFlow::CONTINUE
         }
     }
 
     #[inline]
+    #[instrument(level = "trace", ret)]
     fn visit_predicate(&mut self, predicate: ty::Predicate<'tcx>) -> ControlFlow<Self::BreakTy> {
+        debug!(
+            "HasTypeFlagsVisitor: predicate={:?} predicate.flags={:?} self.flags={:?}",
+            predicate,
+            predicate.flags(),
+            self.flags
+        );
         if predicate.flags().intersects(self.flags) {
             ControlFlow::Break(FoundFlags)
         } else {
-            ControlFlow::Continue(())
+            ControlFlow::CONTINUE
         }
     }
 }
@@ -559,8 +628,8 @@ impl LateBoundRegionsCollector {
     }
 }
 
-impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for LateBoundRegionsCollector {
-    fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(
+impl<'tcx> TypeVisitor<'tcx> for LateBoundRegionsCollector {
+    fn visit_binder<T: TypeVisitable<'tcx>>(
         &mut self,
         t: &Binder<'tcx, T>,
     ) -> ControlFlow<Self::BreakTy> {
@@ -575,8 +644,8 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for LateBoundRegionsCollector {
         // ignore the inputs to a projection, as they may not appear
         // in the normalized form
         if self.just_constrained {
-            if let ty::Alias(..) = t.kind() {
-                return ControlFlow::Continue(());
+            if let ty::Projection(..) | ty::Opaque(..) = t.kind() {
+                return ControlFlow::CONTINUE;
             }
         }
 
@@ -589,7 +658,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for LateBoundRegionsCollector {
         // in the normalized form
         if self.just_constrained {
             if let ty::ConstKind::Unevaluated(..) = c.kind() {
-                return ControlFlow::Continue(());
+                return ControlFlow::CONTINUE;
             }
         }
 
@@ -602,7 +671,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for LateBoundRegionsCollector {
                 self.regions.insert(br.kind);
             }
         }
-        ControlFlow::Continue(())
+        ControlFlow::CONTINUE
     }
 }
 
@@ -621,7 +690,7 @@ impl MaxUniverse {
     }
 }
 
-impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for MaxUniverse {
+impl<'tcx> TypeVisitor<'tcx> for MaxUniverse {
     fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
         if let ty::Placeholder(placeholder) = t.kind() {
             self.max_universe = ty::UniverseIndex::from_u32(
@@ -649,6 +718,6 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for MaxUniverse {
             );
         }
 
-        ControlFlow::Continue(())
+        ControlFlow::CONTINUE
     }
 }

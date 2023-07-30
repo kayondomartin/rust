@@ -53,6 +53,8 @@ const CONTESTED_BIT: u32 = 1;
 // This can never be a valid `zx_handle_t`.
 const UNLOCKED: u32 = 0;
 
+pub type MovableMutex = Mutex;
+
 pub struct Mutex {
     futex: AtomicU32,
 }
@@ -84,27 +86,23 @@ impl Mutex {
     }
 
     #[inline]
-    pub fn try_lock(&self) -> bool {
-        let thread_self = unsafe { zx_thread_self() };
+    pub unsafe fn try_lock(&self) -> bool {
+        let thread_self = zx_thread_self();
         self.futex.compare_exchange(UNLOCKED, to_state(thread_self), Acquire, Relaxed).is_ok()
     }
 
     #[inline]
-    pub fn lock(&self) {
-        let thread_self = unsafe { zx_thread_self() };
+    pub unsafe fn lock(&self) {
+        let thread_self = zx_thread_self();
         if let Err(state) =
             self.futex.compare_exchange(UNLOCKED, to_state(thread_self), Acquire, Relaxed)
         {
-            unsafe {
-                self.lock_contested(state, thread_self);
-            }
+            self.lock_contested(state, thread_self);
         }
     }
 
-    /// # Safety
-    /// `thread_self` must be the handle for the current thread.
     #[cold]
-    unsafe fn lock_contested(&self, mut state: u32, thread_self: zx_handle_t) {
+    fn lock_contested(&self, mut state: u32, thread_self: zx_handle_t) {
         let owned_state = mark_contested(to_state(thread_self));
         loop {
             // Mark the mutex as contested if it is not already.

@@ -42,12 +42,6 @@ fn decodable_body(
     }
     let ty_name = s.ast().ident.to_string();
     let decode_body = match s.variants() {
-        [] => {
-            let message = format!("`{}` has no variants to decode", ty_name);
-            quote! {
-                panic!(#message)
-            }
-        }
         [vi] => vi.construct(|field, _index| decode_field(field)),
         variants => {
             let match_inner: TokenStream = variants
@@ -145,11 +139,6 @@ fn encodable_body(
     });
 
     let encode_body = match s.variants() {
-        [] => {
-            quote! {
-                match *self {}
-            }
-        }
         [_] => {
             let encode_inner = s.each_variant(|vi| {
                 vi.bindings()
@@ -171,23 +160,6 @@ fn encodable_body(
             }
         }
         _ => {
-            let disc = {
-                let mut variant_idx = 0usize;
-                let encode_inner = s.each_variant(|_| {
-                    let result = quote! {
-                        #variant_idx
-                    };
-                    variant_idx += 1;
-                    result
-                });
-                quote! {
-                    let disc = match *self {
-                        #encode_inner
-                    };
-                    ::rustc_serialize::Encoder::emit_usize(__encoder, disc);
-                }
-            };
-
             let mut variant_idx = 0usize;
             let encode_inner = s.each_variant(|vi| {
                 let encode_fields: TokenStream = vi
@@ -204,11 +176,26 @@ fn encodable_body(
                         result
                     })
                     .collect();
+
+                let result = if !vi.bindings().is_empty() {
+                    quote! {
+                        ::rustc_serialize::Encoder::emit_enum_variant(
+                            __encoder,
+                            #variant_idx,
+                            |__encoder| { #encode_fields }
+                        )
+                    }
+                } else {
+                    quote! {
+                        ::rustc_serialize::Encoder::emit_fieldless_enum_variant::<#variant_idx>(
+                            __encoder,
+                        )
+                    }
+                };
                 variant_idx += 1;
-                encode_fields
+                result
             });
             quote! {
-                #disc
                 match *self {
                     #encode_inner
                 }

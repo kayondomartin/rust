@@ -10,7 +10,7 @@ pub fn target() -> Target {
     base.has_thread_local = false;
     // BUG(GabrielMajeri): disabling the PLT on x86_64 Linux with x32 ABI
     // breaks code gen. See LLVM bug 36743
-    base.plt_by_default = true;
+    base.needs_plt = true;
 
     Target {
         llvm_target: "x86_64-unknown-linux-gnux32".into(),

@@ -3,7 +3,7 @@
 use crate::errors::{LoadPluginError, MalformedPluginAttribute};
 use crate::Registry;
 use libloading::Library;
-use rustc_ast::Attribute;
+use rustc_ast::Crate;
 use rustc_metadata::locator;
 use rustc_session::cstore::MetadataLoader;
 use rustc_session::Session;
@@ -20,11 +20,11 @@ type PluginRegistrarFn = fn(&mut Registry<'_>);
 pub fn load_plugins(
     sess: &Session,
     metadata_loader: &dyn MetadataLoader,
-    attrs: &[Attribute],
+    krate: &Crate,
 ) -> Vec<PluginRegistrarFn> {
     let mut plugins = Vec::new();
 
-    for attr in attrs {
+    for attr in &krate.attrs {
         if !attr.has_name(sym::plugin) {
             continue;
         }

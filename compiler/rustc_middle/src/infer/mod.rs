@@ -12,8 +12,7 @@ use rustc_span::Span;
 /// ```text
 /// R0 member of [O1..On]
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(HashStable, TypeFoldable, TypeVisitable, Lift)]
+#[derive(Debug, Clone, HashStable, TypeFoldable, TypeVisitable, Lift)]
 pub struct MemberConstraint<'tcx> {
     /// The `DefId` and substs of the opaque type causing this constraint.
     /// Used for error reporting.

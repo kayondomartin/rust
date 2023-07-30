@@ -73,7 +73,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             {
                 existing_bindings.extend_from_slice(&new_bindings);
                 mem::swap(&mut candidate.bindings, &mut existing_bindings);
-                candidate.subcandidates = self.create_or_subcandidates(candidate, &place, pats);
+                candidate.subcandidates =
+                    self.create_or_subcandidates(candidate, place.clone(), pats);
                 return true;
             }
 
@@ -126,7 +127,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     fn create_or_subcandidates<'pat>(
         &mut self,
         candidate: &Candidate<'pat, 'tcx>,
-        place: &PlaceBuilder<'tcx>,
+        place: PlaceBuilder<'tcx>,
         pats: &'pat [Box<Pat<'tcx>>],
     ) -> Vec<Candidate<'pat, 'tcx>> {
         pats.iter()
@@ -155,10 +156,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 ascription: thir::Ascription { ref annotation, variance },
             } => {
                 // Apply the type ascription to the value at `match_pair.place`, which is the
-                if let Some(source) = match_pair.place.try_to_place(self) {
+                if let Ok(place_resolved) = match_pair.place.clone().try_upvars_resolved(self) {
                     candidate.ascriptions.push(Ascription {
                         annotation: annotation.clone(),
-                        source,
+                        source: place_resolved.into_place(self),
                         variance,
                     });
                 }
@@ -182,10 +183,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 ref subpattern,
                 is_primary: _,
             } => {
-                if let Some(source) = match_pair.place.try_to_place(self) {
+                if let Ok(place_resolved) = match_pair.place.clone().try_upvars_resolved(self) {
                     candidate.bindings.push(Binding {
                         span: match_pair.pattern.span,
-                        source,
+                        source: place_resolved.into_place(self),
                         var_id: var,
                         binding_mode: mode,
                     });
@@ -263,10 +264,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let irrefutable = adt_def.variants().iter_enumerated().all(|(i, v)| {
                     i == variant_index || {
                         self.tcx.features().exhaustive_patterns
-                            && !v
-                                .inhabited_predicate(self.tcx, adt_def)
+                            && v.inhabited_predicate(self.tcx, adt_def)
                                 .subst(self.tcx, substs)
-                                .apply_ignore_module(self.tcx, self.param_env)
+                                .apply_any_module(self.tcx, self.param_env)
+                                != Some(true)
                     }
                 }) && (adt_def.did().is_local()
                     || !adt_def.is_variant_list_non_exhaustive());

@@ -2,16 +2,39 @@
 //!
 //! The main entry point is the `step` method.
 
-use either::Either;
-
 use rustc_middle::mir;
 use rustc_middle::mir::interpret::{InterpResult, Scalar};
 use rustc_middle::ty::layout::LayoutOf;
 
-use super::{ImmTy, InterpCx, Machine};
-use crate::util;
+use super::{InterpCx, Machine};
+
+/// Classify whether an operator is "left-homogeneous", i.e., the LHS has the
+/// same type as the result.
+#[inline]
+fn binop_left_homogeneous(op: mir::BinOp) -> bool {
+    use rustc_middle::mir::BinOp::*;
+    match op {
+        Add | Sub | Mul | Div | Rem | BitXor | BitAnd | BitOr | Offset | Shl | Shr => true,
+        Eq | Ne | Lt | Le | Gt | Ge => false,
+    }
+}
+/// Classify whether an operator is "right-homogeneous", i.e., the RHS has the
+/// same type as the LHS.
+#[inline]
+fn binop_right_homogeneous(op: mir::BinOp) -> bool {
+    use rustc_middle::mir::BinOp::*;
+    match op {
+        Add | Sub | Mul | Div | Rem | BitXor | BitAnd | BitOr | Eq | Ne | Lt | Le | Gt | Ge => true,
+        Offset | Shl | Shr => false,
+    }
+}
 
 impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
+    pub fn run(&mut self) -> InterpResult<'tcx> {
+        while self.step()? {}
+        Ok(())
+    }
+
     /// Returns `true` as long as there are more things to do.
     ///
     /// This is used by [priroda](https://github.com/oli-obk/priroda)
@@ -23,7 +46,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             return Ok(false);
         }
 
-        let Either::Left(loc) = self.frame().loc else {
+        let Ok(loc) = self.frame().loc else {
             // We are unwinding and this fn has no cleanup code.
             // Just go on unwinding.
             trace!("unwinding: skipping frame");
@@ -38,7 +61,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             // Make sure we are not updating `statement_index` of the wrong frame.
             assert_eq!(old_frames, self.frame_idx());
             // Advance the program counter.
-            self.frame_mut().loc.as_mut().left().unwrap().statement_index += 1;
+            self.frame_mut().loc.as_mut().unwrap().statement_index += 1;
             return Ok(true);
         }
 
@@ -88,18 +111,12 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             // Stacked Borrows.
             Retag(kind, place) => {
                 let dest = self.eval_place(**place)?;
-                M::retag_place_contents(self, *kind, &dest)?;
+                M::retag(self, *kind, &dest)?;
             }
 
-            Intrinsic(box intrinsic) => self.emulate_nondiverging_intrinsic(intrinsic)?,
+            Intrinsic(box ref intrinsic) => self.emulate_nondiverging_intrinsic(intrinsic)?,
 
-            // Evaluate the place expression, without reading from it.
-            PlaceMention(box place) => {
-                let _ = self.eval_place(*place)?;
-            }
-
-            // This exists purely to guide borrowck lifetime inference, and does not have
-            // an operational effect.
+            // Statements we do not track.
             AscribeUserType(..) => {}
 
             // Currently, Miri discards Coverage statements. Coverage statements are only injected
@@ -114,10 +131,6 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             //
             // FIXME(#73156): Handle source code coverage in const eval
             Coverage(..) => {}
-
-            ConstEvalCounter => {
-                M::increment_const_eval_counter(self)?;
-            }
 
             // Defined to do nothing. These are added by optimization passes, to avoid changing the
             // size of MIR constantly.
@@ -153,15 +166,15 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 self.copy_op(&op, &dest, /*allow_transmute*/ false)?;
             }
 
-            CopyForDeref(place) => {
-                let op = self.eval_place_to_op(place, Some(dest.layout))?;
+            CopyForDeref(ref place) => {
+                let op = self.eval_place_to_op(*place, Some(dest.layout))?;
                 self.copy_op(&op, &dest, /* allow_transmute*/ false)?;
             }
 
             BinaryOp(bin_op, box (ref left, ref right)) => {
-                let layout = util::binop_left_homogeneous(bin_op).then_some(dest.layout);
+                let layout = binop_left_homogeneous(bin_op).then_some(dest.layout);
                 let left = self.read_immediate(&self.eval_operand(left, layout)?)?;
-                let layout = util::binop_right_homogeneous(bin_op).then_some(left.layout);
+                let layout = binop_right_homogeneous(bin_op).then_some(left.layout);
                 let right = self.read_immediate(&self.eval_operand(right, layout)?)?;
                 self.binop_ignore_overflow(bin_op, &left, &right, &dest)?;
             }
@@ -169,9 +182,11 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             CheckedBinaryOp(bin_op, box (ref left, ref right)) => {
                 // Due to the extra boolean in the result, we can never reuse the `dest.layout`.
                 let left = self.read_immediate(&self.eval_operand(left, None)?)?;
-                let layout = util::binop_right_homogeneous(bin_op).then_some(left.layout);
+                let layout = binop_right_homogeneous(bin_op).then_some(left.layout);
                 let right = self.read_immediate(&self.eval_operand(right, layout)?)?;
-                self.binop_with_overflow(bin_op, &left, &right, &dest)?;
+                self.binop_with_overflow(
+                    bin_op, /*force_overflow_checks*/ false, &left, &right, &dest,
+                )?;
             }
 
             UnaryOp(un_op, ref operand) => {
@@ -183,12 +198,18 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             }
 
             Aggregate(box ref kind, ref operands) => {
-                self.write_aggregate(kind, operands, &dest)?;
+                assert!(matches!(kind, mir::AggregateKind::Array(..)));
+
+                for (field_index, operand) in operands.iter().enumerate() {
+                    let op = self.eval_operand(operand, None)?;
+                    let field_dest = self.place_field(&dest, field_index)?;
+                    self.copy_op(&op, &field_dest, /*allow_transmute*/ false)?;
+                }
             }
 
             Repeat(ref operand, _) => {
                 let src = self.eval_operand(operand, None)?;
-                assert!(src.layout.is_sized());
+                assert!(!src.layout.is_unsized());
                 let dest = self.force_allocation(&dest)?;
                 let length = dest.len(self)?;
 
@@ -226,65 +247,31 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 let src = self.eval_place(place)?;
                 let op = self.place_to_op(&src)?;
                 let len = op.len(self)?;
-                self.write_scalar(Scalar::from_target_usize(len, self), &dest)?;
+                self.write_scalar(Scalar::from_machine_usize(len, self), &dest)?;
             }
 
-            Ref(_, borrow_kind, place) => {
+            AddressOf(_, place) | Ref(_, _, place) => {
                 let src = self.eval_place(place)?;
                 let place = self.force_allocation(&src)?;
-                let val = ImmTy::from_immediate(place.to_ref(self), dest.layout);
-                // A fresh reference was created, make sure it gets retagged.
-                let val = M::retag_ptr_value(
-                    self,
-                    if borrow_kind.allows_two_phase_borrow() {
-                        mir::RetagKind::TwoPhase
-                    } else {
-                        mir::RetagKind::Default
-                    },
-                    &val,
-                )?;
-                self.write_immediate(*val, &dest)?;
+                self.write_immediate(place.to_ref(self), &dest)?;
             }
 
-            AddressOf(_, place) => {
-                // Figure out whether this is an addr_of of an already raw place.
-                let place_base_raw = if place.has_deref() {
-                    let ty = self.frame().body.local_decls[place.local].ty;
-                    ty.is_unsafe_ptr()
-                } else {
-                    // Not a deref, and thus not raw.
-                    false
-                };
-
-                let src = self.eval_place(place)?;
-                let place = self.force_allocation(&src)?;
-                let mut val = ImmTy::from_immediate(place.to_ref(self), dest.layout);
-                if !place_base_raw {
-                    // If this was not already raw, it needs retagging.
-                    val = M::retag_ptr_value(self, mir::RetagKind::Raw, &val)?;
-                }
-                self.write_immediate(*val, &dest)?;
-            }
-
-            NullaryOp(ref null_op, ty) => {
+            NullaryOp(null_op, ty) => {
                 let ty = self.subst_from_current_frame_and_normalize_erasing_regions(ty)?;
                 let layout = self.layout_of(ty)?;
-                if let mir::NullOp::SizeOf | mir::NullOp::AlignOf = null_op && layout.is_unsized() {
+                if layout.is_unsized() {
                     // FIXME: This should be a span_bug (#80742)
                     self.tcx.sess.delay_span_bug(
                         self.frame().current_span(),
-                        format!("{null_op:?} MIR operator called for unsized type {ty}"),
+                        &format!("Nullary MIR operator called for unsized type {}", ty),
                     );
                     throw_inval!(SizeOfUnsizedType(ty));
                 }
                 let val = match null_op {
                     mir::NullOp::SizeOf => layout.size.bytes(),
                     mir::NullOp::AlignOf => layout.align.abi.bytes(),
-                    mir::NullOp::OffsetOf(fields) => {
-                        layout.offset_of_subfield(self, fields.iter().map(|f| f.index())).bytes()
-                    }
                 };
-                self.write_scalar(Scalar::from_target_usize(val, self), &dest)?;
+                self.write_scalar(Scalar::from_machine_usize(val, self), &dest)?;
             }
 
             ShallowInitBox(ref operand, _) => {
@@ -318,7 +305,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
         self.eval_terminator(terminator)?;
         if !self.stack().is_empty() {
-            if let Either::Left(loc) = self.frame().loc {
+            if let Ok(loc) = self.frame().loc {
                 info!("// executing {:?}", loc.block);
             }
         }

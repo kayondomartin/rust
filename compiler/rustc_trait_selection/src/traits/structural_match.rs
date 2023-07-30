@@ -1,5 +1,11 @@
+use crate::infer::{InferCtxt, TyCtxtInferExt};
+use crate::traits::ObligationCause;
+use crate::traits::{TraitEngine, TraitEngineExt};
+
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
+use rustc_hir::lang_items::LangItem;
+use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitor};
 use rustc_span::Span;
 use std::ops::ControlFlow;
@@ -34,7 +40,71 @@ pub fn search_for_structural_match_violation<'tcx>(
     tcx: TyCtxt<'tcx>,
     ty: Ty<'tcx>,
 ) -> Option<Ty<'tcx>> {
-    ty.visit_with(&mut Search { tcx, span, seen: FxHashSet::default() }).break_value()
+    ty.visit_with(&mut Search { tcx, span, seen: FxHashSet::default(), adt_const_param: false })
+        .break_value()
+}
+
+/// This method traverses the structure of `ty`, trying to find any
+/// types that are not allowed to be used in a const generic.
+///
+/// This is either because the type does not implement `StructuralEq`
+/// and `StructuralPartialEq`, or because the type is intentionally
+/// not supported in const generics (such as floats and raw pointers,
+/// which are allowed in match blocks).
+pub fn search_for_adt_const_param_violation<'tcx>(
+    span: Span,
+    tcx: TyCtxt<'tcx>,
+    ty: Ty<'tcx>,
+) -> Option<Ty<'tcx>> {
+    ty.visit_with(&mut Search { tcx, span, seen: FxHashSet::default(), adt_const_param: true })
+        .break_value()
+}
+
+/// This method returns true if and only if `adt_ty` itself has been marked as
+/// eligible for structural-match: namely, if it implements both
+/// `StructuralPartialEq` and `StructuralEq` (which are respectively injected by
+/// `#[derive(PartialEq)]` and `#[derive(Eq)]`).
+///
+/// Note that this does *not* recursively check if the substructure of `adt_ty`
+/// implements the traits.
+fn type_marked_structural<'tcx>(
+    infcx: &InferCtxt<'tcx>,
+    adt_ty: Ty<'tcx>,
+    cause: ObligationCause<'tcx>,
+) -> bool {
+    let mut fulfillment_cx = <dyn TraitEngine<'tcx>>::new(infcx.tcx);
+    // require `#[derive(PartialEq)]`
+    let structural_peq_def_id =
+        infcx.tcx.require_lang_item(LangItem::StructuralPeq, Some(cause.span));
+    fulfillment_cx.register_bound(
+        infcx,
+        ty::ParamEnv::empty(),
+        adt_ty,
+        structural_peq_def_id,
+        cause.clone(),
+    );
+    // for now, require `#[derive(Eq)]`. (Doing so is a hack to work around
+    // the type `for<'a> fn(&'a ())` failing to implement `Eq` itself.)
+    let structural_teq_def_id =
+        infcx.tcx.require_lang_item(LangItem::StructuralTeq, Some(cause.span));
+    fulfillment_cx.register_bound(
+        infcx,
+        ty::ParamEnv::empty(),
+        adt_ty,
+        structural_teq_def_id,
+        cause,
+    );
+
+    // We deliberately skip *reporting* fulfillment errors (via
+    // `report_fulfillment_errors`), for two reasons:
+    //
+    // 1. The error messages would mention `std::marker::StructuralPartialEq`
+    //    (a trait which is solely meant as an implementation detail
+    //    for now), and
+    //
+    // 2. We are sometimes doing future-incompatibility lints for
+    //    now, so we do not want unconditional errors here.
+    fulfillment_cx.select_all_or_error(infcx).is_empty()
 }
 
 /// This implements the traversal over the structure of a given type to try to
@@ -48,6 +118,11 @@ struct Search<'tcx> {
     /// Tracks ADTs previously encountered during search, so that
     /// we will not recur on them again.
     seen: FxHashSet<hir::def_id::DefId>,
+
+    // Additionally deny things that have been allowed in patterns,
+    // but are not allowed in adt const params, such as floats and
+    // fn ptrs.
+    adt_const_param: bool,
 }
 
 impl<'tcx> Search<'tcx> {
@@ -56,7 +131,7 @@ impl<'tcx> Search<'tcx> {
     }
 }
 
-impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for Search<'tcx> {
+impl<'tcx> TypeVisitor<'tcx> for Search<'tcx> {
     type BreakTy = Ty<'tcx>;
 
     fn visit_ty(&mut self, ty: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
@@ -73,58 +148,73 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for Search<'tcx> {
             ty::Foreign(_) => {
                 return ControlFlow::Break(ty);
             }
-            ty::Alias(..) => {
+            ty::Opaque(..) => {
+                return ControlFlow::Break(ty);
+            }
+            ty::Projection(..) => {
                 return ControlFlow::Break(ty);
             }
             ty::Closure(..) => {
                 return ControlFlow::Break(ty);
             }
-            ty::Generator(..) | ty::GeneratorWitness(..) | ty::GeneratorWitnessMIR(..) => {
+            ty::Generator(..) | ty::GeneratorWitness(..) => {
                 return ControlFlow::Break(ty);
             }
             ty::FnDef(..) => {
                 // Types of formals and return in `fn(_) -> _` are also irrelevant;
                 // so we do not recur into them via `super_visit_with`
-                return ControlFlow::Continue(());
+                return ControlFlow::CONTINUE;
             }
             ty::Array(_, n)
-                if { n.try_eval_target_usize(self.tcx, ty::ParamEnv::reveal_all()) == Some(0) } =>
+                if { n.try_eval_usize(self.tcx, ty::ParamEnv::reveal_all()) == Some(0) } =>
             {
                 // rust-lang/rust#62336: ignore type of contents
                 // for empty array.
-                return ControlFlow::Continue(());
+                return ControlFlow::CONTINUE;
             }
             ty::Bool | ty::Char | ty::Int(_) | ty::Uint(_) | ty::Str | ty::Never => {
                 // These primitive types are always structural match.
                 //
                 // `Never` is kind of special here, but as it is not inhabitable, this should be fine.
-                return ControlFlow::Continue(());
+                return ControlFlow::CONTINUE;
             }
 
             ty::FnPtr(..) => {
-                return ControlFlow::Continue(());
+                if !self.adt_const_param {
+                    return ControlFlow::CONTINUE;
+                } else {
+                    return ControlFlow::Break(ty);
+                }
             }
 
             ty::RawPtr(..) => {
-                // structural-match ignores substructure of
-                // `*const _`/`*mut _`, so skip `super_visit_with`.
-                //
-                // For example, if you have:
-                // ```
-                // struct NonStructural;
-                // #[derive(PartialEq, Eq)]
-                // struct T(*const NonStructural);
-                // const C: T = T(std::ptr::null());
-                // ```
-                //
-                // Even though `NonStructural` does not implement `PartialEq`,
-                // structural equality on `T` does not recur into the raw
-                // pointer. Therefore, one can still use `C` in a pattern.
-                return ControlFlow::Continue(());
+                if !self.adt_const_param {
+                    // structural-match ignores substructure of
+                    // `*const _`/`*mut _`, so skip `super_visit_with`.
+                    //
+                    // For example, if you have:
+                    // ```
+                    // struct NonStructural;
+                    // #[derive(PartialEq, Eq)]
+                    // struct T(*const NonStructural);
+                    // const C: T = T(std::ptr::null());
+                    // ```
+                    //
+                    // Even though `NonStructural` does not implement `PartialEq`,
+                    // structural equality on `T` does not recur into the raw
+                    // pointer. Therefore, one can still use `C` in a pattern.
+                    return ControlFlow::CONTINUE;
+                } else {
+                    return ControlFlow::Break(ty);
+                }
             }
 
             ty::Float(_) => {
-                return ControlFlow::Continue(());
+                if !self.adt_const_param {
+                    return ControlFlow::CONTINUE;
+                } else {
+                    return ControlFlow::Break(ty);
+                }
             }
 
             ty::Array(..) | ty::Slice(_) | ty::Ref(..) | ty::Tuple(..) => {
@@ -138,13 +228,13 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for Search<'tcx> {
                 self.tcx.sess.delay_span_bug(self.span, "ty::Error in structural-match check");
                 // We still want to check other types after encountering an error,
                 // as this may still emit relevant errors.
-                return ControlFlow::Continue(());
+                return ControlFlow::CONTINUE;
             }
         };
 
         if !self.seen.insert(adt_def.did()) {
             debug!("Search already seen adt_def: {:?}", adt_def);
-            return ControlFlow::Continue(());
+            return ControlFlow::CONTINUE;
         }
 
         if !self.type_marked_structural(ty) {
@@ -171,4 +261,12 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for Search<'tcx> {
             ty.visit_with(self)
         })
     }
+}
+
+pub fn provide(providers: &mut Providers) {
+    providers.has_structural_eq_impls = |tcx, ty| {
+        let infcx = tcx.infer_ctxt().build();
+        let cause = ObligationCause::dummy();
+        type_marked_structural(&infcx, ty, cause)
+    };
 }

@@ -1,18 +1,18 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 //! The entry point of the NLL borrow checker.
 
-use rustc_data_structures::fx::FxIndexMap;
+use rustc_data_structures::vec_map::VecMap;
 use rustc_hir::def_id::LocalDefId;
-use rustc_index::IndexSlice;
+use rustc_index::vec::IndexVec;
+use rustc_infer::infer::InferCtxt;
 use rustc_middle::mir::{create_dump_file, dump_enabled, dump_mir, PassWhere};
 use rustc_middle::mir::{
-    Body, ClosureOutlivesSubject, ClosureRegionRequirements, LocalKind, Location, Promoted,
-    START_BLOCK,
+    BasicBlock, Body, ClosureOutlivesSubject, ClosureRegionRequirements, LocalKind, Location,
+    Promoted,
 };
-use rustc_middle::ty::{self, OpaqueHiddenType, TyCtxt};
+use rustc_middle::ty::{self, OpaqueHiddenType, Region, RegionVid};
 use rustc_span::symbol::sym;
 use std::env;
+use std::fmt::Debug;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -27,7 +27,6 @@ use rustc_mir_dataflow::ResultsCursor;
 use crate::{
     borrow_set::BorrowSet,
     constraint_generation,
-    consumers::ConsumerOptions,
     diagnostics::RegionErrors,
     facts::{AllFacts, AllFactsExt, RustcFacts},
     invalidation,
@@ -36,7 +35,7 @@ use crate::{
     renumber,
     type_check::{self, MirTypeckRegionConstraints, MirTypeckResults},
     universal_regions::UniversalRegions,
-    BorrowckInferCtxt, Upvar,
+    Upvar,
 };
 
 pub type PoloniusOutput = Output<RustcFacts>;
@@ -45,7 +44,7 @@ pub type PoloniusOutput = Output<RustcFacts>;
 /// closure requirements to propagate, and any generated errors.
 pub(crate) struct NllOutput<'tcx> {
     pub regioncx: RegionInferenceContext<'tcx>,
-    pub opaque_type_values: FxIndexMap<LocalDefId, OpaqueHiddenType<'tcx>>,
+    pub opaque_type_values: VecMap<LocalDefId, OpaqueHiddenType<'tcx>>,
     pub polonius_input: Option<Box<AllFacts>>,
     pub polonius_output: Option<Rc<PoloniusOutput>>,
     pub opt_closure_req: Option<ClosureRegionRequirements<'tcx>>,
@@ -57,12 +56,12 @@ pub(crate) struct NllOutput<'tcx> {
 /// `compute_regions`.
 #[instrument(skip(infcx, param_env, body, promoted), level = "debug")]
 pub(crate) fn replace_regions_in_mir<'tcx>(
-    infcx: &BorrowckInferCtxt<'_, 'tcx>,
+    infcx: &InferCtxt<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     body: &mut Body<'tcx>,
-    promoted: &mut IndexSlice<Promoted, Body<'tcx>>,
+    promoted: &mut IndexVec<Promoted, Body<'tcx>>,
 ) -> UniversalRegions<'tcx> {
-    let def = body.source.def_id().expect_local();
+    let def = body.source.with_opt_param().as_local().unwrap();
 
     debug!(?def);
 
@@ -72,7 +71,7 @@ pub(crate) fn replace_regions_in_mir<'tcx>(
     // Replace all remaining regions with fresh inference variables.
     renumber::renumber_mir(infcx, body, promoted);
 
-    dump_mir(infcx.tcx, false, "renumber", &0, body, |_, _| Ok(()));
+    dump_mir(infcx.tcx, None, "renumber", &0, body, |_, _| Ok(()));
 
     universal_regions
 }
@@ -95,8 +94,8 @@ fn populate_polonius_move_facts(
         }
     }
 
-    let fn_entry_start =
-        location_table.start_index(Location { block: START_BLOCK, statement_index: 0 });
+    let fn_entry_start = location_table
+        .start_index(Location { block: BasicBlock::from_u32(0u32), statement_index: 0 });
 
     // initialized_at
     for init in move_data.inits.iter() {
@@ -156,24 +155,20 @@ fn populate_polonius_move_facts(
 ///
 /// This may result in errors being reported.
 pub(crate) fn compute_regions<'cx, 'tcx>(
-    infcx: &BorrowckInferCtxt<'_, 'tcx>,
+    infcx: &InferCtxt<'tcx>,
     universal_regions: UniversalRegions<'tcx>,
     body: &Body<'tcx>,
-    promoted: &IndexSlice<Promoted, Body<'tcx>>,
+    promoted: &IndexVec<Promoted, Body<'tcx>>,
     location_table: &LocationTable,
     param_env: ty::ParamEnv<'tcx>,
     flow_inits: &mut ResultsCursor<'cx, 'tcx, MaybeInitializedPlaces<'cx, 'tcx>>,
     move_data: &MoveData<'tcx>,
     borrow_set: &BorrowSet<'tcx>,
     upvars: &[Upvar<'tcx>],
-    consumer_options: Option<ConsumerOptions>,
+    use_polonius: bool,
 ) -> NllOutput<'tcx> {
-    let polonius_input = consumer_options.map(|c| c.polonius_input()).unwrap_or_default()
-        || infcx.tcx.sess.opts.unstable_opts.polonius;
-    let polonius_output = consumer_options.map(|c| c.polonius_output()).unwrap_or_default()
-        || infcx.tcx.sess.opts.unstable_opts.polonius;
     let mut all_facts =
-        (polonius_input || AllFacts::enabled(infcx.tcx)).then_some(AllFacts::default());
+        (use_polonius || AllFacts::enabled(infcx.tcx)).then_some(AllFacts::default());
 
     let universal_regions = Rc::new(universal_regions);
 
@@ -194,7 +189,7 @@ pub(crate) fn compute_regions<'cx, 'tcx>(
             move_data,
             elements,
             upvars,
-            polonius_input,
+            use_polonius,
         );
 
     if let Some(all_facts) = &mut all_facts {
@@ -240,7 +235,7 @@ pub(crate) fn compute_regions<'cx, 'tcx>(
     // Create the region inference context, taking ownership of the
     // region inference data that was contained in `infcx`, and the
     // base constraints generated by the type-check.
-    let var_origins = infcx.get_region_var_origins();
+    let var_origins = infcx.take_region_var_origins();
     let MirTypeckRegionConstraints {
         placeholder_indices,
         placeholder_index_to_region: _,
@@ -262,7 +257,6 @@ pub(crate) fn compute_regions<'cx, 'tcx>(
     );
 
     let mut regioncx = RegionInferenceContext::new(
-        infcx,
         var_origins,
         universal_regions,
         placeholder_indices,
@@ -289,7 +283,7 @@ pub(crate) fn compute_regions<'cx, 'tcx>(
             all_facts.write_to_dir(dir_path, location_table).unwrap();
         }
 
-        if polonius_output {
+        if use_polonius {
             let algorithm =
                 env::var("POLONIUS_ALGORITHM").unwrap_or_else(|_| String::from("Hybrid"));
             let algorithm = Algorithm::from_str(&algorithm).unwrap();
@@ -307,10 +301,7 @@ pub(crate) fn compute_regions<'cx, 'tcx>(
 
     if !nll_errors.is_empty() {
         // Suppress unhelpful extra errors in `infer_opaque_types`.
-        infcx.set_tainted_by_errors(infcx.tcx.sess.delay_span_bug(
-            body.span,
-            "`compute_regions` tainted `infcx` with errors but did not emit any errors",
-        ));
+        infcx.set_tainted_by_errors();
     }
 
     let remapped_opaque_tys = regioncx.infer_opaque_types(&infcx, opaque_type_values);
@@ -326,16 +317,16 @@ pub(crate) fn compute_regions<'cx, 'tcx>(
 }
 
 pub(super) fn dump_mir_results<'tcx>(
-    infcx: &BorrowckInferCtxt<'_, 'tcx>,
+    infcx: &InferCtxt<'tcx>,
     body: &Body<'tcx>,
     regioncx: &RegionInferenceContext<'tcx>,
-    closure_region_requirements: &Option<ClosureRegionRequirements<'tcx>>,
+    closure_region_requirements: &Option<ClosureRegionRequirements<'_>>,
 ) {
     if !dump_enabled(infcx.tcx, "nll", body.source.def_id()) {
         return;
     }
 
-    dump_mir(infcx.tcx, false, "nll", &0, body, |pass_where, out| {
+    dump_mir(infcx.tcx, None, "nll", &0, body, |pass_where, out| {
         match pass_where {
             // Before the CFG, dump out the values for each region variable.
             PassWhere::BeforeCFG => {
@@ -344,11 +335,9 @@ pub(super) fn dump_mir_results<'tcx>(
 
                 if let Some(closure_region_requirements) = closure_region_requirements {
                     writeln!(out, "| Free Region Constraints")?;
-                    for_each_region_constraint(
-                        infcx.tcx,
-                        closure_region_requirements,
-                        &mut |msg| writeln!(out, "| {}", msg),
-                    )?;
+                    for_each_region_constraint(closure_region_requirements, &mut |msg| {
+                        writeln!(out, "| {}", msg)
+                    })?;
                     writeln!(out, "|")?;
                 }
             }
@@ -364,25 +353,25 @@ pub(super) fn dump_mir_results<'tcx>(
 
     // Also dump the inference graph constraints as a graphviz file.
     let _: io::Result<()> = try {
-        let mut file = create_dump_file(infcx.tcx, "regioncx.all.dot", false, "nll", &0, body)?;
+        let mut file =
+            create_dump_file(infcx.tcx, "regioncx.all.dot", None, "nll", &0, body.source)?;
         regioncx.dump_graphviz_raw_constraints(&mut file)?;
     };
 
     // Also dump the inference graph constraints as a graphviz file.
     let _: io::Result<()> = try {
-        let mut file = create_dump_file(infcx.tcx, "regioncx.scc.dot", false, "nll", &0, body)?;
+        let mut file =
+            create_dump_file(infcx.tcx, "regioncx.scc.dot", None, "nll", &0, body.source)?;
         regioncx.dump_graphviz_scc_constraints(&mut file)?;
     };
 }
 
-#[allow(rustc::diagnostic_outside_of_impl)]
-#[allow(rustc::untranslatable_diagnostic)]
 pub(super) fn dump_annotation<'tcx>(
-    infcx: &BorrowckInferCtxt<'_, 'tcx>,
+    infcx: &InferCtxt<'tcx>,
     body: &Body<'tcx>,
     regioncx: &RegionInferenceContext<'tcx>,
-    closure_region_requirements: &Option<ClosureRegionRequirements<'tcx>>,
-    opaque_type_values: &FxIndexMap<LocalDefId, OpaqueHiddenType<'tcx>>,
+    closure_region_requirements: &Option<ClosureRegionRequirements<'_>>,
+    opaque_type_values: &VecMap<LocalDefId, OpaqueHiddenType<'tcx>>,
     errors: &mut crate::error::BorrowckErrors<'tcx>,
 ) {
     let tcx = infcx.tcx;
@@ -393,7 +382,7 @@ pub(super) fn dump_annotation<'tcx>(
 
     // When the enclosing function is tagged with `#[rustc_regions]`,
     // we dump out various bits of state as warnings. This is useful
-    // for verifying that the compiler is behaving as expected. These
+    // for verifying that the compiler is behaving as expected.  These
     // warnings focus on the closure region requirements -- for
     // viewing the intraprocedural state, the -Zdump-mir output is
     // better.
@@ -404,14 +393,14 @@ pub(super) fn dump_annotation<'tcx>(
 
         regioncx.annotate(tcx, &mut err);
 
-        err.note(format!(
+        err.note(&format!(
             "number of external vids: {}",
             closure_region_requirements.num_external_vids
         ));
 
         // Dump the region constraints we are imposing *between* those
         // newly created variables.
-        for_each_region_constraint(tcx, closure_region_requirements, &mut |msg| {
+        for_each_region_constraint(closure_region_requirements, &mut |msg| {
             err.note(msg);
             Ok(())
         })
@@ -426,27 +415,45 @@ pub(super) fn dump_annotation<'tcx>(
     };
 
     if !opaque_type_values.is_empty() {
-        err.note(format!("Inferred opaque type values:\n{:#?}", opaque_type_values));
+        err.note(&format!("Inferred opaque type values:\n{:#?}", opaque_type_values));
     }
 
     errors.buffer_non_error_diag(err);
 }
 
-fn for_each_region_constraint<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    closure_region_requirements: &ClosureRegionRequirements<'tcx>,
-    with_msg: &mut dyn FnMut(String) -> io::Result<()>,
+fn for_each_region_constraint(
+    closure_region_requirements: &ClosureRegionRequirements<'_>,
+    with_msg: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> io::Result<()> {
     for req in &closure_region_requirements.outlives_requirements {
-        let subject = match req.subject {
-            ClosureOutlivesSubject::Region(subject) => format!("{:?}", subject),
-            ClosureOutlivesSubject::Ty(ty) => {
-                format!("{:?}", ty.instantiate(tcx, |vid| ty::Region::new_var(tcx, vid)))
-            }
+        let subject: &dyn Debug = match &req.subject {
+            ClosureOutlivesSubject::Region(subject) => subject,
+            ClosureOutlivesSubject::Ty(ty) => ty,
         };
-        with_msg(format!("where {}: {:?}", subject, req.outlived_free_region,))?;
+        with_msg(&format!("where {:?}: {:?}", subject, req.outlived_free_region,))?;
     }
     Ok(())
+}
+
+/// Right now, we piggy back on the `ReVar` to store our NLL inference
+/// regions. These are indexed with `RegionVid`. This method will
+/// assert that the region is a `ReVar` and extract its internal index.
+/// This is reasonable because in our MIR we replace all universal regions
+/// with inference variables.
+pub trait ToRegionVid {
+    fn to_region_vid(self) -> RegionVid;
+}
+
+impl<'tcx> ToRegionVid for Region<'tcx> {
+    fn to_region_vid(self) -> RegionVid {
+        if let ty::ReVar(vid) = *self { vid } else { bug!("region is not an ReVar: {:?}", self) }
+    }
+}
+
+impl ToRegionVid for RegionVid {
+    fn to_region_vid(self) -> RegionVid {
+        self
+    }
 }
 
 pub(crate) trait ConstraintDescription {

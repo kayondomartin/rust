@@ -21,6 +21,11 @@ mod maybe_uninit;
 #[stable(feature = "maybe_uninit", since = "1.36.0")]
 pub use maybe_uninit::MaybeUninit;
 
+// FIXME: This is left here for now to avoid complications around pending reverts.
+// Once <https://github.com/rust-lang/rust/issues/101899> is fully resolved,
+// this should be removed and the references in `alloc::Layout` updated.
+pub(crate) use ptr::Alignment as ValidAlign;
+
 mod transmutability;
 #[unstable(feature = "transmutability", issue = "99571")]
 pub use transmutability::{Assume, BikeshedIntrinsicFrom};
@@ -170,7 +175,7 @@ pub fn forget_unsized<T: ?Sized>(t: T) {
 ///
 /// The following table gives the size for primitives.
 ///
-/// Type | `size_of::<Type>()`
+/// Type | size_of::\<Type>()
 /// ---- | ---------------
 /// () | 0
 /// bool | 1
@@ -190,8 +195,8 @@ pub fn forget_unsized<T: ?Sized>(t: T) {
 ///
 /// Furthermore, `usize` and `isize` have the same size.
 ///
-/// The types [`*const T`], `&T`, [`Box<T>`], [`Option<&T>`], and `Option<Box<T>>` all have
-/// the same size. If `T` is `Sized`, all of those types have the same size as `usize`.
+/// The types `*const T`, `&T`, `Box<T>`, `Option<&T>`, and `Option<Box<T>>` all have
+/// the same size. If `T` is Sized, all of those types have the same size as `usize`.
 ///
 /// The mutability of a pointer does not change its size. As such, `&T` and `&mut T`
 /// have the same size. Likewise for `*const T` and `*mut T`.
@@ -203,7 +208,7 @@ pub fn forget_unsized<T: ?Sized>(t: T) {
 ///
 /// ## Size of Structs
 ///
-/// For `struct`s, the size is determined by the following algorithm.
+/// For `structs`, the size is determined by the following algorithm.
 ///
 /// For each field in the struct ordered by declaration order:
 ///
@@ -299,10 +304,6 @@ pub fn forget_unsized<T: ?Sized>(t: T) {
 /// ```
 ///
 /// [alignment]: align_of
-/// [`*const T`]: primitive@pointer
-/// [`Box<T>`]: ../../std/boxed/struct.Box.html
-/// [`Option<&T>`]: crate::option::Option
-///
 #[inline(always)]
 #[must_use]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -315,7 +316,7 @@ pub const fn size_of<T>() -> usize {
 
 /// Returns the size of the pointed-to value in bytes.
 ///
-/// This is usually the same as [`size_of::<T>()`]. However, when `T` *has* no
+/// This is usually the same as `size_of::<T>()`. However, when `T` *has* no
 /// statically-known size, e.g., a slice [`[T]`][slice] or a [trait object],
 /// then `size_of_val` can be used to get the dynamically-known size.
 ///
@@ -332,8 +333,6 @@ pub const fn size_of<T>() -> usize {
 /// let y: &[u8] = &x;
 /// assert_eq!(13, mem::size_of_val(y));
 /// ```
-///
-/// [`size_of::<T>()`]: size_of
 #[inline]
 #[must_use]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -346,7 +345,7 @@ pub const fn size_of_val<T: ?Sized>(val: &T) -> usize {
 
 /// Returns the size of the pointed-to value in bytes.
 ///
-/// This is usually the same as [`size_of::<T>()`]. However, when `T` *has* no
+/// This is usually the same as `size_of::<T>()`. However, when `T` *has* no
 /// statically-known size, e.g., a slice [`[T]`][slice] or a [trait object],
 /// then `size_of_val_raw` can be used to get the dynamically-known size.
 ///
@@ -369,7 +368,6 @@ pub const fn size_of_val<T: ?Sized>(val: &T) -> usize {
 ///       [`size_of_val`] on a reference to a type with an extern type tail.
 ///     - otherwise, it is conservatively not allowed to call this function.
 ///
-/// [`size_of::<T>()`]: size_of
 /// [trait object]: ../../book/ch17-02-trait-objects.html
 /// [extern type]: ../../unstable-book/language-features/extern-types.html
 ///
@@ -689,7 +687,7 @@ pub unsafe fn zeroed<T>() -> T {
 pub unsafe fn uninitialized<T>() -> T {
     // SAFETY: the caller must guarantee that an uninitialized value is valid for `T`.
     unsafe {
-        intrinsics::assert_mem_uninitialized_valid::<T>();
+        intrinsics::assert_uninit_valid::<T>();
         let mut val = MaybeUninit::<T>::uninit();
 
         // Fill memory with 0x01, as an imperfect mitigation for old code that uses this function on
@@ -732,7 +730,10 @@ pub const fn swap<T>(x: &mut T, y: &mut T) {
     // understanding `mem::replace`, `Option::take`, etc. - a better overall
     // solution might be to make `ptr::swap_nonoverlapping` into an intrinsic, which
     // a backend can choose to implement using the block optimization, or not.
-    #[cfg(not(any(target_arch = "spirv")))]
+    // NOTE(scottmcm) MIRI is disabled here as reading in smaller units is a
+    // pessimization for it.  Also, if the type contains any unaligned pointers,
+    // copying those over multiple reads is difficult to support.
+    #[cfg(not(any(target_arch = "spirv", miri)))]
     {
         // For types that are larger multiples of their alignment, the simple way
         // tends to copy the whole thing to stack rather than doing it one part
@@ -968,7 +969,6 @@ pub const fn replace<T>(dest: &mut T, src: T) -> T {
 /// Integers and other types implementing [`Copy`] are unaffected by `drop`.
 ///
 /// ```
-/// # #![allow(dropping_copy_types)]
 /// #[derive(Copy, Clone)]
 /// struct Foo(u8);
 ///
@@ -1121,10 +1121,7 @@ impl<T> fmt::Debug for Discriminant<T> {
 /// # Stability
 ///
 /// The discriminant of an enum variant may change if the enum definition changes. A discriminant
-/// of some variant will not change between compilations with the same compiler. See the [Reference]
-/// for more information.
-///
-/// [Reference]: ../../reference/items/enumerations.html#custom-discriminant-values-for-fieldless-enumerations
+/// of some variant will not change between compilations with the same compiler.
 ///
 /// # Examples
 ///
@@ -1139,62 +1136,6 @@ impl<T> fmt::Debug for Discriminant<T> {
 /// assert_eq!(mem::discriminant(&Foo::A("bar")), mem::discriminant(&Foo::A("baz")));
 /// assert_eq!(mem::discriminant(&Foo::B(1)), mem::discriminant(&Foo::B(2)));
 /// assert_ne!(mem::discriminant(&Foo::B(3)), mem::discriminant(&Foo::C(3)));
-/// ```
-///
-/// ## Accessing the numeric value of the discriminant
-///
-/// Note that it is *undefined behavior* to [`transmute`] from [`Discriminant`] to a primitive!
-///
-/// If an enum has only unit variants, then the numeric value of the discriminant can be accessed
-/// with an [`as`] cast:
-///
-/// ```
-/// enum Enum {
-///     Foo,
-///     Bar,
-///     Baz,
-/// }
-///
-/// assert_eq!(0, Enum::Foo as isize);
-/// assert_eq!(1, Enum::Bar as isize);
-/// assert_eq!(2, Enum::Baz as isize);
-/// ```
-///
-/// If an enum has opted-in to having a [primitive representation] for its discriminant,
-/// then it's possible to use pointers to read the memory location storing the discriminant.
-/// That **cannot** be done for enums using the [default representation], however, as it's
-/// undefined what layout the discriminant has and where it's stored — it might not even be
-/// stored at all!
-///
-/// [`as`]: ../../std/keyword.as.html
-/// [primitive representation]: ../../reference/type-layout.html#primitive-representations
-/// [default representation]: ../../reference/type-layout.html#the-default-representation
-/// ```
-/// #[repr(u8)]
-/// enum Enum {
-///     Unit,
-///     Tuple(bool),
-///     Struct { a: bool },
-/// }
-///
-/// impl Enum {
-///     fn discriminant(&self) -> u8 {
-///         // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
-///         // between `repr(C)` structs, each of which has the `u8` discriminant as its first
-///         // field, so we can read the discriminant without offsetting the pointer.
-///         unsafe { *<*const _>::from(self).cast::<u8>() }
-///     }
-/// }
-///
-/// let unit_like = Enum::Unit;
-/// let tuple_like = Enum::Tuple(true);
-/// let struct_like = Enum::Struct { a: false };
-/// assert_eq!(0, unit_like.discriminant());
-/// assert_eq!(1, tuple_like.discriminant());
-/// assert_eq!(2, struct_like.discriminant());
-///
-/// // ⚠️ This is undefined behavior. Don't do this. ⚠️
-/// // assert_eq!(0, unsafe { std::mem::transmute::<_, u8>(std::mem::discriminant(&unit_like)) });
 /// ```
 #[stable(feature = "discriminant_value", since = "1.21.0")]
 #[rustc_const_unstable(feature = "const_discriminant", issue = "69821")]
@@ -1280,45 +1221,3 @@ pub trait SizedTypeProperties: Sized {
 #[doc(hidden)]
 #[unstable(feature = "sized_type_properties", issue = "none")]
 impl<T> SizedTypeProperties for T {}
-
-/// Expands to the offset in bytes of a field from the beginning of the given type.
-///
-/// Only structs, unions and tuples are supported.
-///
-/// Nested field accesses may be used, but not array indexes like in `C`'s `offsetof`.
-///
-/// Note that the output of this macro is not stable, except for `#[repr(C)]` types.
-///
-/// # Examples
-///
-/// ```
-/// #![feature(offset_of)]
-///
-/// use std::mem;
-/// #[repr(C)]
-/// struct FieldStruct {
-///     first: u8,
-///     second: u16,
-///     third: u8
-/// }
-///
-/// assert_eq!(mem::offset_of!(FieldStruct, first), 0);
-/// assert_eq!(mem::offset_of!(FieldStruct, second), 2);
-/// assert_eq!(mem::offset_of!(FieldStruct, third), 4);
-///
-/// #[repr(C)]
-/// struct NestedA {
-///     b: NestedB
-/// }
-///
-/// #[repr(C)]
-/// struct NestedB(u8);
-///
-/// assert_eq!(mem::offset_of!(NestedA, b.0), 0);
-/// ```
-#[unstable(feature = "offset_of", issue = "106655")]
-#[allow_internal_unstable(builtin_syntax, hint_must_use)]
-pub macro offset_of($Container:ty, $($fields:tt).+ $(,)?) {
-    // The `{}` is for better error messages
-    crate::hint::must_use({builtin # offset_of($Container, $($fields).+)})
-}

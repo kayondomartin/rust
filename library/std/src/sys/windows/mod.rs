@@ -33,7 +33,7 @@ pub mod stdio;
 pub mod thread;
 pub mod thread_local_dtor;
 pub mod thread_local_key;
-pub mod thread_parking;
+pub mod thread_parker;
 pub mod time;
 cfg_if::cfg_if! {
     if #[cfg(not(target_vendor = "uwp"))] {
@@ -68,13 +68,10 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
         c::ERROR_ALREADY_EXISTS => return AlreadyExists,
         c::ERROR_FILE_EXISTS => return AlreadyExists,
         c::ERROR_BROKEN_PIPE => return BrokenPipe,
-        c::ERROR_FILE_NOT_FOUND
-        | c::ERROR_PATH_NOT_FOUND
-        | c::ERROR_INVALID_DRIVE
-        | c::ERROR_BAD_NETPATH
-        | c::ERROR_BAD_NET_NAME => return NotFound,
+        c::ERROR_FILE_NOT_FOUND => return NotFound,
+        c::ERROR_PATH_NOT_FOUND => return NotFound,
         c::ERROR_NO_DATA => return BrokenPipe,
-        c::ERROR_INVALID_NAME | c::ERROR_BAD_PATHNAME => return InvalidFilename,
+        c::ERROR_INVALID_NAME => return InvalidFilename,
         c::ERROR_INVALID_PARAMETER => return InvalidInput,
         c::ERROR_NOT_ENOUGH_MEMORY | c::ERROR_OUTOFMEMORY => return OutOfMemory,
         c::ERROR_SEM_TIMEOUT

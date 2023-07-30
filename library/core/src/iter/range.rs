@@ -1,6 +1,6 @@
+use crate::char;
 use crate::convert::TryFrom;
 use crate::mem;
-use crate::num::NonZeroUsize;
 use crate::ops::{self, Try};
 
 use super::{
@@ -521,12 +521,12 @@ trait RangeIteratorImpl {
     // Iterator
     fn spec_next(&mut self) -> Option<Self::Item>;
     fn spec_nth(&mut self, n: usize) -> Option<Self::Item>;
-    fn spec_advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize>;
+    fn spec_advance_by(&mut self, n: usize) -> Result<(), usize>;
 
     // DoubleEndedIterator
     fn spec_next_back(&mut self) -> Option<Self::Item>;
     fn spec_nth_back(&mut self, n: usize) -> Option<Self::Item>;
-    fn spec_advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize>;
+    fn spec_advance_back_by(&mut self, n: usize) -> Result<(), usize>;
 }
 
 impl<A: Step> RangeIteratorImpl for ops::Range<A> {
@@ -558,7 +558,7 @@ impl<A: Step> RangeIteratorImpl for ops::Range<A> {
     }
 
     #[inline]
-    default fn spec_advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    default fn spec_advance_by(&mut self, n: usize) -> Result<(), usize> {
         let available = if self.start <= self.end {
             Step::steps_between(&self.start, &self.end).unwrap_or(usize::MAX)
         } else {
@@ -570,7 +570,7 @@ impl<A: Step> RangeIteratorImpl for ops::Range<A> {
         self.start =
             Step::forward_checked(self.start.clone(), taken).expect("`Step` invariants not upheld");
 
-        NonZeroUsize::new(n - taken).map_or(Ok(()), Err)
+        if taken < n { Err(taken) } else { Ok(()) }
     }
 
     #[inline]
@@ -599,7 +599,7 @@ impl<A: Step> RangeIteratorImpl for ops::Range<A> {
     }
 
     #[inline]
-    default fn spec_advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    default fn spec_advance_back_by(&mut self, n: usize) -> Result<(), usize> {
         let available = if self.start <= self.end {
             Step::steps_between(&self.start, &self.end).unwrap_or(usize::MAX)
         } else {
@@ -611,7 +611,7 @@ impl<A: Step> RangeIteratorImpl for ops::Range<A> {
         self.end =
             Step::backward_checked(self.end.clone(), taken).expect("`Step` invariants not upheld");
 
-        NonZeroUsize::new(n - taken).map_or(Ok(()), Err)
+        if taken < n { Err(taken) } else { Ok(()) }
     }
 }
 
@@ -619,10 +619,9 @@ impl<T: TrustedStep> RangeIteratorImpl for ops::Range<T> {
     #[inline]
     fn spec_next(&mut self) -> Option<T> {
         if self.start < self.end {
-            let old = self.start;
             // SAFETY: just checked precondition
-            self.start = unsafe { Step::forward_unchecked(old, 1) };
-            Some(old)
+            let n = unsafe { Step::forward_unchecked(self.start.clone(), 1) };
+            Some(mem::replace(&mut self.start, n))
         } else {
             None
         }
@@ -630,20 +629,20 @@ impl<T: TrustedStep> RangeIteratorImpl for ops::Range<T> {
 
     #[inline]
     fn spec_nth(&mut self, n: usize) -> Option<T> {
-        if let Some(plus_n) = Step::forward_checked(self.start, n) {
+        if let Some(plus_n) = Step::forward_checked(self.start.clone(), n) {
             if plus_n < self.end {
                 // SAFETY: just checked precondition
-                self.start = unsafe { Step::forward_unchecked(plus_n, 1) };
+                self.start = unsafe { Step::forward_unchecked(plus_n.clone(), 1) };
                 return Some(plus_n);
             }
         }
 
-        self.start = self.end;
+        self.start = self.end.clone();
         None
     }
 
     #[inline]
-    fn spec_advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn spec_advance_by(&mut self, n: usize) -> Result<(), usize> {
         let available = if self.start <= self.end {
             Step::steps_between(&self.start, &self.end).unwrap_or(usize::MAX)
         } else {
@@ -656,17 +655,17 @@ impl<T: TrustedStep> RangeIteratorImpl for ops::Range<T> {
         // then steps_between either returns a bound to which we clamp or returns None which
         // together with the initial inequality implies more than usize::MAX steps.
         // Otherwise 0 is returned which always safe to use.
-        self.start = unsafe { Step::forward_unchecked(self.start, taken) };
+        self.start = unsafe { Step::forward_unchecked(self.start.clone(), taken) };
 
-        NonZeroUsize::new(n - taken).map_or(Ok(()), Err)
+        if taken < n { Err(taken) } else { Ok(()) }
     }
 
     #[inline]
     fn spec_next_back(&mut self) -> Option<T> {
         if self.start < self.end {
             // SAFETY: just checked precondition
-            self.end = unsafe { Step::backward_unchecked(self.end, 1) };
-            Some(self.end)
+            self.end = unsafe { Step::backward_unchecked(self.end.clone(), 1) };
+            Some(self.end.clone())
         } else {
             None
         }
@@ -674,20 +673,20 @@ impl<T: TrustedStep> RangeIteratorImpl for ops::Range<T> {
 
     #[inline]
     fn spec_nth_back(&mut self, n: usize) -> Option<T> {
-        if let Some(minus_n) = Step::backward_checked(self.end, n) {
+        if let Some(minus_n) = Step::backward_checked(self.end.clone(), n) {
             if minus_n > self.start {
                 // SAFETY: just checked precondition
                 self.end = unsafe { Step::backward_unchecked(minus_n, 1) };
-                return Some(self.end);
+                return Some(self.end.clone());
             }
         }
 
-        self.end = self.start;
+        self.end = self.start.clone();
         None
     }
 
     #[inline]
-    fn spec_advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn spec_advance_back_by(&mut self, n: usize) -> Result<(), usize> {
         let available = if self.start <= self.end {
             Step::steps_between(&self.start, &self.end).unwrap_or(usize::MAX)
         } else {
@@ -697,9 +696,9 @@ impl<T: TrustedStep> RangeIteratorImpl for ops::Range<T> {
         let taken = available.min(n);
 
         // SAFETY: same as the spec_advance_by() implementation
-        self.end = unsafe { Step::backward_unchecked(self.end, taken) };
+        self.end = unsafe { Step::backward_unchecked(self.end.clone(), taken) };
 
-        NonZeroUsize::new(n - taken).map_or(Ok(()), Err)
+        if taken < n { Err(taken) } else { Ok(()) }
     }
 }
 
@@ -733,18 +732,12 @@ impl<A: Step> Iterator for ops::Range<A> {
     }
 
     #[inline]
-    fn min(mut self) -> Option<A>
-    where
-        A: Ord,
-    {
+    fn min(mut self) -> Option<A> {
         self.next()
     }
 
     #[inline]
-    fn max(mut self) -> Option<A>
-    where
-        A: Ord,
-    {
+    fn max(mut self) -> Option<A> {
         self.next_back()
     }
 
@@ -754,7 +747,7 @@ impl<A: Step> Iterator for ops::Range<A> {
     }
 
     #[inline]
-    fn advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_by(&mut self, n: usize) -> Result<(), usize> {
         self.spec_advance_by(n)
     }
 
@@ -763,7 +756,7 @@ impl<A: Step> Iterator for ops::Range<A> {
     where
         Self: TrustedRandomAccessNoCoerce,
     {
-        // SAFETY: The TrustedRandomAccess contract requires that callers only pass an index
+        // SAFETY: The TrustedRandomAccess contract requires that callers only  pass an index
         // that is in bounds.
         // Additionally Self: TrustedRandomAccess is only implemented for Copy types
         // which means even repeated reads of the same index would be safe.
@@ -832,7 +825,7 @@ impl<A: Step> DoubleEndedIterator for ops::Range<A> {
     }
 
     #[inline]
-    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_back_by(&mut self, n: usize) -> Result<(), usize> {
         self.spec_advance_back_by(n)
     }
 }
@@ -1165,18 +1158,12 @@ impl<A: Step> Iterator for ops::RangeInclusive<A> {
     }
 
     #[inline]
-    fn min(mut self) -> Option<A>
-    where
-        A: Ord,
-    {
+    fn min(mut self) -> Option<A> {
         self.next()
     }
 
     #[inline]
-    fn max(mut self) -> Option<A>
-    where
-        A: Ord,
-    {
+    fn max(mut self) -> Option<A> {
         self.next_back()
     }
 

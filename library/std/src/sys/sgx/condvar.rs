@@ -4,43 +4,42 @@ use crate::time::Duration;
 
 use super::waitqueue::{SpinMutex, WaitQueue, WaitVariable};
 
-/// FIXME: `UnsafeList` is not movable.
-struct AllocatedCondvar(SpinMutex<WaitVariable<()>>);
-
 pub struct Condvar {
-    inner: LazyBox<AllocatedCondvar>,
+    inner: SpinMutex<WaitVariable<()>>,
 }
 
-impl LazyInit for AllocatedCondvar {
+pub(crate) type MovableCondvar = LazyBox<Condvar>;
+
+impl LazyInit for Condvar {
     fn init() -> Box<Self> {
-        Box::new(AllocatedCondvar(SpinMutex::new(WaitVariable::new(()))))
+        Box::new(Self::new())
     }
 }
 
 impl Condvar {
     pub const fn new() -> Condvar {
-        Condvar { inner: LazyBox::new() }
+        Condvar { inner: SpinMutex::new(WaitVariable::new(())) }
     }
 
     #[inline]
-    pub fn notify_one(&self) {
-        let _ = WaitQueue::notify_one(self.inner.0.lock());
+    pub unsafe fn notify_one(&self) {
+        let _ = WaitQueue::notify_one(self.inner.lock());
     }
 
     #[inline]
-    pub fn notify_all(&self) {
-        let _ = WaitQueue::notify_all(self.inner.0.lock());
+    pub unsafe fn notify_all(&self) {
+        let _ = WaitQueue::notify_all(self.inner.lock());
     }
 
     pub unsafe fn wait(&self, mutex: &Mutex) {
-        let guard = self.inner.0.lock();
+        let guard = self.inner.lock();
         WaitQueue::wait(guard, || unsafe { mutex.unlock() });
-        mutex.lock()
+        unsafe { mutex.lock() }
     }
 
     pub unsafe fn wait_timeout(&self, mutex: &Mutex, dur: Duration) -> bool {
-        let success = WaitQueue::wait_timeout(&self.inner.0, dur, || unsafe { mutex.unlock() });
-        mutex.lock();
+        let success = WaitQueue::wait_timeout(&self.inner, dur, || unsafe { mutex.unlock() });
+        unsafe { mutex.lock() };
         success
     }
 }

@@ -1,5 +1,5 @@
 use crate::MirPass;
-use rustc_index::{Idx, IndexVec};
+use rustc_index::vec::{Idx, IndexVec};
 use rustc_middle::mir::*;
 use rustc_middle::ty::TyCtxt;
 
@@ -50,11 +50,10 @@ impl AddCallGuards {
         for block in body.basic_blocks_mut() {
             match block.terminator {
                 Some(Terminator {
-                    kind: TerminatorKind::Call { target: Some(ref mut destination), unwind, .. },
+                    kind: TerminatorKind::Call { target: Some(ref mut destination), cleanup, .. },
                     source_info,
                 }) if pred_count[*destination] > 1
-                    && (matches!(unwind, UnwindAction::Cleanup(_) | UnwindAction::Terminate)
-                        || self == &AllCallEdges) =>
+                    && (cleanup.is_some() || self == &AllCallEdges) =>
                 {
                     // It's a critical edge, break it
                     let call_guard = BasicBlockData {

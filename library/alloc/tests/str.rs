@@ -1,5 +1,3 @@
-#![cfg_attr(not(bootstrap), allow(invalid_from_utf8))]
-
 use std::assert_matches::assert_matches;
 use std::borrow::Cow;
 use std::cmp::Ordering::{Equal, Greater, Less};
@@ -1501,25 +1499,13 @@ fn test_split_whitespace() {
 
 #[test]
 fn test_lines() {
-    fn t(data: &str, expected: &[&str]) {
-        let lines: Vec<&str> = data.lines().collect();
-        assert_eq!(lines, expected);
-    }
-    t("", &[]);
-    t("\n", &[""]);
-    t("\n2nd", &["", "2nd"]);
-    t("\r\n", &[""]);
-    t("bare\r", &["bare\r"]);
-    t("bare\rcr", &["bare\rcr"]);
-    t("Text\n\r", &["Text", "\r"]);
-    t(
-        "\nMäry häd ä little lämb\n\r\nLittle lämb\n",
-        &["", "Märy häd ä little lämb", "", "Little lämb"],
-    );
-    t(
-        "\r\nMäry häd ä little lämb\n\nLittle lämb",
-        &["", "Märy häd ä little lämb", "", "Little lämb"],
-    );
+    let data = "\nMäry häd ä little lämb\n\r\nLittle lämb\n";
+    let lines: Vec<&str> = data.lines().collect();
+    assert_eq!(lines, ["", "Märy häd ä little lämb", "", "Little lämb"]);
+
+    let data = "\r\nMäry häd ä little lämb\n\nLittle lämb"; // no trailing \n
+    let lines: Vec<&str> = data.lines().collect();
+    assert_eq!(lines, ["", "Märy häd ä little lämb", "", "Little lämb"]);
 }
 
 #[test]
@@ -1604,27 +1590,11 @@ fn test_bool_from_str() {
     assert_eq!("not even a boolean".parse::<bool>().ok(), None);
 }
 
-fn check_contains_all_substrings(haystack: &str) {
-    let mut modified_needle = String::new();
-
-    for i in 0..haystack.len() {
-        // check different haystack lengths since we special-case short haystacks.
-        let haystack = &haystack[0..i];
-        assert!(haystack.contains(""));
-        for j in 0..haystack.len() {
-            for k in j + 1..=haystack.len() {
-                let needle = &haystack[j..k];
-                assert!(haystack.contains(needle));
-                modified_needle.clear();
-                modified_needle.push_str(needle);
-                modified_needle.replace_range(0..1, "\0");
-                assert!(!haystack.contains(&modified_needle));
-
-                modified_needle.clear();
-                modified_needle.push_str(needle);
-                modified_needle.replace_range(needle.len() - 1..needle.len(), "\0");
-                assert!(!haystack.contains(&modified_needle));
-            }
+fn check_contains_all_substrings(s: &str) {
+    assert!(s.contains(""));
+    for i in 0..s.len() {
+        for j in i + 1..=s.len() {
+            assert!(s.contains(&s[i..j]));
         }
     }
 }
@@ -1643,18 +1613,6 @@ fn strslice_issue_16589() {
 fn strslice_issue_16878() {
     assert!(!"1234567ah012345678901ah".contains("hah"));
     assert!(!"00abc01234567890123456789abc".contains("bcabc"));
-}
-
-#[test]
-fn strslice_issue_104726() {
-    // Edge-case in the simd_contains impl.
-    // The first and last byte are the same so it backtracks by one byte
-    // which aligns with the end of the string. Previously incorrect offset calculations
-    // lead to out-of-bounds slicing.
-    #[rustfmt::skip]
-    let needle =                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaba";
-    let haystack = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab";
-    assert!(!haystack.contains(needle));
 }
 
 #[test]

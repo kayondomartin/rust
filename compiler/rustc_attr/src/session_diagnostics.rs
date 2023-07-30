@@ -2,12 +2,11 @@ use std::num::IntErrorKind;
 
 use rustc_ast as ast;
 use rustc_errors::{
-    error_code, Applicability, DiagnosticBuilder, ErrorGuaranteed, Handler, IntoDiagnostic,
+    error_code, fluent, Applicability, DiagnosticBuilder, ErrorGuaranteed, Handler, IntoDiagnostic,
 };
 use rustc_macros::Diagnostic;
 use rustc_span::{Span, Symbol};
 
-use crate::fluent_generated as fluent;
 use crate::UnsupportedLiteralReason;
 
 #[derive(Diagnostic)]
@@ -42,7 +41,7 @@ pub(crate) struct IncorrectMetaItem {
     pub span: Span,
 }
 
-/// Error code: E0541
+// Error code: E0541
 pub(crate) struct UnknownMetaItem<'a> {
     pub span: Span,
     pub item: String,
@@ -52,7 +51,7 @@ pub(crate) struct UnknownMetaItem<'a> {
 // Manual implementation to be able to format `expected` items correctly.
 impl<'a> IntoDiagnostic<'a> for UnknownMetaItem<'_> {
     fn into_diagnostic(self, handler: &'a Handler) -> DiagnosticBuilder<'a, ErrorGuaranteed> {
-        let expected = self.expected.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>();
+        let expected = self.expected.iter().map(|name| format!("`{}`", name)).collect::<Vec<_>>();
         let mut diag = handler.struct_span_err_with_code(
             self.span,
             fluent::attr_unknown_meta_item,
@@ -60,7 +59,7 @@ impl<'a> IntoDiagnostic<'a> for UnknownMetaItem<'_> {
         );
         diag.set_arg("item", self.item);
         diag.set_arg("expected", expected.join(", "));
-        diag.span_label(self.span, fluent::attr_label);
+        diag.span_label(self.span, fluent::label);
         diag
     }
 }
@@ -100,31 +99,31 @@ pub(crate) struct InvalidIssueString {
 // translatable.
 #[derive(Subdiagnostic)]
 pub(crate) enum InvalidIssueStringCause {
-    #[label(attr_must_not_be_zero)]
+    #[label(must_not_be_zero)]
     MustNotBeZero {
         #[primary_span]
         span: Span,
     },
 
-    #[label(attr_empty)]
+    #[label(empty)]
     Empty {
         #[primary_span]
         span: Span,
     },
 
-    #[label(attr_invalid_digit)]
+    #[label(invalid_digit)]
     InvalidDigit {
         #[primary_span]
         span: Span,
     },
 
-    #[label(attr_pos_overflow)]
+    #[label(pos_overflow)]
     PosOverflow {
         #[primary_span]
         span: Span,
     },
 
-    #[label(attr_neg_overflow)]
+    #[label(neg_overflow)]
     NegOverflow {
         #[primary_span]
         span: Span,
@@ -201,7 +200,7 @@ pub(crate) struct InvalidReprHintNoValue {
     pub name: String,
 }
 
-/// Error code: E0565
+// Error code: E0565
 pub(crate) struct UnsupportedLiteral {
     pub span: Span,
     pub reason: UnsupportedLiteralReason,
@@ -276,7 +275,7 @@ pub(crate) struct IncorrectReprFormatGeneric<'a> {
 
 #[derive(Subdiagnostic)]
 pub(crate) enum IncorrectReprFormatGenericCause<'a> {
-    #[suggestion(attr_suggestion, code = "{name}({int})", applicability = "machine-applicable")]
+    #[suggestion(suggestion, code = "{name}({int})", applicability = "machine-applicable")]
     Int {
         #[primary_span]
         span: Span,
@@ -288,7 +287,7 @@ pub(crate) enum IncorrectReprFormatGenericCause<'a> {
         int: u128,
     },
 
-    #[suggestion(attr_suggestion, code = "{name}({symbol})", applicability = "machine-applicable")]
+    #[suggestion(suggestion, code = "{name}({symbol})", applicability = "machine-applicable")]
     Symbol {
         #[primary_span]
         span: Span,

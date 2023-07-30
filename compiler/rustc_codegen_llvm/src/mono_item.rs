@@ -1,7 +1,7 @@
+
 use crate::attributes;
 use crate::base;
 use crate::context::CodegenCx;
-use crate::errors::SymbolAlreadyDefined;
 use crate::llvm;
 use crate::type_of::LayoutLlvmExt;
 use rustc_codegen_ssa::traits::*;
@@ -9,7 +9,7 @@ use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 pub use rustc_middle::mir::mono::MonoItem;
 use rustc_middle::mir::mono::{Linkage, Visibility};
 use rustc_middle::ty::layout::{FnAbiOf, LayoutOf};
-use rustc_middle::ty::{self, Instance, TypeVisitableExt};
+use rustc_middle::ty::{self, Instance, TypeVisitable};
 use rustc_session::config::CrateType;
 use rustc_target::spec::RelocModel;
 
@@ -26,8 +26,10 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
         let llty = self.layout_of(ty).llvm_type(self);
 
         let g = self.define_global(symbol_name, llty).unwrap_or_else(|| {
-            self.sess()
-                .emit_fatal(SymbolAlreadyDefined { span: self.tcx.def_span(def_id), symbol_name })
+            self.sess().span_fatal(
+                self.tcx.def_span(def_id),
+                &format!("symbol `{}` is already defined", symbol_name),
+            )
         });
 
         unsafe {
@@ -48,15 +50,46 @@ impl<'tcx> PreDefineMethods<'tcx> for CodegenCx<'_, 'tcx> {
         visibility: Visibility,
         symbol_name: &str,
     ) {
-        assert!(!instance.substs.has_infer());
+        assert!(!instance.substs.needs_infer());
 
         let fn_abi = self.fn_abi_of_instance(instance, ty::List::empty());
-        let lldecl = self.declare_fn(symbol_name, fn_abi, Some(instance));
+        let lldecl = self.declare_fn(symbol_name, fn_abi);
         unsafe { llvm::LLVMRustSetLinkage(lldecl, base::linkage_to_llvm(linkage)) };
         let attrs = self.tcx.codegen_fn_attrs(instance.def_id());
         base::set_link_section(lldecl, attrs);
         if linkage == Linkage::LinkOnceODR || linkage == Linkage::WeakODR {
             llvm::SetUniqueComdat(self.llmod, lldecl);
+        }
+
+        // test if this is a special function
+        // Notes: we need to normalize (use normalize erasing regions) the substs types, we need to figure out a way of indexing them types and send the type_index.
+        if let Some(impl_did) = self.tcx.impl_of_method(instance.def_id()) {
+            let impl_type =   match self.tcx.try_normalize_erasing_regions(ty::ParamEnv::reveal_all(), self.tcx.type_of(impl_did)) {
+                Ok(t) => t,
+                _ => self.tcx.type_of(impl_did)
+            };
+
+            if self.tcx.is_special_ty(impl_type) {
+                for type_ in instance.substs.types() {
+                    let inner_ty = self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), type_);
+                    let mut type_id = self.tcx.type_id_hash(inner_ty);
+                    if self.tcx.is_special_ty(inner_ty) {
+                        type_id = 0;
+                    }
+                    unsafe {
+                        llvm::LLVMSetSmartPointerAPIMetadata(lldecl, type_id);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if let Some(fun) = self.tcx.lang_items().exchange_malloc_fn(){
+            if instance.def_id() == fun {
+                unsafe {
+                    llvm::LLVMMarkExchangeMallocFunc(lldecl);
+                }
+            }
         }
 
         // If we're compiling the compiler-builtins crate, e.g., the equivalent of
@@ -125,7 +158,8 @@ impl CodegenCx<'_, '_> {
 
         // Thread-local variables generally don't support copy relocations.
         let is_thread_local_var = llvm::LLVMIsAGlobalVariable(llval)
-            .is_some_and(|v| llvm::LLVMIsThreadLocal(v) == llvm::True);
+            .map(|v| llvm::LLVMIsThreadLocal(v) == llvm::True)
+            .unwrap_or(false);
         if is_thread_local_var {
             return false;
         }

@@ -52,15 +52,19 @@ fn test_arena_alloc_nested() {
 
     impl<'a> Wrap<'a> {
         fn alloc_inner<F: Fn() -> Inner>(&self, f: F) -> &Inner {
-            match self.0.alloc(EI::I(f())) {
-                EI::I(i) => i,
-                _ => panic!("mismatch"),
+            let r: &EI<'_> = self.0.alloc(EI::I(f()));
+            if let &EI::I(ref i) = r {
+                i
+            } else {
+                panic!("mismatch");
             }
         }
         fn alloc_outer<F: Fn() -> Outer<'a>>(&self, f: F) -> &Outer<'_> {
-            match self.0.alloc(EI::O(f())) {
-                EI::O(o) => o,
-                _ => panic!("mismatch"),
+            let r: &EI<'_> = self.0.alloc(EI::O(f()));
+            if let &EI::O(ref o) = r {
+                o
+            } else {
+                panic!("mismatch");
             }
         }
     }

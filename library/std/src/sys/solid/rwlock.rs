@@ -12,6 +12,8 @@ pub struct RwLock {
     rwl: SpinIdOnceCell<()>,
 }
 
+pub type MovableRwLock = RwLock;
+
 // Safety: `num_readers` is protected by `mtx_num_readers`
 unsafe impl Send for RwLock {}
 unsafe impl Sync for RwLock {}
@@ -35,13 +37,13 @@ impl RwLock {
     }
 
     #[inline]
-    pub fn read(&self) {
+    pub unsafe fn read(&self) {
         let rwl = self.raw();
         expect_success(unsafe { abi::rwl_loc_rdl(rwl) }, &"rwl_loc_rdl");
     }
 
     #[inline]
-    pub fn try_read(&self) -> bool {
+    pub unsafe fn try_read(&self) -> bool {
         let rwl = self.raw();
         match unsafe { abi::rwl_ploc_rdl(rwl) } {
             abi::E_TMOUT => false,
@@ -53,13 +55,13 @@ impl RwLock {
     }
 
     #[inline]
-    pub fn write(&self) {
+    pub unsafe fn write(&self) {
         let rwl = self.raw();
         expect_success(unsafe { abi::rwl_loc_wrl(rwl) }, &"rwl_loc_wrl");
     }
 
     #[inline]
-    pub fn try_write(&self) -> bool {
+    pub unsafe fn try_write(&self) -> bool {
         let rwl = self.raw();
         match unsafe { abi::rwl_ploc_wrl(rwl) } {
             abi::E_TMOUT => false,

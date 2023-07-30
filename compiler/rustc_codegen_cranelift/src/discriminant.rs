@@ -1,7 +1,6 @@
 //! Handling of enum discriminants
 //!
-//! Adapted from <https://github.com/rust-lang/rust/blob/31c0645b9d2539f47eecb096142474b29dc542f7/compiler/rustc_codegen_ssa/src/mir/place.rs>
-//! (<https://github.com/rust-lang/rust/pull/104535>)
+//! Adapted from <https://github.com/rust-lang/rust/blob/d760df5aea483aae041c9a241e7acacf48f75035/src/librustc_codegen_ssa/mir/place.rs>
 
 use rustc_target::abi::{Int, TagEncoding, Variants};
 
@@ -26,7 +25,7 @@ pub(crate) fn codegen_set_discriminant<'tcx>(
             tag_encoding: TagEncoding::Direct,
             variants: _,
         } => {
-            let ptr = place.place_field(fx, FieldIdx::new(tag_field));
+            let ptr = place.place_field(fx, mir::Field::new(tag_field));
             let to = layout.ty.discriminant_for_variant(fx.tcx, variant_index).unwrap().val;
             let to = if ptr.layout().abi.is_signed() {
                 ty::ScalarInt::try_from_int(
@@ -47,20 +46,14 @@ pub(crate) fn codegen_set_discriminant<'tcx>(
             variants: _,
         } => {
             if variant_index != untagged_variant {
-                let niche = place.place_field(fx, FieldIdx::new(tag_field));
-                let niche_type = fx.clif_type(niche.layout().ty).unwrap();
+                let niche = place.place_field(fx, mir::Field::new(tag_field));
                 let niche_value = variant_index.as_u32() - niche_variants.start().as_u32();
-                let niche_value = (niche_value as u128).wrapping_add(niche_start);
-                let niche_value = match niche_type {
-                    types::I128 => {
-                        let lsb = fx.bcx.ins().iconst(types::I64, niche_value as u64 as i64);
-                        let msb =
-                            fx.bcx.ins().iconst(types::I64, (niche_value >> 64) as u64 as i64);
-                        fx.bcx.ins().iconcat(lsb, msb)
-                    }
-                    ty => fx.bcx.ins().iconst(ty, niche_value as i64),
-                };
-                let niche_llval = CValue::by_val(niche_value, niche.layout());
+                let niche_value = ty::ScalarInt::try_from_uint(
+                    u128::from(niche_value).wrapping_add(niche_start),
+                    niche.layout().size,
+                )
+                .unwrap();
+                let niche_llval = CValue::const_val(fx, niche.layout(), niche_value);
                 niche.write_cvalue(fx, niche_llval);
             }
         }
@@ -106,7 +99,7 @@ pub(crate) fn codegen_get_discriminant<'tcx>(
     let cast_to = fx.clif_type(dest_layout.ty).unwrap();
 
     // Read the tag/niche-encoded discriminant from memory.
-    let tag = value.value_field(fx, FieldIdx::new(tag_field));
+    let tag = value.value_field(fx, mir::Field::new(tag_field));
     let tag = tag.load_scalar(fx);
 
     // Decode the discriminant (specifically if it's niche-encoded).
@@ -121,40 +114,21 @@ pub(crate) fn codegen_get_discriminant<'tcx>(
             dest.write_cvalue(fx, res);
         }
         TagEncoding::Niche { untagged_variant, ref niche_variants, niche_start } => {
-            let relative_max = niche_variants.end().as_u32() - niche_variants.start().as_u32();
+            // Rebase from niche values to discriminants, and check
+            // whether the result is in range for the niche variants.
 
-            // We have a subrange `niche_start..=niche_end` inside `range`.
-            // If the value of the tag is inside this subrange, it's a
-            // "niche value", an increment of the discriminant. Otherwise it
-            // indicates the untagged variant.
-            // A general algorithm to extract the discriminant from the tag
-            // is:
-            // relative_tag = tag - niche_start
-            // is_niche = relative_tag <= (ule) relative_max
-            // discr = if is_niche {
-            //     cast(relative_tag) + niche_variants.start()
-            // } else {
-            //     untagged_variant
-            // }
-            // However, we will likely be able to emit simpler code.
-
-            let (is_niche, tagged_discr, delta) = if relative_max == 0 {
-                // Best case scenario: only one tagged variant. This will
-                // likely become just a comparison and a jump.
-                // The algorithm is:
-                // is_niche = tag == niche_start
-                // discr = if is_niche {
-                //     niche_start
-                // } else {
-                //     untagged_variant
-                // }
-                let is_niche = codegen_icmp_imm(fx, IntCC::Equal, tag, niche_start as i128);
-                let tagged_discr =
-                    fx.bcx.ins().iconst(cast_to, niche_variants.start().as_u32() as i64);
-                (is_niche, tagged_discr, 0)
+            // We first compute the "relative discriminant" (wrt `niche_variants`),
+            // that is, if `n = niche_variants.end() - niche_variants.start()`,
+            // we remap `niche_start..=niche_start + n` (which may wrap around)
+            // to (non-wrap-around) `0..=n`, to be able to check whether the
+            // discriminant corresponds to a niche variant with one comparison.
+            // We also can't go directly to the (variant index) discriminant
+            // and check that it is in the range `niche_variants`, because
+            // that might not fit in the same type, on top of needing an extra
+            // comparison (see also the comment on `let niche_discr`).
+            let relative_discr = if niche_start == 0 {
+                tag
             } else {
-                // The special cases don't apply, so we'll have to go with
-                // the general algorithm.
                 let niche_start = match fx.bcx.func.dfg.value_type(tag) {
                     types::I128 => {
                         let lsb = fx.bcx.ins().iconst(types::I64, niche_start as u64 as i64);
@@ -164,40 +138,40 @@ pub(crate) fn codegen_get_discriminant<'tcx>(
                     }
                     ty => fx.bcx.ins().iconst(ty, niche_start as i64),
                 };
-                let relative_discr = fx.bcx.ins().isub(tag, niche_start);
-                let cast_tag = clif_intcast(fx, relative_discr, cast_to, false);
-                let is_niche = crate::common::codegen_icmp_imm(
+                fx.bcx.ins().isub(tag, niche_start)
+            };
+            let relative_max = niche_variants.end().as_u32() - niche_variants.start().as_u32();
+            let is_niche = {
+                codegen_icmp_imm(
                     fx,
                     IntCC::UnsignedLessThanOrEqual,
                     relative_discr,
                     i128::from(relative_max),
-                );
-                (is_niche, cast_tag, niche_variants.start().as_u32() as u128)
+                )
             };
 
-            let tagged_discr = if delta == 0 {
-                tagged_discr
-            } else {
-                let delta = match cast_to {
-                    types::I128 => {
-                        let lsb = fx.bcx.ins().iconst(types::I64, delta as u64 as i64);
-                        let msb = fx.bcx.ins().iconst(types::I64, (delta >> 64) as u64 as i64);
-                        fx.bcx.ins().iconcat(lsb, msb)
-                    }
-                    ty => fx.bcx.ins().iconst(ty, delta as i64),
+            // NOTE(eddyb) this addition needs to be performed on the final
+            // type, in case the niche itself can't represent all variant
+            // indices (e.g. `u8` niche with more than `256` variants,
+            // but enough uninhabited variants so that the remaining variants
+            // fit in the niche).
+            // In other words, `niche_variants.end - niche_variants.start`
+            // is representable in the niche, but `niche_variants.end`
+            // might not be, in extreme cases.
+            let niche_discr = {
+                let relative_discr = if relative_max == 0 {
+                    // HACK(eddyb) since we have only one niche, we know which
+                    // one it is, and we can avoid having a dynamic value here.
+                    fx.bcx.ins().iconst(cast_to, 0)
+                } else {
+                    clif_intcast(fx, relative_discr, cast_to, false)
                 };
-                fx.bcx.ins().iadd(tagged_discr, delta)
+                fx.bcx.ins().iadd_imm(relative_discr, i64::from(niche_variants.start().as_u32()))
             };
 
-            let untagged_variant = if cast_to == types::I128 {
-                let zero = fx.bcx.ins().iconst(types::I64, 0);
-                let untagged_variant =
-                    fx.bcx.ins().iconst(types::I64, i64::from(untagged_variant.as_u32()));
-                fx.bcx.ins().iconcat(untagged_variant, zero)
-            } else {
-                fx.bcx.ins().iconst(cast_to, i64::from(untagged_variant.as_u32()))
-            };
-            let discr = fx.bcx.ins().select(is_niche, tagged_discr, untagged_variant);
+            let untagged_variant =
+                fx.bcx.ins().iconst(cast_to, i64::from(untagged_variant.as_u32()));
+            let discr = fx.bcx.ins().select(is_niche, niche_discr, untagged_variant);
             let res = CValue::by_val(discr, dest_layout);
             dest.write_cvalue(fx, res);
         }

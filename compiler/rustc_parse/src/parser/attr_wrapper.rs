@@ -5,9 +5,9 @@ use rustc_ast::tokenstream::{AttrTokenTree, DelimSpan, LazyAttrTokenStream, Spac
 use rustc_ast::{self as ast};
 use rustc_ast::{AttrVec, Attribute, HasAttrs, HasTokens};
 use rustc_errors::PResult;
-use rustc_session::parse::ParseSess;
-use rustc_span::{sym, Span, DUMMY_SP};
+use rustc_span::{sym, Span};
 
+use std::convert::TryInto;
 use std::ops::Range;
 
 /// A wrapper type to ensure that the parser handles outer attributes correctly.
@@ -39,17 +39,12 @@ impl AttrWrapper {
     pub fn empty() -> AttrWrapper {
         AttrWrapper { attrs: AttrVec::new(), start_pos: usize::MAX }
     }
-
-    pub(crate) fn take_for_recovery(self, sess: &ParseSess) -> AttrVec {
-        sess.span_diagnostic.delay_span_bug(
-            self.attrs.get(0).map(|attr| attr.span).unwrap_or(DUMMY_SP),
-            "AttrVec is taken for recovery but no error is produced",
-        );
-
+    // FIXME: Delay span bug here?
+    pub(crate) fn take_for_recovery(self) -> AttrVec {
         self.attrs
     }
 
-    /// Prepend `self.attrs` to `attrs`.
+    // Prepend `self.attrs` to `attrs`.
     // FIXME: require passing an NT to prevent misuse of this method
     pub(crate) fn prepend_to_nt_inner(self, attrs: &mut AttrVec) {
         let mut self_attrs = self.attrs;
@@ -61,8 +56,8 @@ impl AttrWrapper {
         self.attrs.is_empty()
     }
 
-    pub fn is_complete(&self) -> bool {
-        crate::parser::attr::is_complete(&self.attrs)
+    pub fn maybe_needs_tokens(&self) -> bool {
+        crate::parser::attr::maybe_needs_tokens(&self.attrs)
     }
 }
 
@@ -72,7 +67,7 @@ fn has_cfg_or_cfg_attr(attrs: &[Attribute]) -> bool {
     // Therefore, the absence of a literal `cfg` or `cfg_attr` guarantees that
     // we don't need to do any eager expansion.
     attrs.iter().any(|attr| {
-        attr.ident().is_some_and(|ident| ident.name == sym::cfg || ident.name == sym::cfg_attr)
+        attr.ident().map_or(false, |ident| ident.name == sym::cfg || ident.name == sym::cfg_attr)
     })
 }
 
@@ -134,11 +129,11 @@ impl ToAttrTokenStream for LazyAttrTokenStreamImpl {
             // Process the replace ranges, starting from the highest start
             // position and working our way back. If have tokens like:
             //
-            // `#[cfg(FALSE)] struct Foo { #[cfg(FALSE)] field: bool }`
+            // `#[cfg(FALSE)]` struct Foo { #[cfg(FALSE)] field: bool }`
             //
             // Then we will generate replace ranges for both
             // the `#[cfg(FALSE)] field: bool` and the entire
-            // `#[cfg(FALSE)] struct Foo { #[cfg(FALSE)] field: bool }`
+            // `#[cfg(FALSE)]` struct Foo { #[cfg(FALSE)] field: bool }`
             //
             // By starting processing from the replace range with the greatest
             // start position, we ensure that any replace range which encloses
@@ -201,7 +196,7 @@ impl<'a> Parser<'a> {
         //    by definition
         if matches!(force_collect, ForceCollect::No)
             // None of our outer attributes can require tokens (e.g. a proc-macro)
-            && attrs.is_complete()
+            && !attrs.maybe_needs_tokens()
             // If our target supports custom inner attributes, then we cannot bail
             // out early, since we may need to capture tokens for a custom inner attribute
             // invocation.
@@ -244,9 +239,9 @@ impl<'a> Parser<'a> {
         // Now that we've parsed an AST node, we have more information available.
         if matches!(force_collect, ForceCollect::No)
             // We now have inner attributes available, so this check is more precise
-            // than `attrs.is_complete()` at the start of the function.
+            // than `attrs.maybe_needs_tokens()` at the start of the function.
             // As a result, we don't need to check `R::SUPPORTS_CUSTOM_INNER_ATTRS`
-            && crate::parser::attr::is_complete(ret.attrs())
+            && !crate::parser::attr::maybe_needs_tokens(ret.attrs())
             // Subtle: We call `has_cfg_or_cfg_attr` with the attrs from `ret`.
             // This ensures that we consider inner attributes (e.g. `#![cfg]`),
             // which require us to have tokens available
@@ -469,6 +464,6 @@ mod size_asserts {
     use rustc_data_structures::static_assert_size;
     // tidy-alphabetical-start
     static_assert_size!(AttrWrapper, 16);
-    static_assert_size!(LazyAttrTokenStreamImpl, 120);
+    static_assert_size!(LazyAttrTokenStreamImpl, 144);
     // tidy-alphabetical-end
 }

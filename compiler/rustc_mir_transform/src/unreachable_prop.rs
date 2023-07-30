@@ -76,7 +76,7 @@ where
     let terminator = match terminator_kind {
         // This will unconditionally run into an unreachable and is therefore unreachable as well.
         TerminatorKind::Goto { target } if is_unreachable(*target) => TerminatorKind::Unreachable,
-        TerminatorKind::SwitchInt { targets, discr } => {
+        TerminatorKind::SwitchInt { targets, discr, switch_ty } => {
             let otherwise = targets.otherwise();
 
             // If all targets are unreachable, we can be unreachable as well.
@@ -87,7 +87,7 @@ where
                 // unless otherwise is unreachable, in which case deleting a normal branch causes it to be merged with
                 // the otherwise, keeping its unreachable.
                 // This looses information about reachability causing worse codegen.
-                // For example (see tests/codegen/match-optimizes-away.rs)
+                // For example (see src/test/codegen/match-optimizes-away.rs)
                 //
                 // pub enum Two { A, B }
                 // pub fn identity(x: Two) -> Two {
@@ -99,7 +99,7 @@ where
                 //
                 // This generates a `switchInt() -> [0: 0, 1: 1, otherwise: unreachable]`, which allows us or LLVM to
                 // turn it into just `x` later. Without the unreachable, such a transformation would be illegal.
-                // If the otherwise branch is unreachable, we can delete all other unreachable targets, as they will
+                // If the otherwise branch is unreachable, we can delete all other unreacahble targets, as they will
                 // still point to the unreachable and therefore not lose reachability information.
                 let reachable_iter = targets.iter().filter(|(_, bb)| !is_unreachable(*bb));
 
@@ -110,7 +110,11 @@ where
                     return None;
                 }
 
-                TerminatorKind::SwitchInt { discr: discr.clone(), targets: new_targets }
+                TerminatorKind::SwitchInt {
+                    discr: discr.clone(),
+                    switch_ty: *switch_ty,
+                    targets: new_targets,
+                }
             } else {
                 // If the otherwise branch is reachable, we don't want to delete any unreachable branches.
                 return None;

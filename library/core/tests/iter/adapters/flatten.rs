@@ -1,7 +1,5 @@
-use core::assert_eq;
 use super::*;
 use core::iter::*;
-use core::num::NonZeroUsize;
 
 #[test]
 fn test_iterator_flatten() {
@@ -63,19 +61,19 @@ fn test_flatten_try_folds() {
 fn test_flatten_advance_by() {
     let mut it = once(0..10).chain(once(10..30)).chain(once(30..40)).flatten();
 
-    assert_eq!(it.advance_by(5), Ok(()));
+    it.advance_by(5).unwrap();
     assert_eq!(it.next(), Some(5));
-    assert_eq!(it.advance_by(9), Ok(()));
+    it.advance_by(9).unwrap();
     assert_eq!(it.next(), Some(15));
-    assert_eq!(it.advance_back_by(4), Ok(()));
+    it.advance_back_by(4).unwrap();
     assert_eq!(it.next_back(), Some(35));
-    assert_eq!(it.advance_back_by(9), Ok(()));
+    it.advance_back_by(9).unwrap();
     assert_eq!(it.next_back(), Some(25));
 
-    assert_eq!(it.advance_by(usize::MAX), Err(NonZeroUsize::new(usize::MAX - 9).unwrap()));
-    assert_eq!(it.advance_back_by(usize::MAX), Err(NonZeroUsize::new(usize::MAX).unwrap()));
-    assert_eq!(it.advance_by(0), Ok(()));
-    assert_eq!(it.advance_back_by(0), Ok(()));
+    assert_eq!(it.advance_by(usize::MAX), Err(9));
+    assert_eq!(it.advance_back_by(usize::MAX), Err(0));
+    it.advance_by(0).unwrap();
+    it.advance_back_by(0).unwrap();
     assert_eq!(it.size_hint(), (0, Some(0)));
 }
 
@@ -176,19 +174,19 @@ fn test_flatten_count() {
     let mut it = once(0..10).chain(once(10..30)).chain(once(30..40)).flatten();
 
     assert_eq!(it.clone().count(), 40);
-    assert_eq!(it.advance_by(5), Ok(()));
+    it.advance_by(5).unwrap();
     assert_eq!(it.clone().count(), 35);
-    assert_eq!(it.advance_back_by(5), Ok(()));
+    it.advance_back_by(5).unwrap();
     assert_eq!(it.clone().count(), 30);
-    assert_eq!(it.advance_by(10), Ok(()));
+    it.advance_by(10).unwrap();
     assert_eq!(it.clone().count(), 20);
-    assert_eq!(it.advance_back_by(8), Ok(()));
+    it.advance_back_by(8).unwrap();
     assert_eq!(it.clone().count(), 12);
-    assert_eq!(it.advance_by(4), Ok(()));
+    it.advance_by(4).unwrap();
     assert_eq!(it.clone().count(), 8);
-    assert_eq!(it.advance_back_by(5), Ok(()));
+    it.advance_back_by(5).unwrap();
     assert_eq!(it.clone().count(), 3);
-    assert_eq!(it.advance_by(3), Ok(()));
+    it.advance_by(3).unwrap();
     assert_eq!(it.clone().count(), 0);
 }
 
@@ -197,18 +195,18 @@ fn test_flatten_last() {
     let mut it = once(0..10).chain(once(10..30)).chain(once(30..40)).flatten();
 
     assert_eq!(it.clone().last(), Some(39));
-    assert_eq!(it.advance_by(5), Ok(())); // 5..40
+    it.advance_by(5).unwrap(); // 5..40
     assert_eq!(it.clone().last(), Some(39));
-    assert_eq!(it.advance_back_by(5), Ok(())); // 5..35
+    it.advance_back_by(5).unwrap(); // 5..35
     assert_eq!(it.clone().last(), Some(34));
-    assert_eq!(it.advance_by(10), Ok(())); // 15..35
+    it.advance_by(10).unwrap(); // 15..35
     assert_eq!(it.clone().last(), Some(34));
-    assert_eq!(it.advance_back_by(8), Ok(())); // 15..27
+    it.advance_back_by(8).unwrap(); // 15..27
     assert_eq!(it.clone().last(), Some(26));
-    assert_eq!(it.advance_by(4), Ok(())); // 19..27
+    it.advance_by(4).unwrap(); // 19..27
     assert_eq!(it.clone().last(), Some(26));
-    assert_eq!(it.advance_back_by(5), Ok(())); // 19..22
+    it.advance_back_by(5).unwrap(); // 19..22
     assert_eq!(it.clone().last(), Some(21));
-    assert_eq!(it.advance_by(3), Ok(())); // 22..22
+    it.advance_by(3).unwrap(); // 22..22
     assert_eq!(it.clone().last(), None);
 }

@@ -1,19 +1,17 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 use rustc_infer::infer::InferCtxt;
 use rustc_middle::mir::visit::TyContext;
 use rustc_middle::mir::visit::Visitor;
 use rustc_middle::mir::{
-    Body, Local, Location, Place, PlaceRef, ProjectionElem, Rvalue, SourceInfo, Statement,
-    StatementKind, Terminator, TerminatorKind, UserTypeProjection,
+    BasicBlock, BasicBlockData, Body, Local, Location, Place, PlaceRef, ProjectionElem, Rvalue,
+    SourceInfo, Statement, StatementKind, Terminator, TerminatorKind, UserTypeProjection,
 };
 use rustc_middle::ty::subst::SubstsRef;
 use rustc_middle::ty::visit::TypeVisitable;
-use rustc_middle::ty::{self, RegionVid, Ty, TyCtxt};
+use rustc_middle::ty::{self, RegionVid, Ty};
 
 use crate::{
-    borrow_set::BorrowSet, facts::AllFacts, location::LocationTable, places_conflict,
-    region_infer::values::LivenessValues,
+    borrow_set::BorrowSet, facts::AllFacts, location::LocationTable, nll::ToRegionVid,
+    places_conflict, region_infer::values::LivenessValues,
 };
 
 pub(super) fn generate_constraints<'tcx>(
@@ -49,6 +47,10 @@ struct ConstraintGeneration<'cg, 'tcx> {
 }
 
 impl<'cg, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'tcx> {
+    fn visit_basic_block_data(&mut self, bb: BasicBlock, data: &BasicBlockData<'tcx>) {
+        self.super_basic_block_data(bb, data);
+    }
+
     /// We sometimes have `substs` within an rvalue, or within a
     /// call. Make them live at the location where they appear.
     fn visit_substs(&mut self, substs: &SubstsRef<'tcx>, location: Location) {
@@ -161,12 +163,12 @@ impl<'cx, 'tcx> ConstraintGeneration<'cx, 'tcx> {
     /// `location`.
     fn add_regular_live_constraint<T>(&mut self, live_ty: T, location: Location)
     where
-        T: TypeVisitable<TyCtxt<'tcx>>,
+        T: TypeVisitable<'tcx>,
     {
         debug!("add_regular_live_constraint(live_ty={:?}, location={:?})", live_ty, location);
 
         self.infcx.tcx.for_each_free_region(&live_ty, |live_region| {
-            let vid = live_region.as_var();
+            let vid = live_region.to_region_vid();
             self.liveness_constraints.add_element(vid, location);
         });
     }

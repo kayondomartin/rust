@@ -87,10 +87,16 @@ impl<'tcx> Rollback<UndoLog<'tcx>> for InferCtxtInner<'tcx> {
 
 /// The combined undo log for all the various unification tables. For each change to the storage
 /// for any kind of inference variable, we record an UndoLog entry in the vector here.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct InferCtxtUndoLogs<'tcx> {
     logs: Vec<UndoLog<'tcx>>,
     num_open_snapshots: usize,
+}
+
+impl Default for InferCtxtUndoLogs<'_> {
+    fn default() -> Self {
+        Self { logs: Default::default(), num_open_snapshots: Default::default() }
+    }
 }
 
 /// The UndoLogs trait defines how we undo a particular kind of action (of type T). We can undo any
@@ -138,9 +144,11 @@ impl<'tcx> InferCtxtInner<'tcx> {
         }
 
         if self.undo_log.num_open_snapshots == 1 {
-            // After the root snapshot the undo log should be empty.
+            // The root snapshot. It's safe to clear the undo log because
+            // there's no snapshot further out that we might need to roll back
+            // to.
             assert!(snapshot.undo_len == 0);
-            assert!(self.undo_log.logs.is_empty());
+            self.undo_log.logs.clear();
         }
 
         self.undo_log.num_open_snapshots -= 1;
@@ -179,6 +187,15 @@ impl<'tcx> InferCtxtUndoLogs<'tcx> {
 
     pub(crate) fn opaque_types_in_snapshot(&self, s: &Snapshot<'tcx>) -> bool {
         self.logs[s.undo_len..].iter().any(|log| matches!(log, UndoLog::OpaqueTypes(..)))
+    }
+
+    pub(crate) fn region_constraints(
+        &self,
+    ) -> impl Iterator<Item = &'_ region_constraints::UndoLog<'tcx>> + Clone {
+        self.logs.iter().filter_map(|log| match log {
+            UndoLog::RegionConstraintCollector(log) => Some(log),
+            _ => None,
+        })
     }
 
     fn assert_open_snapshot(&self, snapshot: &Snapshot<'tcx>) {

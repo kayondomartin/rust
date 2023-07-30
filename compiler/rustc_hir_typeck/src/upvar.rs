@@ -49,7 +49,8 @@ use rustc_span::{BytePos, Pos, Span, Symbol};
 use rustc_trait_selection::infer::InferCtxtExt;
 
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_target::abi::FIRST_VARIANT;
+use rustc_index::vec::Idx;
+use rustc_target::abi::VariantIdx;
 
 use std::iter;
 
@@ -223,14 +224,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let closure_hir_id = self.tcx.hir().local_def_id_to_hir_id(closure_def_id);
 
         if should_do_rust_2021_incompatible_closure_captures_analysis(self.tcx, closure_hir_id) {
-            self.perform_2229_migration_analysis(closure_def_id, body_id, capture_clause, span);
+            self.perform_2229_migration_anaysis(closure_def_id, body_id, capture_clause, span);
         }
 
         let after_feature_tys = self.final_upvar_tys(closure_def_id);
 
         // We now fake capture information for all variables that are mentioned within the closure
         // We do this after handling migrations so that min_captures computes before
-        if !enable_precise_capture(span) {
+        if !enable_precise_capture(self.tcx, span) {
             let mut capture_information: InferredCaptureInformation<'tcx> = Default::default();
 
             if let Some(upvars) = self.tcx.upvars_mentioned(closure_def_id) {
@@ -264,7 +265,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
             // If we have an origin, store it.
             if let Some(origin) = origin {
-                let origin = if enable_precise_capture(span) {
+                let origin = if enable_precise_capture(self.tcx, span) {
                     (origin.0, origin.1)
                 } else {
                     (origin.0, Place { projections: vec![], ..origin.1 })
@@ -300,7 +301,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // Build a tuple (U0..Un) of the final upvar types U0..Un
         // and unify the upvar tuple type in the closure with it:
-        let final_tupled_upvars_type = Ty::new_tup(self.tcx, &final_upvar_tys);
+        let final_tupled_upvars_type = self.tcx.mk_tup(final_upvar_tys.iter());
         self.demand_suptype(span, substs.tupled_upvars_ty(), final_tupled_upvars_type);
 
         let fake_reads = delegate
@@ -314,8 +315,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self.typeck_results.borrow_mut().closure_size_eval.insert(
                 closure_def_id,
                 ClosureSizeProfileData {
-                    before_feature_tys: Ty::new_tup(self.tcx, &before_feature_tys),
-                    after_feature_tys: Ty::new_tup(self.tcx, &after_feature_tys),
+                    before_feature_tys: self.tcx.mk_tup(before_feature_tys.into_iter()),
+                    after_feature_tys: self.tcx.mk_tup(after_feature_tys.into_iter()),
                 },
             );
         }
@@ -423,7 +424,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // closures. We want to make sure any adjustment that might make us move the place into
                 // the closure gets handled.
                 let (place, capture_kind) =
-                    restrict_precision_for_drop_types(self, place, capture_kind);
+                    restrict_precision_for_drop_types(self, place, capture_kind, usage_span);
 
                 capture_info.capture_kind = capture_kind;
                 (place, capture_info)
@@ -525,12 +526,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 PlaceBase::Upvar(upvar_id) => upvar_id.var_path.hir_id,
                 base => bug!("Expected upvar, found={:?}", base),
             };
-            let var_ident = self.tcx.hir().ident(var_hir_id);
 
             let Some(min_cap_list) = root_var_min_capture_list.get_mut(&var_hir_id) else {
                 let mutability = self.determine_capture_mutability(&typeck_results, &place);
                 let min_cap_list = vec![ty::CapturedPlace {
-                    var_ident,
                     place,
                     info: capture_info,
                     mutability,
@@ -629,7 +628,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if !ancestor_found {
                 let mutability = self.determine_capture_mutability(&typeck_results, &place);
                 let captured_place = ty::CapturedPlace {
-                    var_ident,
                     place,
                     info: updated_capture_info,
                     mutability,
@@ -665,7 +663,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // fields of some type, the observable drop order will remain the same as it previously
         // was even though we're dropping each capture individually.
         // See https://github.com/rust-lang/project-rfc-2229/issues/42 and
-        // `tests/ui/closures/2229_closure_analysis/preserve_field_drop_order.rs`.
+        // `src/test/ui/closures/2229_closure_analysis/preserve_field_drop_order.rs`.
         for (_, captures) in &mut root_var_min_capture_list {
             captures.sort_by(|capture1, capture2| {
                 for (p1, p2) in capture1.place.projections.iter().zip(&capture2.place.projections) {
@@ -711,14 +709,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     }
                 }
 
-                self.tcx.sess.delay_span_bug(
-                    closure_span,
-                    format!(
-                        "two identical projections: ({:?}, {:?})",
-                        capture1.place.projections, capture2.place.projections
-                    ),
+                unreachable!(
+                    "we captured two identical projections: capture1 = {:?}, capture2 = {:?}",
+                    capture1, capture2
                 );
-                std::cmp::Ordering::Equal
             });
         }
 
@@ -731,7 +725,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Perform the migration analysis for RFC 2229, and emit lint
     /// `disjoint_capture_drop_reorder` if needed.
-    fn perform_2229_migration_analysis(
+    fn perform_2229_migration_anaysis(
         &self,
         closure_def_id: LocalDefId,
         body_id: hir::BodyId,
@@ -863,7 +857,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             let indent = line2.split_once(|c: char| !c.is_whitespace()).unwrap_or_default().0;
                             lint.span_suggestion(
                                 closure_body_span.with_lo(closure_body_span.lo() + BytePos::from_usize(line1.len())).shrink_to_lo(),
-                                diagnostic_msg,
+                                &diagnostic_msg,
                                 format!("\n{indent}{migration_string};"),
                                 Applicability::MachineApplicable,
                             );
@@ -874,7 +868,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             // directly after the `{`.
                             lint.span_suggestion(
                                 closure_body_span.with_lo(closure_body_span.lo() + BytePos(1)).shrink_to_lo(),
-                                diagnostic_msg,
+                                &diagnostic_msg,
                                 format!(" {migration_string};"),
                                 Applicability::MachineApplicable,
                             );
@@ -882,7 +876,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             // This is a closure without braces around the body.
                             // We add braces to add the `let` before the body.
                             lint.multipart_suggestion(
-                                diagnostic_msg,
+                                &diagnostic_msg,
                                 vec![
                                     (closure_body_span.shrink_to_lo(), format!("{{ {migration_string}; ")),
                                     (closure_body_span.shrink_to_hi(), " }".to_string()),
@@ -893,7 +887,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     } else {
                         lint.span_suggestion(
                             closure_span,
-                            diagnostic_msg,
+                            &diagnostic_msg,
                             migration_string,
                             Applicability::HasPlaceholders
                         );
@@ -972,11 +966,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let mut obligations_should_hold = Vec::new();
         // Checks if a root variable implements any of the auto traits
         for check_trait in auto_traits_def_id.iter() {
-            obligations_should_hold.push(check_trait.is_some_and(|check_trait| {
-                self.infcx
-                    .type_implements_trait(check_trait, [ty], self.param_env)
-                    .must_apply_modulo_regions()
-            }));
+            obligations_should_hold.push(
+                check_trait
+                    .map(|check_trait| {
+                        self.infcx
+                            .type_implements_trait(
+                                check_trait,
+                                ty,
+                                self.tcx.mk_substs_trait(ty, &[]),
+                                self.param_env,
+                            )
+                            .must_apply_modulo_regions()
+                    })
+                    .unwrap_or(false),
+            );
         }
 
         let mut problematic_captures = FxHashMap::default();
@@ -992,11 +995,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // Checks if a capture implements any of the auto traits
             let mut obligations_holds_for_capture = Vec::new();
             for check_trait in auto_traits_def_id.iter() {
-                obligations_holds_for_capture.push(check_trait.is_some_and(|check_trait| {
-                    self.infcx
-                        .type_implements_trait(check_trait, [ty], self.param_env)
-                        .must_apply_modulo_regions()
-                }));
+                obligations_holds_for_capture.push(
+                    check_trait
+                        .map(|check_trait| {
+                            self.infcx
+                                .type_implements_trait(
+                                    check_trait,
+                                    ty,
+                                    self.tcx.mk_substs_trait(ty, &[]),
+                                    self.param_env,
+                                )
+                                .must_apply_modulo_regions()
+                        })
+                        .unwrap_or(false),
+                );
             }
 
             let mut capture_problems = FxHashSet::default();
@@ -1238,7 +1250,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ///
     /// This will make more sense with an example:
     ///
-    /// ```rust,edition2021
+    /// ```rust
+    /// #![feature(capture_disjoint_fields)]
     ///
     /// struct FancyInteger(i32); // This implements Drop
     ///
@@ -1334,8 +1347,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         let is_drop_defined_for_ty = |ty: Ty<'tcx>| {
             let drop_trait = self.tcx.require_lang_item(hir::LangItem::Drop, Some(closure_span));
+            let ty_params = self.tcx.mk_substs_trait(base_path_ty, &[]);
             self.infcx
-                .type_implements_trait(drop_trait, [ty], self.tcx.param_env(closure_def_id))
+                .type_implements_trait(
+                    drop_trait,
+                    ty,
+                    ty_params,
+                    self.tcx.param_env(closure_def_id),
+                )
                 .must_apply_modulo_regions()
         };
 
@@ -1397,7 +1416,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         ProjectionKind::Field(..)
                     ))
                 );
-                def.variants().get(FIRST_VARIANT).unwrap().fields.iter_enumerated().any(
+                def.variants().get(VariantIdx::new(0)).unwrap().fields.iter().enumerate().any(
                     |(i, field)| {
                         let paths_using_field = captured_by_move_projs
                             .iter()
@@ -1405,7 +1424,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 if let ProjectionKind::Field(field_idx, _) =
                                     projs.first().unwrap().kind
                                 {
-                                    if field_idx == i { Some(&projs[1..]) } else { None }
+                                    if (field_idx as usize) == i { Some(&projs[1..]) } else { None }
                                 } else {
                                     unreachable!();
                                 }
@@ -1438,7 +1457,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         .filter_map(|projs| {
                             if let ProjectionKind::Field(field_idx, _) = projs.first().unwrap().kind
                             {
-                                if field_idx.index() == i { Some(&projs[1..]) } else { None }
+                                if (field_idx as usize) == i { Some(&projs[1..]) } else { None }
                             } else {
                                 unreachable!();
                             }
@@ -1493,7 +1512,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     fn should_log_capture_analysis(&self, closure_def_id: LocalDefId) -> bool {
-        self.tcx.has_attr(closure_def_id, sym::rustc_capture_analysis)
+        self.tcx.has_attr(closure_def_id.to_def_id(), sym::rustc_capture_analysis)
     }
 
     fn log_capture_analysis_first_pass(
@@ -1511,7 +1530,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 let span =
                     capture_info.path_expr_id.map_or(closure_span, |e| self.tcx.hir().span(e));
-                diag.span_note(span, output_str);
+                diag.span_note(span, &output_str);
             }
             diag.emit();
         }
@@ -1552,13 +1571,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             multi_span.push_span_label(path_span, path_label);
                             multi_span.push_span_label(capture_kind_span, capture_kind_label);
 
-                            diag.span_note(multi_span, output_str);
+                            diag.span_note(multi_span, &output_str);
                         } else {
                             let span = capture_info
                                 .path_expr_id
                                 .map_or(closure_span, |e| self.tcx.hir().span(e));
 
-                            diag.span_note(span, output_str);
+                            diag.span_note(span, &output_str);
                         };
                     }
                 }
@@ -1665,16 +1684,14 @@ fn apply_capture_kind_on_capture_ty<'tcx>(
 ) -> Ty<'tcx> {
     match capture_kind {
         ty::UpvarCapture::ByValue => ty,
-        ty::UpvarCapture::ByRef(kind) => Ty::new_ref(
-            tcx,
-            region.unwrap(),
-            ty::TypeAndMut { ty: ty, mutbl: kind.to_mutbl_lossy() },
-        ),
+        ty::UpvarCapture::ByRef(kind) => {
+            tcx.mk_ref(region.unwrap(), ty::TypeAndMut { ty: ty, mutbl: kind.to_mutbl_lossy() })
+        }
     }
 }
 
 /// Returns the Span of where the value with the provided HirId would be dropped
-fn drop_location_span(tcx: TyCtxt<'_>, hir_id: hir::HirId) -> Span {
+fn drop_location_span<'tcx>(tcx: TyCtxt<'tcx>, hir_id: hir::HirId) -> Span {
     let owner_id = tcx.hir().get_enclosing_scope(hir_id).unwrap();
 
     let owner_node = tcx.hir().get(owner_id);
@@ -1819,8 +1836,9 @@ fn restrict_precision_for_drop_types<'a, 'tcx>(
     fcx: &'a FnCtxt<'a, 'tcx>,
     mut place: Place<'tcx>,
     mut curr_mode: ty::UpvarCapture,
+    span: Span,
 ) -> (Place<'tcx>, ty::UpvarCapture) {
-    let is_copy_type = fcx.infcx.type_is_copy_modulo_regions(fcx.param_env, place.ty());
+    let is_copy_type = fcx.infcx.type_is_copy_modulo_regions(fcx.param_env, place.ty(), span);
 
     if let (false, UpvarCapture::ByValue) = (is_copy_type, curr_mode) {
         for i in 0..place.projections.len() {
@@ -1841,10 +1859,10 @@ fn restrict_precision_for_drop_types<'a, 'tcx>(
 /// - No projections are applied to raw pointers, since these require unsafe blocks. We capture
 ///   them completely.
 /// - No projections are applied on top of Union ADTs, since these require unsafe blocks.
-fn restrict_precision_for_unsafe(
-    mut place: Place<'_>,
+fn restrict_precision_for_unsafe<'tcx>(
+    mut place: Place<'tcx>,
     mut curr_mode: ty::UpvarCapture,
-) -> (Place<'_>, ty::UpvarCapture) {
+) -> (Place<'tcx>, ty::UpvarCapture) {
     if place.base_ty.is_unsafe_ptr() {
         truncate_place_to_len_and_update_capture_kind(&mut place, &mut curr_mode, 0);
     }
@@ -1874,10 +1892,10 @@ fn restrict_precision_for_unsafe(
 /// - No Index projections are captured, since arrays are captured completely.
 /// - No unsafe block is required to capture `place`
 /// Returns the truncated place and updated capture mode.
-fn restrict_capture_precision(
-    place: Place<'_>,
+fn restrict_capture_precision<'tcx>(
+    place: Place<'tcx>,
     curr_mode: ty::UpvarCapture,
-) -> (Place<'_>, ty::UpvarCapture) {
+) -> (Place<'tcx>, ty::UpvarCapture) {
     let (mut place, mut curr_mode) = restrict_precision_for_unsafe(place, curr_mode);
 
     if place.projections.is_empty() {
@@ -1887,13 +1905,14 @@ fn restrict_capture_precision(
 
     for (i, proj) in place.projections.iter().enumerate() {
         match proj.kind {
-            ProjectionKind::Index | ProjectionKind::Subslice => {
-                // Arrays are completely captured, so we drop Index and Subslice projections
+            ProjectionKind::Index => {
+                // Arrays are completely captured, so we drop Index projections
                 truncate_place_to_len_and_update_capture_kind(&mut place, &mut curr_mode, i);
                 return (place, curr_mode);
             }
             ProjectionKind::Deref => {}
             ProjectionKind::Field(..) => {} // ignore
+            ProjectionKind::Subslice => {}  // We never capture this
         }
     }
 
@@ -1901,10 +1920,10 @@ fn restrict_capture_precision(
 }
 
 /// Truncate deref of any reference.
-fn adjust_for_move_closure(
-    mut place: Place<'_>,
+fn adjust_for_move_closure<'tcx>(
+    mut place: Place<'tcx>,
     mut kind: ty::UpvarCapture,
-) -> (Place<'_>, ty::UpvarCapture) {
+) -> (Place<'tcx>, ty::UpvarCapture) {
     let first_deref = place.projections.iter().position(|proj| proj.kind == ProjectionKind::Deref);
 
     if let Some(idx) = first_deref {
@@ -1916,10 +1935,10 @@ fn adjust_for_move_closure(
 
 /// Adjust closure capture just that if taking ownership of data, only move data
 /// from enclosing stack frame.
-fn adjust_for_non_move_closure(
-    mut place: Place<'_>,
+fn adjust_for_non_move_closure<'tcx>(
+    mut place: Place<'tcx>,
     mut kind: ty::UpvarCapture,
-) -> (Place<'_>, ty::UpvarCapture) {
+) -> (Place<'tcx>, ty::UpvarCapture) {
     let contains_deref =
         place.projections.iter().position(|proj| proj.kind == ProjectionKind::Deref);
 
@@ -2165,7 +2184,7 @@ fn determine_place_ancestry_relation<'tcx>(
     place_a: &Place<'tcx>,
     place_b: &Place<'tcx>,
 ) -> PlaceAncestryRelation {
-    // If Place A and Place B don't start off from the same root variable, they are divergent.
+    // If Place A and Place B, don't start off from the same root variable, they are divergent.
     if place_a.base != place_b.base {
         return PlaceAncestryRelation::Divergent;
     }
@@ -2218,14 +2237,14 @@ fn determine_place_ancestry_relation<'tcx>(
 ///     || drop(&*m.a.field_of_a)
 ///     // Here we really do want to capture `*m.a` because that outlives `'static`
 ///
-///     // If we capture `m`, then the closure no longer outlives `'static`
+///     // If we capture `m`, then the closure no longer outlives `'static'
 ///     // it is constrained to `'a`
 /// }
 /// ```
-fn truncate_capture_for_optimization(
-    mut place: Place<'_>,
+fn truncate_capture_for_optimization<'tcx>(
+    mut place: Place<'tcx>,
     mut curr_mode: ty::UpvarCapture,
-) -> (Place<'_>, ty::UpvarCapture) {
+) -> (Place<'tcx>, ty::UpvarCapture) {
     let is_shared_ref = |ty: Ty<'_>| matches!(ty.kind(), ty::Ref(.., hir::Mutability::Not));
 
     // Find the right-most deref (if any). All the projections that come after this
@@ -2244,10 +2263,12 @@ fn truncate_capture_for_optimization(
     (place, curr_mode)
 }
 
-/// Precise capture is enabled if user is using Rust Edition 2021 or higher.
+/// Precise capture is enabled if the feature gate `capture_disjoint_fields` is enabled or if
+/// user is using Rust Edition 2021 or higher.
+///
 /// `span` is the span of the closure.
-fn enable_precise_capture(span: Span) -> bool {
+fn enable_precise_capture(tcx: TyCtxt<'_>, span: Span) -> bool {
     // We use span here to ensure that if the closure was generated by a macro with a different
     // edition.
-    span.rust_2021()
+    tcx.features().capture_disjoint_fields || span.rust_2021()
 }

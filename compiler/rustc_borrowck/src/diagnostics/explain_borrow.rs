@@ -1,19 +1,16 @@
 //! Print diagnostics to explain why values are borrowed.
 
 use rustc_errors::{Applicability, Diagnostic};
-use rustc_hir as hir;
-use rustc_hir::intravisit::Visitor;
-use rustc_index::IndexSlice;
+use rustc_index::vec::IndexVec;
 use rustc_infer::infer::NllRegionVariableOrigin;
 use rustc_middle::mir::{
-    Body, CallSource, CastKind, ConstraintCategory, FakeReadCause, Local, LocalInfo, Location,
-    Operand, Place, Rvalue, Statement, StatementKind, TerminatorKind,
+    Body, CastKind, ConstraintCategory, FakeReadCause, Local, Location, Operand, Place, Rvalue,
+    Statement, StatementKind, TerminatorKind,
 };
-use rustc_middle::ty::adjustment::PointerCoercion;
+use rustc_middle::ty::adjustment::PointerCast;
 use rustc_middle::ty::{self, RegionVid, TyCtxt};
 use rustc_span::symbol::{kw, Symbol};
 use rustc_span::{sym, DesugaringKind, Span};
-use rustc_trait_selection::traits::error_reporting::FindExprBySpan;
 
 use crate::region_infer::{BlameConstraint, ExtraConstraintInfo};
 use crate::{
@@ -60,42 +57,12 @@ impl<'tcx> BorrowExplanation<'tcx> {
         &self,
         tcx: TyCtxt<'tcx>,
         body: &Body<'tcx>,
-        local_names: &IndexSlice<Local, Option<Symbol>>,
+        local_names: &IndexVec<Local, Option<Symbol>>,
         err: &mut Diagnostic,
         borrow_desc: &str,
         borrow_span: Option<Span>,
         multiple_borrow_span: Option<(Span, Span)>,
     ) {
-        if let Some(span) = borrow_span {
-            let def_id = body.source.def_id();
-            if let Some(node) = tcx.hir().get_if_local(def_id)
-                && let Some(body_id) = node.body_id()
-            {
-                let body = tcx.hir().body(body_id);
-                let mut expr_finder = FindExprBySpan::new(span);
-                expr_finder.visit_expr(body.value);
-                if let Some(mut expr) = expr_finder.result {
-                    while let hir::ExprKind::AddrOf(_, _, inner)
-                        | hir::ExprKind::Unary(hir::UnOp::Deref, inner)
-                        | hir::ExprKind::Field(inner, _)
-                        | hir::ExprKind::MethodCall(_, inner, _, _)
-                        | hir::ExprKind::Index(inner, _) = &expr.kind
-                    {
-                        expr = inner;
-                    }
-                    if let hir::ExprKind::Path(hir::QPath::Resolved(None, p)) = expr.kind
-                        && let [hir::PathSegment { ident, args: None, .. }] = p.segments
-                        && let hir::def::Res::Local(hir_id) = p.res
-                        && let Some(hir::Node::Pat(pat)) = tcx.hir().find(hir_id)
-                    {
-                        err.span_label(
-                            pat.span,
-                            format!("binding `{ident}` declared here"),
-                        );
-                    }
-                }
-            }
-        }
         match *self {
             BorrowExplanation::UsedLater(later_use_kind, var_or_use_span, path_span) => {
                 let message = match later_use_kind {
@@ -110,7 +77,7 @@ impl<'tcx> BorrowExplanation<'tcx> {
                     if borrow_span.map(|sp| !sp.overlaps(var_or_use_span)).unwrap_or(true) {
                         err.span_label(
                             var_or_use_span,
-                            format!("{borrow_desc}borrow later {message}"),
+                            format!("{}borrow later {}", borrow_desc, message),
                         );
                     }
                 } else {
@@ -118,12 +85,12 @@ impl<'tcx> BorrowExplanation<'tcx> {
                     let path_span = path_span.unwrap();
                     // path_span is only present in the case of closure capture
                     assert!(matches!(later_use_kind, LaterUseKind::ClosureCapture));
-                    if !borrow_span.is_some_and(|sp| sp.overlaps(var_or_use_span)) {
+                    if !borrow_span.map_or(false, |sp| sp.overlaps(var_or_use_span)) {
                         let path_label = "used here by closure";
                         let capture_kind_label = message;
                         err.span_label(
                             var_or_use_span,
-                            format!("{borrow_desc}borrow later {capture_kind_label}"),
+                            format!("{}borrow later {}", borrow_desc, capture_kind_label),
                         );
                         err.span_label(path_span, path_label);
                     }
@@ -143,7 +110,7 @@ impl<'tcx> BorrowExplanation<'tcx> {
                 };
                 // We can use `var_or_use_span` if either `path_span` is not present, or both spans are the same
                 if path_span.map(|path_span| path_span == var_or_use_span).unwrap_or(true) {
-                    err.span_label(var_or_use_span, format!("{borrow_desc}{message}"));
+                    err.span_label(var_or_use_span, format!("{}{}", borrow_desc, message));
                 } else {
                     // path_span must be `Some` as otherwise the if condition is true
                     let path_span = path_span.unwrap();
@@ -154,7 +121,7 @@ impl<'tcx> BorrowExplanation<'tcx> {
                         let capture_kind_label = message;
                         err.span_label(
                             var_or_use_span,
-                            format!("{borrow_desc}borrow later {capture_kind_label}"),
+                            format!("{}borrow later {}", borrow_desc, capture_kind_label),
                         );
                         err.span_label(path_span, path_label);
                     }
@@ -193,8 +160,12 @@ impl<'tcx> BorrowExplanation<'tcx> {
                 match local_names[dropped_local] {
                     Some(local_name) if !local_decl.from_compiler_desugaring() => {
                         let message = format!(
-                            "{borrow_desc}borrow might be used here, when `{local_name}` is dropped \
-                             and runs the {dtor_desc} for {type_desc}",
+                            "{B}borrow might be used here, when `{LOC}` is dropped \
+                             and runs the {DTOR} for {TYPE}",
+                            B = borrow_desc,
+                            LOC = local_name,
+                            TYPE = type_desc,
+                            DTOR = dtor_desc
                         );
                         err.span_label(body.source_info(drop_loc).span, message);
 
@@ -209,24 +180,31 @@ impl<'tcx> BorrowExplanation<'tcx> {
                         err.span_label(
                             local_decl.source_info.span,
                             format!(
-                                "a temporary with access to the {borrow_desc}borrow \
+                                "a temporary with access to the {B}borrow \
                                  is created here ...",
+                                B = borrow_desc
                             ),
                         );
                         let message = format!(
-                            "... and the {borrow_desc}borrow might be used here, \
+                            "... and the {B}borrow might be used here, \
                              when that temporary is dropped \
-                             and runs the {dtor_desc} for {type_desc}",
+                             and runs the {DTOR} for {TYPE}",
+                            B = borrow_desc,
+                            TYPE = type_desc,
+                            DTOR = dtor_desc
                         );
                         err.span_label(body.source_info(drop_loc).span, message);
 
-                        if let LocalInfo::BlockTailTemp(info) = local_decl.local_info() {
+                        if let Some(info) = &local_decl.is_block_tail {
                             if info.tail_result_is_ignored {
                                 // #85581: If the first mutable borrow's scope contains
                                 // the second borrow, this suggestion isn't helpful.
-                                if !multiple_borrow_span.is_some_and(|(old, new)| {
-                                    old.to(info.span.shrink_to_hi()).contains(new)
-                                }) {
+                                if !multiple_borrow_span
+                                    .map(|(old, new)| {
+                                        old.to(info.span.shrink_to_hi()).contains(new)
+                                    })
+                                    .unwrap_or(false)
+                                {
                                     err.span_suggestion_verbose(
                                         info.span.shrink_to_hi(),
                                         "consider adding semicolon after the expression so its \
@@ -271,16 +249,20 @@ impl<'tcx> BorrowExplanation<'tcx> {
                     err.span_label(
                         span,
                         format!(
-                            "{}requires that `{desc}` is borrowed for `{region_name}`",
+                            "{}requires that `{}` is borrowed for `{}`",
                             category.description(),
+                            desc,
+                            region_name,
                         ),
                     );
                 } else {
                     err.span_label(
                         span,
                         format!(
-                            "{}requires that {borrow_desc}borrow lasts for `{region_name}`",
+                            "{}requires that {}borrow lasts for `{}`",
                             category.description(),
+                            borrow_desc,
+                            region_name,
                         ),
                     );
                 };
@@ -288,7 +270,7 @@ impl<'tcx> BorrowExplanation<'tcx> {
                 for extra in extra_info {
                     match extra {
                         ExtraConstraintInfo::PlaceholderFromPredicate(span) => {
-                            err.span_note(*span, "due to current limitations in the borrow checker, this implies a `'static` lifetime");
+                            err.span_note(*span, format!("due to current limitations in the borrow checker, this implies a `'static` lifetime"));
                         }
                     }
                 }
@@ -314,14 +296,15 @@ impl<'tcx> BorrowExplanation<'tcx> {
                 if region_name.was_named() { region_name.name } else { kw::UnderscoreLifetime };
 
             let msg = format!(
-                "you can add a bound to the {}to make it last less than `'static` and match `{region_name}`",
+                "you can add a bound to the {}to make it last less than `'static` and match `{}`",
                 category.description(),
+                region_name,
             );
 
             err.span_suggestion_verbose(
                 span.shrink_to_hi(),
-                msg,
-                format!(" + {suggestable_name}"),
+                &msg,
+                format!(" + {}", suggestable_name),
                 Applicability::Unspecified,
             );
         }
@@ -461,7 +444,6 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     /// First span returned points to the location of the conflicting use
     /// Second span if `Some` is returned in the case of closures and points
     /// to the use of the path
-    #[instrument(level = "debug", skip(self))]
     fn later_use_kind(
         &self,
         borrow: &BorrowData<'tcx>,
@@ -479,23 +461,16 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 let block = &self.body.basic_blocks[location.block];
 
                 let kind = if let Some(&Statement {
-                    kind: StatementKind::FakeRead(box (FakeReadCause::ForLet(_), place)),
+                    kind: StatementKind::FakeRead(box (FakeReadCause::ForLet(_), _)),
                     ..
                 }) = block.statements.get(location.statement_index)
                 {
-                    if let Some(l) = place.as_local()
-                        && let local_decl = &self.body.local_decls[l]
-                        && local_decl.ty.is_closure()
-                    {
-                        LaterUseKind::ClosureCapture
-                    } else {
-                        LaterUseKind::FakeLetRead
-                    }
+                    LaterUseKind::FakeLetRead
                 } else if self.was_captured_by_trait_object(borrow) {
                     LaterUseKind::TraitCapture
                 } else if location.statement_index == block.statements.len() {
-                    if let TerminatorKind::Call { func, call_source: CallSource::Normal, .. } =
-                        &block.terminator().kind
+                    if let TerminatorKind::Call { ref func, from_hir_call: true, .. } =
+                        block.terminator().kind
                     {
                         // Just point to the function, to reduce the chance of overlapping spans.
                         let function_span = match func {
@@ -540,16 +515,19 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         // will only ever have one item at any given time, but by using a vector, we can pop from
         // it which simplifies the termination logic.
         let mut queue = vec![location];
-        let mut target =
-            if let Some(Statement { kind: StatementKind::Assign(box (place, _)), .. }) = stmt {
-                if let Some(local) = place.as_local() {
-                    local
-                } else {
-                    return false;
-                }
+        let mut target = if let Some(&Statement {
+            kind: StatementKind::Assign(box (ref place, _)),
+            ..
+        }) = stmt
+        {
+            if let Some(local) = place.as_local() {
+                local
             } else {
                 return false;
-            };
+            }
+        } else {
+            return false;
+        };
 
         debug!("was_captured_by_trait: target={:?} queue={:?}", target, queue);
         while let Some(current_location) = queue.pop() {
@@ -584,11 +562,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                         },
                         // If we see an unsized cast, then if it is our data we should check
                         // whether it is being cast to a trait object.
-                        Rvalue::Cast(
-                            CastKind::PointerCoercion(PointerCoercion::Unsize),
-                            operand,
-                            ty,
-                        ) => {
+                        Rvalue::Cast(CastKind::Pointer(PointerCast::Unsize), operand, ty) => {
                             match operand {
                                 Operand::Copy(place) | Operand::Move(place) => {
                                     if let Some(from) = place.as_local() {

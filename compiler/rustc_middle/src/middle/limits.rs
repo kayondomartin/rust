@@ -1,7 +1,8 @@
 //! Registering limits:
 //! * recursion_limit,
-//! * move_size_limit, and
-//! * type_length_limit
+//! * move_size_limit,
+//! * type_length_limit, and
+//! * const_eval_limit
 //!
 //! There are various parts of the compiler that must impose arbitrary limits
 //! on how deeply they recurse to prevent stack overflow. Users can override
@@ -10,7 +11,7 @@
 
 use crate::bug;
 use crate::error::LimitInvalid;
-use crate::query::Providers;
+use crate::ty;
 use rustc_ast::Attribute;
 use rustc_session::Session;
 use rustc_session::{Limit, Limits};
@@ -18,7 +19,7 @@ use rustc_span::symbol::{sym, Symbol};
 
 use std::num::IntErrorKind;
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut ty::query::Providers) {
     providers.limits = |tcx, ()| Limits {
         recursion_limit: get_recursion_limit(tcx.hir().krate_attrs(), tcx.sess),
         move_size_limit: get_limit(
@@ -32,6 +33,12 @@ pub fn provide(providers: &mut Providers) {
             tcx.sess,
             sym::type_length_limit,
             1048576,
+        ),
+        const_eval_limit: get_limit(
+            tcx.hir().krate_attrs(),
+            tcx.sess,
+            sym::const_eval_limit,
+            1_000_000,
         ),
     }
 }

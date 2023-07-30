@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{mpsc, Mutex};
 
 use rustc_codegen_ssa::CrateInfo;
 use rustc_middle::mir::mono::MonoItem;
@@ -12,6 +12,9 @@ use rustc_session::Session;
 use rustc_span::Symbol;
 
 use cranelift_jit::{JITBuilder, JITModule};
+
+// FIXME use std::sync::OnceLock once it stabilizes
+use once_cell::sync::OnceCell;
 
 use crate::{prelude::*, BackendConfig};
 use crate::{CodegenCx, CodegenMode};
@@ -26,7 +29,7 @@ thread_local! {
 }
 
 /// The Sender owned by the rustc thread
-static GLOBAL_MESSAGE_SENDER: OnceLock<Mutex<mpsc::Sender<UnsafeMessage>>> = OnceLock::new();
+static GLOBAL_MESSAGE_SENDER: OnceCell<Mutex<mpsc::Sender<UnsafeMessage>>> = OnceCell::new();
 
 /// A message that is sent from the jitted runtime to the rustc thread.
 /// Senders are responsible for upholding `Send` semantics.
@@ -118,20 +121,22 @@ pub(crate) fn run_jit(tcx: TyCtxt<'_>, backend_config: BackendConfig) -> ! {
         .into_iter()
         .collect::<Vec<(_, (_, _))>>();
 
-    tcx.sess.time("codegen mono items", || {
+    super::time(tcx, backend_config.display_cg_time, "codegen mono items", || {
         super::predefine_mono_items(tcx, &mut jit_module, &mono_items);
         for (mono_item, _) in mono_items {
             match mono_item {
                 MonoItem::Fn(inst) => match backend_config.codegen_mode {
                     CodegenMode::Aot => unreachable!(),
                     CodegenMode::Jit => {
-                        codegen_and_compile_fn(
-                            tcx,
-                            &mut cx,
-                            &mut cached_context,
-                            &mut jit_module,
-                            inst,
-                        );
+                        tcx.sess.time("codegen fn", || {
+                            crate::base::codegen_and_compile_fn(
+                                tcx,
+                                &mut cx,
+                                &mut cached_context,
+                                &mut jit_module,
+                                inst,
+                            )
+                        });
                     }
                     CodegenMode::JitLazy => {
                         codegen_shim(tcx, &mut cx, &mut cached_context, &mut jit_module, inst)
@@ -154,7 +159,7 @@ pub(crate) fn run_jit(tcx: TyCtxt<'_>, backend_config: BackendConfig) -> ! {
 
     tcx.sess.abort_if_errors();
 
-    jit_module.finalize_definitions().unwrap();
+    jit_module.finalize_definitions();
     unsafe { cx.unwind_context.register_jit(&jit_module) };
 
     println!(
@@ -214,28 +219,6 @@ pub(crate) fn run_jit(tcx: TyCtxt<'_>, backend_config: BackendConfig) -> ! {
     }
 }
 
-pub(crate) fn codegen_and_compile_fn<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    cx: &mut crate::CodegenCx,
-    cached_context: &mut Context,
-    module: &mut dyn Module,
-    instance: Instance<'tcx>,
-) {
-    cranelift_codegen::timing::set_thread_profiler(Box::new(super::MeasuremeProfiler(
-        cx.profiler.clone(),
-    )));
-
-    tcx.prof.generic_activity("codegen and compile fn").run(|| {
-        let _inst_guard =
-            crate::PrintOnPanic(|| format!("{:?} {}", instance, tcx.symbol_name(instance).name));
-
-        let cached_func = std::mem::replace(&mut cached_context.func, Function::new());
-        let codegened_func = crate::base::codegen_fn(tcx, cx, cached_func, module, instance);
-
-        crate::base::compile_fn(cx, cached_context, module, codegened_func);
-    });
-}
-
 extern "C" fn clif_jit_fn(
     instance_ptr: *const Instance<'static>,
     trampoline_ptr: *const u8,
@@ -262,11 +245,7 @@ fn jit_fn(instance_ptr: *const Instance<'static>, trampoline_ptr: *const u8) -> 
             let backend_config = lazy_jit_state.backend_config.clone();
 
             let name = tcx.symbol_name(instance).name;
-            let sig = crate::abi::get_function_sig(
-                tcx,
-                jit_module.target_config().default_call_conv,
-                instance,
-            );
+            let sig = crate::abi::get_function_sig(tcx, jit_module.isa().triple(), instance);
             let func_id = jit_module.declare_function(name, Linkage::Export, &sig).unwrap();
 
             let current_ptr = jit_module.read_got_entry(func_id);
@@ -288,10 +267,18 @@ fn jit_fn(instance_ptr: *const Instance<'static>, trampoline_ptr: *const u8) -> 
                 false,
                 Symbol::intern("dummy_cgu_name"),
             );
-            codegen_and_compile_fn(tcx, &mut cx, &mut Context::new(), jit_module, instance);
+            tcx.sess.time("codegen fn", || {
+                crate::base::codegen_and_compile_fn(
+                    tcx,
+                    &mut cx,
+                    &mut Context::new(),
+                    jit_module,
+                    instance,
+                )
+            });
 
             assert!(cx.global_asm.is_empty());
-            jit_module.finalize_definitions().unwrap();
+            jit_module.finalize_definitions();
             unsafe { cx.unwind_context.register_jit(&jit_module) };
             jit_module.get_finalized_function(func_id)
         })
@@ -312,17 +299,13 @@ fn dep_symbol_lookup_fn(
         .find(|(crate_type, _data)| *crate_type == rustc_session::config::CrateType::Executable)
         .unwrap()
         .1;
-    // `used_crates` is in reverse postorder in terms of dependencies. Reverse the order here to
-    // get a postorder which ensures that all dependencies of a dylib are loaded before the dylib
-    // itself. This helps the dynamic linker to find dylibs not in the regular dynamic library
-    // search path.
-    for &cnum in crate_info.used_crates.iter().rev() {
+    for &cnum in &crate_info.used_crates {
         let src = &crate_info.used_crate_source[&cnum];
         match data[cnum.as_usize() - 1] {
             Linkage::NotLinked | Linkage::IncludedFromDylib => {}
             Linkage::Static => {
                 let name = crate_info.crate_name[&cnum];
-                let mut err = sess.struct_err(format!("Can't load static lib {}", name));
+                let mut err = sess.struct_err(&format!("Can't load static lib {}", name));
                 err.note("rustc_codegen_cranelift can only load dylibs in JIT mode.");
                 err.emit();
             }
@@ -361,7 +344,7 @@ fn codegen_shim<'tcx>(
     let pointer_type = module.target_config().pointer_type();
 
     let name = tcx.symbol_name(inst).name;
-    let sig = crate::abi::get_function_sig(tcx, module.target_config().default_call_conv, inst);
+    let sig = crate::abi::get_function_sig(tcx, module.isa().triple(), inst);
     let func_id = module.declare_function(name, Linkage::Export, &sig).unwrap();
 
     let instance_ptr = Box::into_raw(Box::new(inst));

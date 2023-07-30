@@ -6,14 +6,12 @@ mod macros;
 use crate::cmp;
 use crate::cmp::Ordering;
 use crate::fmt;
-use crate::intrinsics::assume;
-use crate::iter::{
-    FusedIterator, TrustedLen, TrustedRandomAccess, TrustedRandomAccessNoCoerce, UncheckedIterator,
-};
+use crate::intrinsics::{assume, exact_div, unchecked_sub};
+use crate::iter::{FusedIterator, TrustedLen, TrustedRandomAccess, TrustedRandomAccessNoCoerce};
 use crate::marker::{PhantomData, Send, Sized, Sync};
 use crate::mem::{self, SizedTypeProperties};
 use crate::num::NonZeroUsize;
-use crate::ptr::{invalid, invalid_mut, NonNull};
+use crate::ptr::NonNull;
 
 use super::{from_raw_parts, from_raw_parts_mut};
 
@@ -35,6 +33,12 @@ impl<'a, T> IntoIterator for &'a mut [T] {
     fn into_iter(self) -> IterMut<'a, T> {
         self.iter_mut()
     }
+}
+
+// Macro helper functions
+#[inline(always)]
+fn size_from_ptr<T>(_: *const T) -> usize {
+    mem::size_of::<T>()
 }
 
 /// Immutable slice iterator
@@ -60,15 +64,10 @@ impl<'a, T> IntoIterator for &'a mut [T] {
 #[stable(feature = "rust1", since = "1.0.0")]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub struct Iter<'a, T: 'a> {
-    /// The pointer to the next element to return, or the past-the-end location
-    /// if the iterator is empty.
-    ///
-    /// This address will be used for all ZST elements, never changed.
     ptr: NonNull<T>,
-    /// For non-ZSTs, the non-null pointer to the past-the-end element.
-    ///
-    /// For ZSTs, this is `ptr::invalid(len)`.
-    end: *const T,
+    end: *const T, // If T is a ZST, this is actually ptr+len.  This encoding is picked so that
+    // ptr == end is a quick test for the Iterator being empty, that works
+    // for both ZST and non-ZST.
     _marker: PhantomData<&'a T>,
 }
 
@@ -90,7 +89,10 @@ impl<'a, T> Iter<'a, T> {
         let ptr = slice.as_ptr();
         // SAFETY: Similar to `IterMut::new`.
         unsafe {
-            let end = if T::IS_ZST { invalid(slice.len()) } else { ptr.add(slice.len()) };
+            assume(!ptr.is_null());
+
+            let end =
+                if T::IS_ZST { ptr.wrapping_byte_add(slice.len()) } else { ptr.add(slice.len()) };
 
             Self { ptr: NonNull::new_unchecked(ptr as *mut T), end, _marker: PhantomData }
         }
@@ -134,7 +136,9 @@ iterator! {struct Iter -> *const T, &'a T, const, {/* no mut */}, {
         Self: Sized,
         F: FnMut(&Self::Item, &Self::Item) -> Option<Ordering>,
     {
-        self.as_slice().is_sorted_by(|a, b| compare(&a, &b))
+        self.as_slice().windows(2).all(|w| {
+            compare(&&w[0], &&w[1]).map(|o| o != Ordering::Greater).unwrap_or(false)
+        })
     }
 }}
 
@@ -181,15 +185,10 @@ impl<T> AsRef<[T]> for Iter<'_, T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub struct IterMut<'a, T: 'a> {
-    /// The pointer to the next element to return, or the past-the-end location
-    /// if the iterator is empty.
-    ///
-    /// This address will be used for all ZST elements, never changed.
     ptr: NonNull<T>,
-    /// For non-ZSTs, the non-null pointer to the past-the-end element.
-    ///
-    /// For ZSTs, this is `ptr::invalid_mut(len)`.
-    end: *mut T,
+    end: *mut T, // If T is a ZST, this is actually ptr+len.  This encoding is picked so that
+    // ptr == end is a quick test for the Iterator being empty, that works
+    // for both ZST and non-ZST.
     _marker: PhantomData<&'a mut T>,
 }
 
@@ -226,7 +225,10 @@ impl<'a, T> IterMut<'a, T> {
         // See the `next_unchecked!` and `is_empty!` macros as well as the
         // `post_inc_start` method for more information.
         unsafe {
-            let end = if T::IS_ZST { invalid_mut(slice.len()) } else { ptr.add(slice.len()) };
+            assume(!ptr.is_null());
+
+            let end =
+                if T::IS_ZST { ptr.wrapping_byte_add(slice.len()) } else { ptr.add(slice.len()) };
 
             Self { ptr: NonNull::new_unchecked(ptr), end, _marker: PhantomData }
         }
@@ -689,7 +691,7 @@ where
             None
         } else {
             self.finished = true;
-            Some(mem::take(&mut self.v))
+            Some(mem::replace(&mut self.v, &mut []))
         }
     }
 }
@@ -753,7 +755,7 @@ where
         match idx_opt {
             None => self.finish(),
             Some(idx) => {
-                let tmp = mem::take(&mut self.v);
+                let tmp = mem::replace(&mut self.v, &mut []);
                 let (head, tail) = tmp.split_at_mut(idx);
                 self.v = head;
                 Some(&mut tail[1..])
@@ -834,7 +836,7 @@ where
         if idx == self.v.len() {
             self.finished = true;
         }
-        let tmp = mem::take(&mut self.v);
+        let tmp = mem::replace(&mut self.v, &mut []);
         let (head, tail) = tmp.split_at_mut(idx);
         self.v = tail;
         Some(head)
@@ -880,7 +882,7 @@ where
         if idx == 0 {
             self.finished = true;
         }
-        let tmp = mem::take(&mut self.v);
+        let tmp = mem::replace(&mut self.v, &mut []);
         let (head, tail) = tmp.split_at_mut(idx);
         self.v = head;
         Some(tail)
@@ -1832,20 +1834,6 @@ impl<'a, T> ChunksExact<'a, T> {
     /// Returns the remainder of the original slice that is not going to be
     /// returned by the iterator. The returned slice has at most `chunk_size-1`
     /// elements.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// let slice = ['l', 'o', 'r', 'e', 'm'];
-    /// let mut iter = slice.chunks_exact(2);
-    /// assert_eq!(iter.remainder(), &['m'][..]);
-    /// assert_eq!(iter.next(), Some(&['l', 'o'][..]));
-    /// assert_eq!(iter.remainder(), &['m'][..]);
-    /// assert_eq!(iter.next(), Some(&['r', 'e'][..]));
-    /// assert_eq!(iter.remainder(), &['m'][..]);
-    /// assert_eq!(iter.next(), None);
-    /// assert_eq!(iter.remainder(), &['m'][..]);
-    /// ```
     #[must_use]
     #[stable(feature = "chunks_exact", since = "1.31.0")]
     pub fn remainder(&self) -> &'a [T] {
@@ -2881,7 +2869,7 @@ unsafe impl<T> Sync for RChunksMut<'_, T> where T: Sync {}
 /// ```
 ///
 /// [`rchunks_exact`]: slice::rchunks_exact
-/// [`remainder`]: RChunksExact::remainder
+/// [`remainder`]: ChunksExact::remainder
 /// [slices]: slice
 #[derive(Debug)]
 #[stable(feature = "rchunks", since = "1.31.0")]
@@ -2904,20 +2892,6 @@ impl<'a, T> RChunksExact<'a, T> {
     /// Returns the remainder of the original slice that is not going to be
     /// returned by the iterator. The returned slice has at most `chunk_size-1`
     /// elements.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// let slice = ['l', 'o', 'r', 'e', 'm'];
-    /// let mut iter = slice.rchunks_exact(2);
-    /// assert_eq!(iter.remainder(), &['l'][..]);
-    /// assert_eq!(iter.next(), Some(&['e', 'm'][..]));
-    /// assert_eq!(iter.remainder(), &['l'][..]);
-    /// assert_eq!(iter.next(), Some(&['o', 'r'][..]));
-    /// assert_eq!(iter.remainder(), &['l'][..]);
-    /// assert_eq!(iter.next(), None);
-    /// assert_eq!(iter.remainder(), &['l'][..]);
-    /// ```
     #[must_use]
     #[stable(feature = "rchunks", since = "1.31.0")]
     pub fn remainder(&self) -> &'a [T] {
@@ -3057,7 +3031,7 @@ unsafe impl<'a, T> TrustedRandomAccessNoCoerce for RChunksExact<'a, T> {
 /// ```
 ///
 /// [`rchunks_exact_mut`]: slice::rchunks_exact_mut
-/// [`into_remainder`]: RChunksExactMut::into_remainder
+/// [`into_remainder`]: ChunksExactMut::into_remainder
 /// [slices]: slice
 #[derive(Debug)]
 #[stable(feature = "rchunks", since = "1.31.0")]

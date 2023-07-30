@@ -1,13 +1,14 @@
 //! Least upper bound. See [`lattice`].
 
-use super::combine::{CombineFields, ObligationEmittingRelation};
+use super::combine::CombineFields;
 use super::lattice::{self, LatticeDir};
+use super::InferCtxt;
 use super::Subtype;
-use super::{DefineOpaqueTypes, InferCtxt};
 
-use crate::traits::{ObligationCause, PredicateObligations};
+use crate::infer::combine::ConstEquateRelation;
+use crate::traits::{ObligationCause, PredicateObligation};
 use rustc_middle::ty::relate::{Relate, RelateResult, TypeRelation};
-use rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitableExt};
+use rustc_middle::ty::{self, Ty, TyCtxt};
 
 /// "Least upper bound" (common supertype)
 pub struct Lub<'combine, 'infcx, 'tcx> {
@@ -69,8 +70,7 @@ impl<'tcx> TypeRelation<'tcx> for Lub<'_, '_, 'tcx> {
         debug!("{}.regions({:?}, {:?})", self.tag(), a, b);
 
         let origin = Subtype(Box::new(self.fields.trace.clone()));
-        // LUB(&'static u8, &'a u8) == &RegionGLB('static, 'a) u8 == &'a u8
-        Ok(self.fields.infcx.inner.borrow_mut().unwrap_region_constraints().glb_regions(
+        Ok(self.fields.infcx.inner.borrow_mut().unwrap_region_constraints().lub_regions(
             self.tcx(),
             origin,
             a,
@@ -94,11 +94,6 @@ impl<'tcx> TypeRelation<'tcx> for Lub<'_, '_, 'tcx> {
     where
         T: Relate<'tcx>,
     {
-        // LUB of a binder and itself is just itself
-        if a == b {
-            return Ok(a);
-        }
-
         debug!("binders(a={:?}, b={:?})", a, b);
         if a.skip_binder().has_escaping_bound_vars() || b.skip_binder().has_escaping_bound_vars() {
             // When higher-ranked types are involved, computing the LUB is
@@ -117,6 +112,12 @@ impl<'tcx> TypeRelation<'tcx> for Lub<'_, '_, 'tcx> {
     }
 }
 
+impl<'tcx> ConstEquateRelation<'tcx> for Lub<'_, '_, 'tcx> {
+    fn const_equate_obligation(&mut self, a: ty::Const<'tcx>, b: ty::Const<'tcx>) {
+        self.fields.add_const_equate_obligation(self.a_is_expected, a, b);
+    }
+}
+
 impl<'combine, 'infcx, 'tcx> LatticeDir<'infcx, 'tcx> for Lub<'combine, 'infcx, 'tcx> {
     fn infcx(&self) -> &'infcx InferCtxt<'tcx> {
         self.fields.infcx
@@ -126,6 +127,10 @@ impl<'combine, 'infcx, 'tcx> LatticeDir<'infcx, 'tcx> for Lub<'combine, 'infcx, 
         &self.fields.trace.cause
     }
 
+    fn add_obligations(&mut self, obligations: Vec<PredicateObligation<'tcx>>) {
+        self.fields.obligations.extend(obligations)
+    }
+
     fn relate_bound(&mut self, v: Ty<'tcx>, a: Ty<'tcx>, b: Ty<'tcx>) -> RelateResult<'tcx, ()> {
         let mut sub = self.fields.sub(self.a_is_expected);
         sub.relate(a, v)?;
@@ -133,22 +138,7 @@ impl<'combine, 'infcx, 'tcx> LatticeDir<'infcx, 'tcx> for Lub<'combine, 'infcx, 
         Ok(())
     }
 
-    fn define_opaque_types(&self) -> DefineOpaqueTypes {
+    fn define_opaque_types(&self) -> bool {
         self.fields.define_opaque_types
-    }
-}
-
-impl<'tcx> ObligationEmittingRelation<'tcx> for Lub<'_, '_, 'tcx> {
-    fn register_predicates(&mut self, obligations: impl IntoIterator<Item: ty::ToPredicate<'tcx>>) {
-        self.fields.register_predicates(obligations);
-    }
-
-    fn register_obligations(&mut self, obligations: PredicateObligations<'tcx>) {
-        self.fields.register_obligations(obligations)
-    }
-
-    fn alias_relate_direction(&self) -> ty::AliasRelationDirection {
-        // FIXME(deferred_projection_equality): This isn't right, I think?
-        ty::AliasRelationDirection::Equate
     }
 }

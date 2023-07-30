@@ -46,9 +46,7 @@ pub struct SeparateConstSwitch;
 
 impl<'tcx> MirPass<'tcx> for SeparateConstSwitch {
     fn is_enabled(&self, sess: &rustc_session::Session) -> bool {
-        // This pass participates in some as-of-yet untested unsoundness found
-        // in https://github.com/rust-lang/rust/issues/112460
-        sess.mir_opt_level() >= 2 && sess.opts.unstable_opts.unsound_mir_opts
+        sess.mir_opt_level() >= 4
     }
 
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
@@ -110,11 +108,12 @@ pub fn separate_const_switch(body: &mut Body<'_>) -> usize {
                         // The following terminators are not allowed
                         TerminatorKind::Resume
                         | TerminatorKind::Drop { .. }
+                        | TerminatorKind::DropAndReplace { .. }
                         | TerminatorKind::Call { .. }
                         | TerminatorKind::Assert { .. }
                         | TerminatorKind::FalseUnwind { .. }
                         | TerminatorKind::Yield { .. }
-                        | TerminatorKind::Terminate
+                        | TerminatorKind::Abort
                         | TerminatorKind::Return
                         | TerminatorKind::Unreachable
                         | TerminatorKind::InlineAsm { .. }
@@ -166,11 +165,12 @@ pub fn separate_const_switch(body: &mut Body<'_>) -> usize {
             }
 
             TerminatorKind::Resume
-            | TerminatorKind::Terminate
+            | TerminatorKind::Abort
             | TerminatorKind::Return
             | TerminatorKind::Unreachable
             | TerminatorKind::GeneratorDrop
             | TerminatorKind::Assert { .. }
+            | TerminatorKind::DropAndReplace { .. }
             | TerminatorKind::FalseUnwind { .. }
             | TerminatorKind::Drop { .. }
             | TerminatorKind::Call { .. }
@@ -247,11 +247,9 @@ fn is_likely_const<'tcx>(mut tracked_place: Place<'tcx>, block: &BasicBlockData<
             | StatementKind::StorageLive(_)
             | StatementKind::Retag(_, _)
             | StatementKind::AscribeUserType(_, _)
-            | StatementKind::PlaceMention(..)
             | StatementKind::Coverage(_)
             | StatementKind::StorageDead(_)
             | StatementKind::Intrinsic(_)
-            | StatementKind::ConstEvalCounter
             | StatementKind::Nop => {}
         }
     }
@@ -305,7 +303,8 @@ fn find_determining_place<'tcx>(
                     | Rvalue::NullaryOp(_, _)
                     | Rvalue::ShallowInitBox(_, _)
                     | Rvalue::UnaryOp(_, Operand::Constant(_))
-                    | Rvalue::Cast(_, Operand::Constant(_), _) => return None,
+                    | Rvalue::Cast(_, Operand::Constant(_), _)
+                    => return None,
                 }
             }
 
@@ -317,10 +316,8 @@ fn find_determining_place<'tcx>(
             | StatementKind::StorageDead(_)
             | StatementKind::Retag(_, _)
             | StatementKind::AscribeUserType(_, _)
-            | StatementKind::PlaceMention(..)
             | StatementKind::Coverage(_)
             | StatementKind::Intrinsic(_)
-            | StatementKind::ConstEvalCounter
             | StatementKind::Nop => {}
 
             // If the discriminant is set, it is always set

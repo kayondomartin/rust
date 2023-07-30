@@ -17,12 +17,11 @@
 //!
 //! [lattices]: https://en.wikipedia.org/wiki/Lattice_(order)
 
-use super::combine::ObligationEmittingRelation;
 use super::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
-use super::{DefineOpaqueTypes, InferCtxt};
+use super::InferCtxt;
 
-use crate::traits::ObligationCause;
-use rustc_middle::ty::relate::RelateResult;
+use crate::traits::{ObligationCause, PredicateObligation};
+use rustc_middle::ty::relate::{RelateResult, TypeRelation};
 use rustc_middle::ty::TyVar;
 use rustc_middle::ty::{self, Ty};
 
@@ -31,12 +30,14 @@ use rustc_middle::ty::{self, Ty};
 ///
 /// GLB moves "down" the lattice (to smaller values); LUB moves
 /// "up" the lattice (to bigger values).
-pub trait LatticeDir<'f, 'tcx>: ObligationEmittingRelation<'tcx> {
+pub trait LatticeDir<'f, 'tcx>: TypeRelation<'tcx> {
     fn infcx(&self) -> &'f InferCtxt<'tcx>;
 
     fn cause(&self) -> &ObligationCause<'tcx>;
 
-    fn define_opaque_types(&self) -> DefineOpaqueTypes;
+    fn add_obligations(&mut self, obligations: Vec<PredicateObligation<'tcx>>);
+
+    fn define_opaque_types(&self) -> bool;
 
     // Relates the type `v` to `a` and `b` such that `v` represents
     // the LUB/GLB of `a` and `b` as appropriate.
@@ -77,7 +78,7 @@ where
         //
         // Example: if the LHS is a type variable, and RHS is
         // `Box<i32>`, then we current compare `v` to the RHS first,
-        // which will instantiate `v` with `Box<i32>`. Then when `v`
+        // which will instantiate `v` with `Box<i32>`.  Then when `v`
         // is compared to the LHS, we instantiate LHS with `Box<i32>`.
         // But if we did in reverse order, we would create a `v <:
         // LHS` (or vice versa) constraint and then instantiate
@@ -104,18 +105,13 @@ where
             Ok(v)
         }
 
-        (
-            &ty::Alias(ty::Opaque, ty::AliasTy { def_id: a_def_id, .. }),
-            &ty::Alias(ty::Opaque, ty::AliasTy { def_id: b_def_id, .. }),
-        ) if a_def_id == b_def_id => infcx.super_combine_tys(this, a, b),
-
-        (&ty::Alias(ty::Opaque, ty::AliasTy { def_id, .. }), _)
-        | (_, &ty::Alias(ty::Opaque, ty::AliasTy { def_id, .. }))
-            if this.define_opaque_types() == DefineOpaqueTypes::Yes
-                && def_id.is_local()
-                && !this.infcx().next_trait_solver() =>
+        (&ty::Opaque(a_def_id, _), &ty::Opaque(b_def_id, _)) if a_def_id == b_def_id => {
+            infcx.super_combine_tys(this, a, b)
+        }
+        (&ty::Opaque(did, ..), _) | (_, &ty::Opaque(did, ..))
+            if this.define_opaque_types() && did.is_local() =>
         {
-            this.register_obligations(
+            this.add_obligations(
                 infcx
                     .handle_opaque_type(a, b, this.a_is_expected(), this.cause(), this.param_env())?
                     .obligations,

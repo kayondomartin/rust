@@ -1,4 +1,4 @@
-use rustc_ast::{self as ast, attr};
+use rustc_ast as ast;
 use rustc_expand::base::{ExtCtxt, ResolverExpand};
 use rustc_expand::expand::ExpansionConfig;
 use rustc_session::Session;
@@ -9,19 +9,17 @@ use rustc_span::DUMMY_SP;
 use thin_vec::thin_vec;
 
 pub fn inject(
-    krate: &mut ast::Crate,
-    pre_configured_attrs: &[ast::Attribute],
+    mut krate: ast::Crate,
     resolver: &mut dyn ResolverExpand,
     sess: &Session,
-) -> usize {
-    let orig_num_items = krate.items.len();
+) -> ast::Crate {
     let edition = sess.parse_sess.edition;
 
     // the first name in this list is the crate name of the crate with the prelude
-    let names: &[Symbol] = if attr::contains_name(pre_configured_attrs, sym::no_core) {
-        return 0;
-    } else if attr::contains_name(pre_configured_attrs, sym::no_std) {
-        if attr::contains_name(pre_configured_attrs, sym::compiler_builtins) {
+    let names: &[Symbol] = if sess.contains_name(&krate.attrs, sym::no_core) {
+        return krate;
+    } else if sess.contains_name(&krate.attrs, sym::no_std) {
+        if sess.contains_name(&krate.attrs, sym::compiler_builtins) {
             &[sym::core]
         } else {
             &[sym::core, sym::compiler_builtins]
@@ -54,7 +52,7 @@ pub fn inject(
             cx.item(
                 span,
                 ident,
-                thin_vec![cx.attr_word(sym::macro_use, span)],
+                thin_vec![cx.attribute(cx.meta_word(span, sym::macro_use))],
                 ast::ItemKind::ExternCrate(None),
             ),
         );
@@ -64,7 +62,7 @@ pub fn inject(
     // the one with the prelude.
     let name = names[0];
 
-    let root = (edition == Edition2015).then_some(kw::PathRoot);
+    let root = (edition == Edition2015).then(|| kw::PathRoot);
 
     let import_path = root
         .iter()
@@ -81,7 +79,7 @@ pub fn inject(
     let use_item = cx.item(
         span,
         Ident::empty(),
-        thin_vec![cx.attr_word(sym::prelude_import, span)],
+        thin_vec![cx.attribute(cx.meta_word(span, sym::prelude_import))],
         ast::ItemKind::Use(ast::UseTree {
             prefix: cx.path(span, import_path),
             kind: ast::UseTreeKind::Glob,
@@ -90,5 +88,6 @@ pub fn inject(
     );
 
     krate.items.insert(0, use_item);
-    krate.items.len() - orig_num_items
+
+    krate
 }

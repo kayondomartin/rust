@@ -15,7 +15,6 @@ where
     I: core::slice::SliceIndex<[T]>,
 {
     type Output = I::Output;
-    #[inline]
     fn index(&self, index: I) -> &Self::Output {
         &self.as_array()[index]
     }
@@ -27,7 +26,6 @@ where
     LaneCount<LANES>: SupportedLaneCount,
     I: core::slice::SliceIndex<[T]>,
 {
-    #[inline]
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
         &mut self.as_mut_array()[index]
     }
@@ -42,7 +40,7 @@ macro_rules! unsafe_base {
 
 /// SAFETY: This macro should not be used for anything except Shl or Shr, and passed the appropriate shift intrinsic.
 /// It handles performing a bitand in addition to calling the shift operator, so that the result
-/// is well-defined: LLVM can return a poison value if you shl, lshr, or ashr if `rhs >= <Int>::BITS`
+/// is well-defined: LLVM can return a poison value if you shl, lshr, or ashr if rhs >= <Int>::BITS
 /// At worst, this will maybe add another instruction and cycle,
 /// at best, it may open up more optimization opportunities,
 /// or simply be elided entirely, especially for SIMD ISAs which default to this.
@@ -120,14 +118,10 @@ macro_rules! for_base_types {
 
                     #[inline]
                     #[must_use = "operator returns a new vector without mutating the inputs"]
-                    // TODO: only useful for int Div::div, but we hope that this
-                    // will essentially always always get inlined anyway.
-                    #[track_caller]
                     fn $call(self, rhs: Self) -> Self::Output {
                         $macro_impl!(self, rhs, $inner, $scalar)
                     }
-                }
-            )*
+                })*
     }
 }
 

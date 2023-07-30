@@ -1,6 +1,7 @@
 //! Set and unset common attributes on LLVM values.
 
 use rustc_codegen_ssa::traits::*;
+use rustc_data_structures::small_str::SmallStr;
 use rustc_hir::def_id::DefId;
 use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use rustc_middle::ty::{self, TyCtxt};
@@ -11,7 +12,6 @@ use rustc_target::spec::{FramePointer, SanitizerSet, StackProbeType, StackProtec
 use smallvec::SmallVec;
 
 use crate::attributes;
-use crate::errors::{MissingFeatures, SanitizerMemtagRequiresMte, TargetFeatureDisableOrEnable};
 use crate::llvm::AttributePlace::Function;
 use crate::llvm::{self, AllocKindFlags, Attribute, AttributeKind, AttributePlace, MemoryEffects};
 use crate::llvm_util;
@@ -61,7 +61,7 @@ pub fn sanitize_attrs<'ll>(
 ) -> SmallVec<[&'ll Attribute; 4]> {
     let mut attrs = SmallVec::new();
     let enabled = cx.tcx.sess.opts.unstable_opts.sanitizer - no_sanitize;
-    if enabled.contains(SanitizerSet::ADDRESS) || enabled.contains(SanitizerSet::KERNELADDRESS) {
+    if enabled.contains(SanitizerSet::ADDRESS) {
         attrs.push(llvm::AttributeKind::SanitizeAddress.create_attr(cx.llcx));
     }
     if enabled.contains(SanitizerSet::MEMORY) {
@@ -82,13 +82,10 @@ pub fn sanitize_attrs<'ll>(
         let mte_feature =
             features.iter().map(|s| &s[..]).rfind(|n| ["+mte", "-mte"].contains(&&n[..]));
         if let None | Some("-mte") = mte_feature {
-            cx.tcx.sess.emit_err(SanitizerMemtagRequiresMte);
+            cx.tcx.sess.err("`-Zsanitizer=memtag` requires `-Ctarget-feature=+mte`");
         }
 
         attrs.push(llvm::AttributeKind::SanitizeMemTag.create_attr(cx.llcx));
-    }
-    if enabled.contains(SanitizerSet::SAFESTACK) {
-        attrs.push(llvm::AttributeKind::SanitizeSafeStack.create_attr(cx.llcx));
     }
     attrs
 }
@@ -104,10 +101,10 @@ pub fn uwtable_attr(llcx: &llvm::Context) -> &Attribute {
 
 pub fn frame_pointer_type_attr<'ll>(cx: &CodegenCx<'ll, '_>) -> Option<&'ll Attribute> {
     let mut fp = cx.sess().target.frame_pointer;
-    let opts = &cx.sess().opts;
     // "mcount" function relies on stack pointer.
     // See <https://sourceware.org/binutils/docs/gprof/Implementation.html>.
-    if opts.unstable_opts.instrument_mcount || matches!(opts.cg.force_frame_pointers, Some(true)) {
+    if cx.sess().instrument_mcount() || matches!(cx.sess().opts.cg.force_frame_pointers, Some(true))
+    {
         fp = FramePointer::Always;
     }
     let attr_value = match fp {
@@ -120,9 +117,8 @@ pub fn frame_pointer_type_attr<'ll>(cx: &CodegenCx<'ll, '_>) -> Option<&'ll Attr
 
 /// Tell LLVM what instrument function to insert.
 #[inline]
-fn instrument_function_attr<'ll>(cx: &CodegenCx<'ll, '_>) -> SmallVec<[&'ll Attribute; 4]> {
-    let mut attrs = SmallVec::new();
-    if cx.sess().opts.unstable_opts.instrument_mcount {
+fn instrument_function_attr<'ll>(cx: &CodegenCx<'ll, '_>) -> Option<&'ll Attribute> {
+    if cx.sess().instrument_mcount() {
         // Similar to `clang -pg` behavior. Handled by the
         // `post-inline-ee-instrument` LLVM pass.
 
@@ -130,49 +126,14 @@ fn instrument_function_attr<'ll>(cx: &CodegenCx<'ll, '_>) -> SmallVec<[&'ll Attr
         // See test/CodeGen/mcount.c in clang.
         let mcount_name = cx.sess().target.mcount.as_ref();
 
-        attrs.push(llvm::CreateAttrStringValue(
+        Some(llvm::CreateAttrStringValue(
             cx.llcx,
             "instrument-function-entry-inlined",
             &mcount_name,
-        ));
+        ))
+    } else {
+        None
     }
-    if let Some(options) = &cx.sess().opts.unstable_opts.instrument_xray {
-        // XRay instrumentation is similar to __cyg_profile_func_{enter,exit}.
-        // Function prologue and epilogue are instrumented with NOP sleds,
-        // a runtime library later replaces them with detours into tracing code.
-        if options.always {
-            attrs.push(llvm::CreateAttrStringValue(cx.llcx, "function-instrument", "xray-always"));
-        }
-        if options.never {
-            attrs.push(llvm::CreateAttrStringValue(cx.llcx, "function-instrument", "xray-never"));
-        }
-        if options.ignore_loops {
-            attrs.push(llvm::CreateAttrString(cx.llcx, "xray-ignore-loops"));
-        }
-        // LLVM will not choose the default for us, but rather requires specific
-        // threshold in absence of "xray-always". Use the same default as Clang.
-        let threshold = options.instruction_threshold.unwrap_or(200);
-        attrs.push(llvm::CreateAttrStringValue(
-            cx.llcx,
-            "xray-instruction-threshold",
-            &threshold.to_string(),
-        ));
-        if options.skip_entry {
-            attrs.push(llvm::CreateAttrString(cx.llcx, "xray-skip-entry"));
-        }
-        if options.skip_exit {
-            attrs.push(llvm::CreateAttrString(cx.llcx, "xray-skip-exit"));
-        }
-    }
-    attrs
-}
-
-fn nojumptables_attr<'ll>(cx: &CodegenCx<'ll, '_>) -> Option<&'ll Attribute> {
-    if !cx.sess().opts.unstable_opts.no_jump_tables {
-        return None;
-    }
-
-    Some(llvm::CreateAttrStringValue(cx.llcx, "no-jump-tables", "true"))
 }
 
 fn probestack_attr<'ll>(cx: &CodegenCx<'ll, '_>) -> Option<&'ll Attribute> {
@@ -296,12 +257,13 @@ pub fn from_fn_attrs<'ll, 'tcx>(
         OptimizeAttr::Speed => {}
     }
 
-    let inline =
-        if codegen_fn_attrs.inline == InlineAttr::None && instance.def.requires_inline(cx.tcx) {
-            InlineAttr::Hint
-        } else {
-            codegen_fn_attrs.inline
-        };
+    let inline = if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::NAKED) {
+        InlineAttr::Never
+    } else if codegen_fn_attrs.inline == InlineAttr::None && instance.def.requires_inline(cx.tcx) {
+        InlineAttr::Hint
+    } else {
+        codegen_fn_attrs.inline
+    };
     to_add.extend(inline_attr(cx, inline));
 
     // The `uwtable` attribute according to LLVM is:
@@ -331,7 +293,6 @@ pub fn from_fn_attrs<'ll, 'tcx>(
     // FIXME: none of these three functions interact with source level attributes.
     to_add.extend(frame_pointer_type_attr(cx));
     to_add.extend(instrument_function_attr(cx));
-    to_add.extend(nojumptables_attr(cx));
     to_add.extend(probestack_attr(cx));
     to_add.extend(stackprotector_attr(cx));
 
@@ -432,14 +393,13 @@ pub fn from_fn_attrs<'ll, 'tcx>(
             .get_attrs(instance.def_id(), sym::target_feature)
             .next()
             .map_or_else(|| cx.tcx.def_span(instance.def_id()), |a| a.span);
-        cx.tcx
-            .sess
-            .create_err(TargetFeatureDisableOrEnable {
-                features: f,
-                span: Some(span),
-                missing_features: Some(MissingFeatures),
-            })
-            .emit();
+        let msg = format!(
+            "the target features {} must all be either enabled or disabled together",
+            f.join(", ")
+        );
+        let mut err = cx.tcx.sess.struct_span_err(span, &msg);
+        err.help("add the missing features in a `target_feature` attribute");
+        err.emit();
         return;
     }
 
@@ -471,7 +431,7 @@ pub fn from_fn_attrs<'ll, 'tcx>(
         // the WebAssembly specification, which has this feature. This won't be
         // needed when LLVM enables this `multivalue` feature by default.
         if !cx.tcx.is_closure(instance.def_id()) {
-            let abi = cx.tcx.fn_sig(instance.def_id()).skip_binder().abi();
+            let abi = cx.tcx.fn_sig(instance.def_id()).abi();
             if abi == Abi::Wasm {
                 function_features.push("+multivalue".to_string());
             }
@@ -480,8 +440,8 @@ pub fn from_fn_attrs<'ll, 'tcx>(
 
     let global_features = cx.tcx.global_backend_features(()).iter().map(|s| s.as_str());
     let function_features = function_features.iter().map(|s| s.as_str());
-    let target_features: String =
-        global_features.chain(function_features).intersperse(",").collect();
+    let target_features =
+        global_features.chain(function_features).intersperse(",").collect::<SmallStr<1024>>();
     if !target_features.is_empty() {
         to_add.push(llvm::CreateAttrStringValue(cx.llcx, "target-features", &target_features));
     }

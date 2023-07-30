@@ -6,7 +6,6 @@ use rustc_ast::{GenericArg, Impl, ItemKind, MetaItem};
 use rustc_expand::base::{Annotatable, ExpandResult, ExtCtxt, MultiItemModifier};
 use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::Span;
-use thin_vec::{thin_vec, ThinVec};
 
 macro path_local($x:ident) {
     generic::ty::Path::new_local(sym::$x)
@@ -39,10 +38,9 @@ pub mod partial_ord;
 
 pub mod generic;
 
-pub(crate) type BuiltinDeriveFn =
-    fn(&mut ExtCtxt<'_>, Span, &MetaItem, &Annotatable, &mut dyn FnMut(Annotatable), bool);
-
-pub(crate) struct BuiltinDerive(pub(crate) BuiltinDeriveFn);
+pub(crate) struct BuiltinDerive(
+    pub(crate) fn(&mut ExtCtxt<'_>, Span, &MetaItem, &Annotatable, &mut dyn FnMut(Annotatable)),
+);
 
 impl MultiItemModifier for BuiltinDerive {
     fn expand(
@@ -51,7 +49,6 @@ impl MultiItemModifier for BuiltinDerive {
         span: Span,
         meta_item: &MetaItem,
         item: Annotatable,
-        is_derive_const: bool,
     ) -> ExpandResult<Vec<Annotatable>, Annotatable> {
         // FIXME: Built-in derives often forget to give spans contexts,
         // so we are doing it here in a centralized way.
@@ -60,28 +57,21 @@ impl MultiItemModifier for BuiltinDerive {
         match item {
             Annotatable::Stmt(stmt) => {
                 if let ast::StmtKind::Item(item) = stmt.into_inner().kind {
-                    (self.0)(
-                        ecx,
-                        span,
-                        meta_item,
-                        &Annotatable::Item(item),
-                        &mut |a| {
-                            // Cannot use 'ecx.stmt_item' here, because we need to pass 'ecx'
-                            // to the function
-                            items.push(Annotatable::Stmt(P(ast::Stmt {
-                                id: ast::DUMMY_NODE_ID,
-                                kind: ast::StmtKind::Item(a.expect_item()),
-                                span,
-                            })));
-                        },
-                        is_derive_const,
-                    );
+                    (self.0)(ecx, span, meta_item, &Annotatable::Item(item), &mut |a| {
+                        // Cannot use 'ecx.stmt_item' here, because we need to pass 'ecx'
+                        // to the function
+                        items.push(Annotatable::Stmt(P(ast::Stmt {
+                            id: ast::DUMMY_NODE_ID,
+                            kind: ast::StmtKind::Item(a.expect_item()),
+                            span,
+                        })));
+                    });
                 } else {
                     unreachable!("should have already errored on non-item statement")
                 }
             }
             _ => {
-                (self.0)(ecx, span, meta_item, &item, &mut |a| items.push(a), is_derive_const);
+                (self.0)(ecx, span, meta_item, &item, &mut |a| items.push(a));
             }
         }
         ExpandResult::Ready(items)
@@ -93,7 +83,7 @@ fn call_intrinsic(
     cx: &ExtCtxt<'_>,
     span: Span,
     intrinsic: Symbol,
-    args: ThinVec<P<ast::Expr>>,
+    args: Vec<P<ast::Expr>>,
 ) -> P<ast::Expr> {
     let span = cx.with_def_site_ctxt(span);
     let path = cx.std_path(&[sym::intrinsics, intrinsic]);
@@ -104,10 +94,10 @@ fn call_intrinsic(
 fn call_unreachable(cx: &ExtCtxt<'_>, span: Span) -> P<ast::Expr> {
     let span = cx.with_def_site_ctxt(span);
     let path = cx.std_path(&[sym::intrinsics, sym::unreachable]);
-    let call = cx.expr_call_global(span, path, ThinVec::new());
+    let call = cx.expr_call_global(span, path, vec![]);
 
     cx.expr_block(P(ast::Block {
-        stmts: thin_vec![cx.stmt_expr(call)],
+        stmts: vec![cx.stmt_expr(call)],
         id: ast::DUMMY_NODE_ID,
         rules: ast::BlockCheckMode::Unsafe(ast::CompilerGenerated),
         span,
@@ -126,12 +116,12 @@ fn inject_impl_of_structural_trait(
     structural_path: generic::ty::Path,
     push: &mut dyn FnMut(Annotatable),
 ) {
-    let Annotatable::Item(item) = item else {
+    let Annotatable::Item(ref item) = *item else {
         unreachable!();
     };
 
-    let generics = match &item.kind {
-        ItemKind::Struct(_, generics) | ItemKind::Enum(_, generics) => generics,
+    let generics = match item.kind {
+        ItemKind::Struct(_, ref generics) | ItemKind::Enum(_, ref generics) => generics,
         // Do not inject `impl Structural for Union`. (`PartialEq` does not
         // support unions, so we will see error downstream.)
         ItemKind::Union(..) => return,
@@ -189,7 +179,7 @@ fn inject_impl_of_structural_trait(
             .cloned(),
     );
     // Mark as `automatically_derived` to avoid some silly lints.
-    attrs.push(cx.attr_word(sym::automatically_derived, span));
+    attrs.push(cx.attribute(cx.meta_word(span, sym::automatically_derived)));
 
     let newitem = cx.item(
         span,
@@ -203,7 +193,7 @@ fn inject_impl_of_structural_trait(
             generics,
             of_trait: Some(trait_ref),
             self_ty: self_type,
-            items: ThinVec::new(),
+            items: Vec::new(),
         })),
     );
 
@@ -212,7 +202,7 @@ fn inject_impl_of_structural_trait(
 
 fn assert_ty_bounds(
     cx: &mut ExtCtxt<'_>,
-    stmts: &mut ThinVec<ast::Stmt>,
+    stmts: &mut Vec<ast::Stmt>,
     ty: P<ast::Ty>,
     span: Span,
     assert_path: &[Symbol],

@@ -26,10 +26,8 @@ pub struct CodegenFnAttrs {
     /// The `#[target_feature(enable = "...")]` attribute and the enabled
     /// features (only enabled features are supported right now).
     pub target_features: Vec<Symbol>,
-    /// The `#[linkage = "..."]` attribute on Rust-defined items and the value we found.
+    /// The `#[linkage = "..."]` attribute and the value we found.
     pub linkage: Option<Linkage>,
-    /// The `#[linkage = "..."]` attribute on foreign items and the value we found.
-    pub import_linkage: Option<Linkage>,
     /// The `#[link_section = "..."]` attribute, or what executable section this
     /// should be placed in.
     pub link_section: Option<Symbol>,
@@ -91,8 +89,7 @@ bitflags! {
         /// the MIR `InstrumentCoverage` pass and not added to the coverage map
         /// during codegen.
         const NO_COVERAGE               = 1 << 15;
-        /// `#[used(linker)]`:
-        /// indicates that neither LLVM nor the linker will eliminate this function.
+        /// `#[used(linker)]`: indicates that LLVM nor the linker can eliminate this function.
         const USED_LINKER               = 1 << 16;
         /// `#[rustc_deallocator]`: a hint to LLVM that the function only deallocates memory.
         const DEALLOCATOR               = 1 << 17;
@@ -116,7 +113,6 @@ impl CodegenFnAttrs {
             link_ordinal: None,
             target_features: vec![],
             linkage: None,
-            import_linkage: None,
             link_section: None,
             no_sanitize: SanitizerSet::empty(),
             instruction_set: None,

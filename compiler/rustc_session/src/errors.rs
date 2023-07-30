@@ -1,12 +1,9 @@
 use std::num::NonZeroU32;
 
 use crate::cgu_reuse_tracker::CguReuse;
-use crate::parse::ParseSess;
-use rustc_ast::token;
-use rustc_ast::util::literal::LitError;
-use rustc_errors::{error_code, DiagnosticMessage, EmissionGuarantee, IntoDiagnostic, MultiSpan};
+use rustc_errors::MultiSpan;
 use rustc_macros::Diagnostic;
-use rustc_span::{BytePos, Span, Symbol};
+use rustc_span::{Span, Symbol};
 use rustc_target::spec::{SplitDebuginfo, StackProtector, TargetTriple};
 
 #[derive(Diagnostic)]
@@ -27,22 +24,12 @@ pub struct CguNotRecorded<'a> {
     pub cgu_name: &'a str,
 }
 
-pub struct FeatureGateError {
+#[derive(Diagnostic)]
+#[diag(session_feature_gate_error, code = "E0658")]
+pub struct FeatureGateError<'a> {
+    #[primary_span]
     pub span: MultiSpan,
-    pub explain: DiagnosticMessage,
-}
-
-impl<'a, T: EmissionGuarantee> IntoDiagnostic<'a, T> for FeatureGateError {
-    #[track_caller]
-    fn into_diagnostic(
-        self,
-        handler: &'a rustc_errors::Handler,
-    ) -> rustc_errors::DiagnosticBuilder<'a, T> {
-        let mut diag = handler.struct_diagnostic(self.explain);
-        diag.set_span(self.span);
-        diag.code(error_code!(E0658));
-        diag
-    }
+    pub explain: &'a str,
 }
 
 #[derive(Subdiagnostic)]
@@ -82,12 +69,6 @@ pub struct ProfileSampleUseFileDoesNotExist<'a> {
 pub struct TargetRequiresUnwindTables;
 
 #[derive(Diagnostic)]
-#[diag(session_instrumentation_not_supported)]
-pub struct InstrumentationNotSupported {
-    pub us: String,
-}
-
-#[derive(Diagnostic)]
 #[diag(session_sanitizer_not_supported)]
 pub struct SanitizerNotSupported {
     pub us: String,
@@ -111,24 +92,8 @@ pub struct CannotMixAndMatchSanitizers {
 pub struct CannotEnableCrtStaticLinux;
 
 #[derive(Diagnostic)]
-#[diag(session_sanitizer_cfi_requires_lto)]
-pub struct SanitizerCfiRequiresLto;
-
-#[derive(Diagnostic)]
-#[diag(session_sanitizer_cfi_canonical_jump_tables_requires_cfi)]
-pub struct SanitizerCfiCanonicalJumpTablesRequiresCfi;
-
-#[derive(Diagnostic)]
-#[diag(session_sanitizer_cfi_generalize_pointers_requires_cfi)]
-pub struct SanitizerCfiGeneralizePointersRequiresCfi;
-
-#[derive(Diagnostic)]
-#[diag(session_sanitizer_cfi_normalize_integers_requires_cfi)]
-pub struct SanitizerCfiNormalizeIntegersRequiresCfi;
-
-#[derive(Diagnostic)]
-#[diag(session_split_lto_unit_requires_lto)]
-pub struct SplitLtoUnitRequiresLto;
+#[diag(session_sanitizer_cfi_enabled)]
+pub struct SanitizerCfiEnabled;
 
 #[derive(Diagnostic)]
 #[diag(session_unstable_virtual_function_elimination)]
@@ -148,10 +113,6 @@ pub struct StackProtectorNotSupportedForTarget<'a> {
 }
 
 #[derive(Diagnostic)]
-#[diag(session_branch_protection_requires_aarch64)]
-pub(crate) struct BranchProtectionRequiresAArch64;
-
-#[derive(Diagnostic)]
 #[diag(session_split_debuginfo_unstable_platform)]
 pub struct SplitDebugInfoUnstablePlatform {
     pub debuginfo: SplitDebuginfo,
@@ -165,10 +126,10 @@ pub struct FileIsNotWriteable<'a> {
 
 #[derive(Diagnostic)]
 #[diag(session_crate_name_does_not_match)]
-pub struct CrateNameDoesNotMatch {
+pub struct CrateNameDoesNotMatch<'a> {
     #[primary_span]
     pub span: Span,
-    pub s: Symbol,
+    pub s: &'a str,
     pub name: Symbol,
 }
 
@@ -187,11 +148,11 @@ pub struct CrateNameEmpty {
 
 #[derive(Diagnostic)]
 #[diag(session_invalid_character_in_create_name)]
-pub struct InvalidCharacterInCrateName {
+pub struct InvalidCharacterInCrateName<'a> {
     #[primary_span]
     pub span: Option<Span>,
     pub character: char,
-    pub crate_name: Symbol,
+    pub crate_name: &'a str,
 }
 
 #[derive(Subdiagnostic)]
@@ -212,7 +173,7 @@ impl ExprParenthesesNeeded {
 #[derive(Diagnostic)]
 #[diag(session_skipping_const_checks)]
 pub struct SkippingConstChecks {
-    #[subdiagnostic]
+    #[subdiagnostic(eager)]
     pub unleashed_features: Vec<UnleashedFeatureHelp>,
 }
 
@@ -229,204 +190,4 @@ pub enum UnleashedFeatureHelp {
         #[primary_span]
         span: Span,
     },
-}
-
-#[derive(Diagnostic)]
-#[diag(session_invalid_literal_suffix)]
-pub(crate) struct InvalidLiteralSuffix<'a> {
-    #[primary_span]
-    #[label]
-    pub span: Span,
-    // FIXME(#100717)
-    pub kind: &'a str,
-    pub suffix: Symbol,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_invalid_int_literal_width)]
-#[help]
-pub(crate) struct InvalidIntLiteralWidth {
-    #[primary_span]
-    pub span: Span,
-    pub width: String,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_invalid_num_literal_base_prefix)]
-#[note]
-pub(crate) struct InvalidNumLiteralBasePrefix {
-    #[primary_span]
-    #[suggestion(applicability = "maybe-incorrect", code = "{fixed}")]
-    pub span: Span,
-    pub fixed: String,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_invalid_num_literal_suffix)]
-#[help]
-pub(crate) struct InvalidNumLiteralSuffix {
-    #[primary_span]
-    #[label]
-    pub span: Span,
-    pub suffix: String,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_invalid_float_literal_width)]
-#[help]
-pub(crate) struct InvalidFloatLiteralWidth {
-    #[primary_span]
-    pub span: Span,
-    pub width: String,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_invalid_float_literal_suffix)]
-#[help]
-pub(crate) struct InvalidFloatLiteralSuffix {
-    #[primary_span]
-    #[label]
-    pub span: Span,
-    pub suffix: String,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_int_literal_too_large)]
-#[note]
-pub(crate) struct IntLiteralTooLarge {
-    #[primary_span]
-    pub span: Span,
-    pub limit: String,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_hexadecimal_float_literal_not_supported)]
-pub(crate) struct HexadecimalFloatLiteralNotSupported {
-    #[primary_span]
-    #[label(session_not_supported)]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_octal_float_literal_not_supported)]
-pub(crate) struct OctalFloatLiteralNotSupported {
-    #[primary_span]
-    #[label(session_not_supported)]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_binary_float_literal_not_supported)]
-pub(crate) struct BinaryFloatLiteralNotSupported {
-    #[primary_span]
-    #[label(session_not_supported)]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_nul_in_c_str)]
-pub(crate) struct NulInCStr {
-    #[primary_span]
-    pub span: Span,
-}
-
-pub fn report_lit_error(sess: &ParseSess, err: LitError, lit: token::Lit, span: Span) {
-    // Checks if `s` looks like i32 or u1234 etc.
-    fn looks_like_width_suffix(first_chars: &[char], s: &str) -> bool {
-        s.len() > 1 && s.starts_with(first_chars) && s[1..].chars().all(|c| c.is_ascii_digit())
-    }
-
-    // Try to lowercase the prefix if the prefix and suffix are valid.
-    fn fix_base_capitalisation(prefix: &str, suffix: &str) -> Option<String> {
-        let mut chars = suffix.chars();
-
-        let base_char = chars.next().unwrap();
-        let base = match base_char {
-            'B' => 2,
-            'O' => 8,
-            'X' => 16,
-            _ => return None,
-        };
-
-        // check that the suffix contains only base-appropriate characters
-        let valid = prefix == "0"
-            && chars
-                .filter(|c| *c != '_')
-                .take_while(|c| *c != 'i' && *c != 'u')
-                .all(|c| c.to_digit(base).is_some());
-
-        valid.then(|| format!("0{}{}", base_char.to_ascii_lowercase(), &suffix[1..]))
-    }
-
-    let token::Lit { kind, symbol, suffix, .. } = lit;
-    match err {
-        // `LexerError` is an error, but it was already reported
-        // by lexer, so here we don't report it the second time.
-        LitError::LexerError => {}
-        LitError::InvalidSuffix => {
-            if let Some(suffix) = suffix {
-                sess.emit_err(InvalidLiteralSuffix { span, kind: kind.descr(), suffix });
-            }
-        }
-        LitError::InvalidIntSuffix => {
-            let suf = suffix.expect("suffix error with no suffix");
-            let suf = suf.as_str();
-            if looks_like_width_suffix(&['i', 'u'], suf) {
-                // If it looks like a width, try to be helpful.
-                sess.emit_err(InvalidIntLiteralWidth { span, width: suf[1..].into() });
-            } else if let Some(fixed) = fix_base_capitalisation(symbol.as_str(), suf) {
-                sess.emit_err(InvalidNumLiteralBasePrefix { span, fixed });
-            } else {
-                sess.emit_err(InvalidNumLiteralSuffix { span, suffix: suf.to_string() });
-            }
-        }
-        LitError::InvalidFloatSuffix => {
-            let suf = suffix.expect("suffix error with no suffix");
-            let suf = suf.as_str();
-            if looks_like_width_suffix(&['f'], suf) {
-                // If it looks like a width, try to be helpful.
-                sess.emit_err(InvalidFloatLiteralWidth { span, width: suf[1..].to_string() });
-            } else {
-                sess.emit_err(InvalidFloatLiteralSuffix { span, suffix: suf.to_string() });
-            }
-        }
-        LitError::NonDecimalFloat(base) => {
-            match base {
-                16 => sess.emit_err(HexadecimalFloatLiteralNotSupported { span }),
-                8 => sess.emit_err(OctalFloatLiteralNotSupported { span }),
-                2 => sess.emit_err(BinaryFloatLiteralNotSupported { span }),
-                _ => unreachable!(),
-            };
-        }
-        LitError::IntTooLarge(base) => {
-            let max = u128::MAX;
-            let limit = match base {
-                2 => format!("{max:#b}"),
-                8 => format!("{max:#o}"),
-                16 => format!("{max:#x}"),
-                _ => format!("{max}"),
-            };
-            sess.emit_err(IntLiteralTooLarge { span, limit });
-        }
-        LitError::NulInCStr(range) => {
-            let lo = BytePos(span.lo().0 + range.start as u32 + 2);
-            let hi = BytePos(span.lo().0 + range.end as u32 + 2);
-            let span = span.with_lo(lo).with_hi(hi);
-            sess.emit_err(NulInCStr { span });
-        }
-    }
-}
-
-#[derive(Diagnostic)]
-#[diag(session_optimization_fuel_exhausted)]
-pub struct OptimisationFuelExhausted {
-    pub msg: String,
-}
-
-#[derive(Diagnostic)]
-#[diag(session_incompatible_linker_flavor)]
-#[note]
-pub struct IncompatibleLinkerFlavor {
-    pub flavor: &'static str,
-    pub compatible_list: String,
 }

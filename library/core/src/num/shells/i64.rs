@@ -1,4 +1,6 @@
-//! Redundant constants module for the [`i64` primitive type][i64].
+//! Constants for the 64-bit signed integer type.
+//!
+//! *[See also the `i64` primitive type][i64].*
 //!
 //! New code should use the associated constants directly on the primitive type.
 

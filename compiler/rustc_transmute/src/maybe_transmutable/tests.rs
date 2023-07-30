@@ -1,11 +1,9 @@
 use super::query_context::test::{Def, UltraMinimal};
 use crate::maybe_transmutable::MaybeTransmutableQuery;
-use crate::{layout, Reason};
+use crate::{layout, Answer, Reason, Set};
 use itertools::Itertools;
 
 mod bool {
-    use crate::Answer;
-
     use super::*;
 
     #[test]
@@ -50,9 +48,9 @@ mod bool {
 
         let into_set = |alts: Vec<_>| {
             #[cfg(feature = "rustc")]
-            let mut set = crate::Set::default();
+            let mut set = Set::default();
             #[cfg(not(feature = "rustc"))]
-            let mut set = std::collections::HashSet::new();
+            let mut set = Set::new();
             set.extend(alts);
             set
         };

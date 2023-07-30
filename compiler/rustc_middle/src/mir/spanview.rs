@@ -3,7 +3,7 @@ use rustc_middle::hir;
 use rustc_middle::mir::*;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::MirSpanview;
-use rustc_span::{BytePos, Pos, Span};
+use rustc_span::{BytePos, Pos, Span, SyntaxContext};
 
 use std::cmp;
 use std::io::{self, Write};
@@ -11,13 +11,12 @@ use std::io::{self, Write};
 pub const TOOLTIP_INDENT: &str = "    ";
 
 const CARET: char = '\u{2038}'; // Unicode `CARET`
-const ANNOTATION_LEFT_BRACKET: char = '\u{298a}'; // Unicode `Z NOTATION RIGHT BINDING BRACKET`
+const ANNOTATION_LEFT_BRACKET: char = '\u{298a}'; // Unicode `Z NOTATION RIGHT BINDING BRACKET
 const ANNOTATION_RIGHT_BRACKET: char = '\u{2989}'; // Unicode `Z NOTATION LEFT BINDING BRACKET`
 const NEW_LINE_SPAN: &str = "</span>\n<span class=\"line\">";
 const HEADER: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">"#;
+<html>
+<head>"#;
 const START_BODY: &str = r#"</head>
 <body>"#;
 const FOOTER: &str = r#"</body>
@@ -231,7 +230,7 @@ where
 }
 
 /// Format a string showing the start line and column, and end line and column within a file.
-pub fn source_range_no_file(tcx: TyCtxt<'_>, span: Span) -> String {
+pub fn source_range_no_file<'tcx>(tcx: TyCtxt<'tcx>, span: Span) -> String {
     let source_map = tcx.sess.source_map();
     let start = source_map.lookup_char_pos(span.lo());
     let end = source_map.lookup_char_pos(span.hi());
@@ -248,11 +247,9 @@ pub fn statement_kind_name(statement: &Statement<'_>) -> &'static str {
         StorageLive(..) => "StorageLive",
         StorageDead(..) => "StorageDead",
         Retag(..) => "Retag",
-        PlaceMention(..) => "PlaceMention",
         AscribeUserType(..) => "AscribeUserType",
         Coverage(..) => "Coverage",
         Intrinsic(..) => "Intrinsic",
-        ConstEvalCounter => "ConstEvalCounter",
         Nop => "Nop",
     }
 }
@@ -263,10 +260,11 @@ pub fn terminator_kind_name(term: &Terminator<'_>) -> &'static str {
         Goto { .. } => "Goto",
         SwitchInt { .. } => "SwitchInt",
         Resume => "Resume",
-        Terminate => "Terminate",
+        Abort => "Abort",
         Return => "Return",
         Unreachable => "Unreachable",
         Drop { .. } => "Drop",
+        DropAndReplace { .. } => "DropAndReplace",
         Call { .. } => "Call",
         Assert { .. } => "Assert",
         Yield { .. } => "Yield",
@@ -324,11 +322,11 @@ fn block_span_viewable<'tcx>(
     Some(SpanViewable { bb, span, id, tooltip })
 }
 
-fn compute_block_span(data: &BasicBlockData<'_>, body_span: Span) -> Span {
+fn compute_block_span<'tcx>(data: &BasicBlockData<'tcx>, body_span: Span) -> Span {
     let mut span = data.terminator().source_info.span;
     for statement_span in data.statements.iter().map(|statement| statement.source_info.span) {
         // Only combine Spans from the root context, and within the function's body_span.
-        if statement_span.ctxt().is_root() && body_span.contains(statement_span) {
+        if statement_span.ctxt() == SyntaxContext::root() && body_span.contains(statement_span) {
             span = span.to(statement_span);
         }
     }
@@ -524,7 +522,12 @@ where
 }
 
 #[inline(always)]
-fn write_coverage_gap<W>(tcx: TyCtxt<'_>, lo: BytePos, hi: BytePos, w: &mut W) -> io::Result<()>
+fn write_coverage_gap<'tcx, W>(
+    tcx: TyCtxt<'tcx>,
+    lo: BytePos,
+    hi: BytePos,
+    w: &mut W,
+) -> io::Result<()>
 where
     W: Write,
 {
@@ -579,8 +582,8 @@ where
     Ok(())
 }
 
-fn make_html_snippet(
-    tcx: TyCtxt<'_>,
+fn make_html_snippet<'tcx>(
+    tcx: TyCtxt<'tcx>,
     span: Span,
     some_viewable: Option<&SpanViewable>,
 ) -> Option<String> {
@@ -661,7 +664,7 @@ fn trim_span_hi(span: Span, to_pos: BytePos) -> Span {
     if to_pos >= span.hi() { span } else { span.with_hi(cmp::max(span.lo(), to_pos)) }
 }
 
-fn fn_span(tcx: TyCtxt<'_>, def_id: DefId) -> Span {
+fn fn_span<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Span {
     let fn_decl_span = tcx.def_span(def_id);
     if let Some(body_span) = hir_body(tcx, def_id).map(|hir_body| hir_body.value.span) {
         if fn_decl_span.eq_ctxt(body_span) { fn_decl_span.to(body_span) } else { body_span }
@@ -670,9 +673,9 @@ fn fn_span(tcx: TyCtxt<'_>, def_id: DefId) -> Span {
     }
 }
 
-fn hir_body(tcx: TyCtxt<'_>, def_id: DefId) -> Option<&rustc_hir::Body<'_>> {
+fn hir_body<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Option<&'tcx rustc_hir::Body<'tcx>> {
     let hir_node = tcx.hir().get_if_local(def_id).expect("expected DefId is local");
-    hir::map::associated_body(hir_node).map(|(_, fn_body_id)| tcx.hir().body(fn_body_id))
+    hir::map::associated_body(hir_node).map(|fn_body_id| tcx.hir().body(fn_body_id))
 }
 
 fn escape_html(s: &str) -> String {

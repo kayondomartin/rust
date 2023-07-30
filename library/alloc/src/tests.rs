@@ -4,6 +4,7 @@ use core::any::Any;
 use core::clone::Clone;
 use core::convert::TryInto;
 use core::ops::Deref;
+use core::result::Result::{Err, Ok};
 
 use std::boxed::Box;
 
@@ -14,7 +15,7 @@ fn test_owned_clone() {
     assert!(a == b);
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct Test;
 
 #[test]
@@ -22,17 +23,24 @@ fn any_move() {
     let a = Box::new(8) as Box<dyn Any>;
     let b = Box::new(Test) as Box<dyn Any>;
 
-    let a: Box<i32> = a.downcast::<i32>().unwrap();
-    assert_eq!(*a, 8);
-
-    let b: Box<Test> = b.downcast::<Test>().unwrap();
-    assert_eq!(*b, Test);
+    match a.downcast::<i32>() {
+        Ok(a) => {
+            assert!(a == Box::new(8));
+        }
+        Err(..) => panic!(),
+    }
+    match b.downcast::<Test>() {
+        Ok(a) => {
+            assert!(a == Box::new(Test));
+        }
+        Err(..) => panic!(),
+    }
 
     let a = Box::new(8) as Box<dyn Any>;
     let b = Box::new(Test) as Box<dyn Any>;
 
-    assert!(a.downcast::<Box<i32>>().is_err());
-    assert!(b.downcast::<Box<Test>>().is_err());
+    assert!(a.downcast::<Box<Test>>().is_err());
+    assert!(b.downcast::<Box<i32>>().is_err());
 }
 
 #[test]

@@ -209,7 +209,6 @@ fn test_ceil() {
 
 #[test]
 fn test_round() {
-    assert_approx_eq!(2.5f32.round(), 3.0f32);
     assert_approx_eq!(1.0f32.round(), 1.0f32);
     assert_approx_eq!(1.3f32.round(), 1.0f32);
     assert_approx_eq!(1.5f32.round(), 2.0f32);
@@ -220,21 +219,6 @@ fn test_round() {
     assert_approx_eq!((-1.3f32).round(), -1.0f32);
     assert_approx_eq!((-1.5f32).round(), -2.0f32);
     assert_approx_eq!((-1.7f32).round(), -2.0f32);
-}
-
-#[test]
-fn test_round_ties_even() {
-    assert_approx_eq!(2.5f32.round_ties_even(), 2.0f32);
-    assert_approx_eq!(1.0f32.round_ties_even(), 1.0f32);
-    assert_approx_eq!(1.3f32.round_ties_even(), 1.0f32);
-    assert_approx_eq!(1.5f32.round_ties_even(), 2.0f32);
-    assert_approx_eq!(1.7f32.round_ties_even(), 2.0f32);
-    assert_approx_eq!(0.0f32.round_ties_even(), 0.0f32);
-    assert_approx_eq!((-0.0f32).round_ties_even(), -0.0f32);
-    assert_approx_eq!((-1.0f32).round_ties_even(), -1.0f32);
-    assert_approx_eq!((-1.3f32).round_ties_even(), -1.0f32);
-    assert_approx_eq!((-1.5f32).round_ties_even(), -2.0f32);
-    assert_approx_eq!((-1.7f32).round_ties_even(), -2.0f32);
 }
 
 #[test]
@@ -603,11 +587,6 @@ fn test_asinh() {
     assert_approx_eq!((-2.0f32).asinh(), -1.443635475178810342493276740273105f32);
     // regression test for the catastrophic cancellation fixed in 72486
     assert_approx_eq!((-3000.0f32).asinh(), -8.699514775987968673236893537700647f32);
-
-    // test for low accuracy from issue 104548
-    assert_approx_eq!(60.0f32, 60.0f32.sinh().asinh());
-    // mul needed for approximate comparison to be meaningful
-    assert_approx_eq!(1.0f32, 1e-15f32.sinh().asinh() * 1e15f32);
 }
 
 #[test]
@@ -623,9 +602,6 @@ fn test_acosh() {
     assert!(nan.acosh().is_nan());
     assert_approx_eq!(2.0f32.acosh(), 1.31695789692481670862504634730796844f32);
     assert_approx_eq!(3.0f32.acosh(), 1.76274717403908605046521864995958461f32);
-
-    // test for low accuracy from issue 104548
-    assert_approx_eq!(60.0f32, 60.0f32.cosh().acosh());
 }
 
 #[test]

@@ -1,15 +1,17 @@
 use gccjit::LValue;
 use gccjit::{RValue, Type, ToRValue};
+use rustc_codegen_ssa::mir::place::PlaceRef;
 use rustc_codegen_ssa::traits::{
     BaseTypeMethods,
     ConstMethods,
+    DerivedTypeMethods,
     MiscMethods,
     StaticMethods,
 };
 use rustc_middle::mir::Mutability;
-use rustc_middle::ty::layout::{LayoutOf};
+use rustc_middle::ty::layout::{TyAndLayout, LayoutOf};
 use rustc_middle::mir::interpret::{ConstAllocation, GlobalAlloc, Scalar};
-use rustc_target::abi::{self, HasDataLayout, Pointer};
+use rustc_target::abi::{self, HasDataLayout, Pointer, Size};
 
 use crate::consts::const_alloc_to_gcc;
 use crate::context::CodegenCx;
@@ -34,7 +36,7 @@ impl<'gcc, 'tcx> CodegenCx<'gcc, 'tcx> {
 pub fn bytes_in_context<'gcc, 'tcx>(cx: &CodegenCx<'gcc, 'tcx>, bytes: &[u8]) -> RValue<'gcc> {
     let context = &cx.context;
     let byte_type = context.new_type::<u8>();
-    let typ = context.new_array_type(None, byte_type, bytes.len() as u64);
+    let typ = context.new_array_type(None, byte_type, bytes.len() as i32);
     let elements: Vec<_> =
         bytes.iter()
         .map(|&byte| context.new_rvalue_from_int(byte_type, byte as i32))
@@ -42,7 +44,7 @@ pub fn bytes_in_context<'gcc, 'tcx>(cx: &CodegenCx<'gcc, 'tcx>, bytes: &[u8]) ->
     context.new_array_constructor(None, typ, &elements)
 }
 
-pub fn type_is_pointer(typ: Type<'_>) -> bool {
+pub fn type_is_pointer<'gcc>(typ: Type<'gcc>) -> bool {
     typ.get_pointee().is_some()
 }
 
@@ -69,11 +71,6 @@ impl<'gcc, 'tcx> ConstMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
         else {
             local.to_rvalue()
         }
-    }
-
-    fn const_poison(&self, typ: Type<'gcc>) -> RValue<'gcc> {
-        // No distinction between undef and poison.
-        self.const_undef(typ)
     }
 
     fn const_int(&self, typ: Type<'gcc>, int: i64) -> RValue<'gcc> {
@@ -108,10 +105,6 @@ impl<'gcc, 'tcx> ConstMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
         self.const_uint(self.type_u64(), i)
     }
 
-    fn const_u128(&self, i: u128) -> RValue<'gcc> {
-        self.const_uint_big(self.type_u128(), i)
-    }
-
     fn const_usize(&self, i: u64) -> RValue<'gcc> {
         let bit_size = self.data_layout().pointer_size.bits();
         if bit_size < 64 {
@@ -122,8 +115,8 @@ impl<'gcc, 'tcx> ConstMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
         self.const_uint(self.usize_type, i)
     }
 
-    fn const_u8(&self, i: u8) -> RValue<'gcc> {
-        self.const_uint(self.type_u8(), i as u64)
+    fn const_u8(&self, _i: u8) -> RValue<'gcc> {
+        unimplemented!();
     }
 
     fn const_real(&self, typ: Type<'gcc>, val: f64) -> RValue<'gcc> {
@@ -140,7 +133,7 @@ impl<'gcc, 'tcx> ConstMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
             .1;
         let len = s.len();
         let cs = self.const_ptrcast(str_global.get_address(None),
-            self.type_ptr_to(self.layout_of(self.tcx.types.str_).gcc_type(self)),
+            self.type_ptr_to(self.layout_of(self.tcx.types.str_).gcc_type(self, true)),
         );
         (cs, self.const_usize(len as u64))
     }
@@ -181,18 +174,8 @@ impl<'gcc, 'tcx> ConstMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
                 }
 
                 let value = self.const_uint_big(self.type_ix(bitsize), data);
-                let bytesize = layout.size(self).bytes();
-                if bitsize > 1 && ty.is_integral() && bytesize as u32 == ty.get_size() {
-                    // NOTE: since the intrinsic _xabort is called with a bitcast, which
-                    // is non-const, but expects a constant, do a normal cast instead of a bitcast.
-                    // FIXME(antoyo): fix bitcast to work in constant contexts.
-                    // TODO(antoyo): perhaps only use bitcast for pointers?
-                    self.context.new_cast(None, value, ty)
-                }
-                else {
-                    // TODO(bjorn3): assert size is correct
-                    self.const_bitcast(value, ty)
-                }
+                // TODO(bjorn3): assert size is correct
+                self.const_bitcast(value, ty)
             }
             Scalar::Ptr(ptr, _size) => {
                 let (alloc_id, offset) = ptr.into_parts();
@@ -228,7 +211,7 @@ impl<'gcc, 'tcx> ConstMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
                 let base_addr = self.const_bitcast(base_addr, self.usize_type);
                 let offset = self.context.new_rvalue_from_long(self.usize_type, offset.bytes() as i64);
                 let ptr = self.const_bitcast(base_addr + offset, ptr_type);
-                if !matches!(layout.primitive(), Pointer(_)) {
+                if layout.primitive() != Pointer {
                     self.const_bitcast(ptr.dereference(None).to_rvalue(), ty)
                 }
                 else {
@@ -242,25 +225,27 @@ impl<'gcc, 'tcx> ConstMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
         const_alloc_to_gcc(self, alloc)
     }
 
+    fn from_const_alloc(&self, layout: TyAndLayout<'tcx>, alloc: ConstAllocation<'tcx>, offset: Size) -> PlaceRef<'tcx, RValue<'gcc>> {
+        assert_eq!(alloc.inner().align, layout.align.abi);
+        let ty = self.type_ptr_to(layout.gcc_type(self, true));
+        let value =
+            if layout.size == Size::ZERO {
+                let value = self.const_usize(alloc.inner().align.bytes());
+                self.context.new_cast(None, value, ty)
+            }
+            else {
+                let init = const_alloc_to_gcc(self, alloc);
+                let base_addr = self.static_addr_of(init, alloc.inner().align, None);
+
+                let array = self.const_bitcast(base_addr, self.type_i8p());
+                let value = self.context.new_array_access(None, array, self.const_usize(offset.bytes())).get_address(None);
+                self.const_bitcast(value, ty)
+            };
+        PlaceRef::new_sized(value, layout)
+    }
+
     fn const_ptrcast(&self, val: RValue<'gcc>, ty: Type<'gcc>) -> RValue<'gcc> {
         self.context.new_cast(None, val, ty)
-    }
-
-    fn const_bitcast(&self, value: RValue<'gcc>, typ: Type<'gcc>) -> RValue<'gcc> {
-        if value.get_type() == self.bool_type.make_pointer() {
-            if let Some(pointee) = typ.get_pointee() {
-                if pointee.dyncast_vector().is_some() {
-                    panic!()
-                }
-            }
-        }
-        // NOTE: since bitcast makes a value non-constant, don't bitcast if not necessary as some
-        // SIMD builtins require a constant value.
-        self.bitcast_if_needed(value, typ)
-    }
-
-    fn const_ptr_byte_offset(&self, base_addr: Self::Value, offset: abi::Size) -> Self::Value {
-        self.context.new_array_access(None, base_addr, self.const_usize(offset.bytes())).get_address(None)
     }
 }
 

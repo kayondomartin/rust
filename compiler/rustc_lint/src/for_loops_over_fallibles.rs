@@ -1,17 +1,11 @@
-use crate::{
-    lints::{
-        ForLoopsOverFalliblesDiag, ForLoopsOverFalliblesLoopSub, ForLoopsOverFalliblesQuestionMark,
-        ForLoopsOverFalliblesSuggestion,
-    },
-    LateContext, LateLintPass, LintContext,
-};
+use crate::{LateContext, LateLintPass, LintContext};
 
 use hir::{Expr, Pat};
+use rustc_errors::{Applicability, DelayDm};
 use rustc_hir as hir;
 use rustc_infer::{infer::TyCtxtInferExt, traits::ObligationCause};
 use rustc_middle::ty::{self, List};
 use rustc_span::{sym, Span};
-use rustc_trait_selection::traits::ObligationCtxt;
 
 declare_lint! {
     /// The `for_loops_over_fallibles` lint checks for `for` loops over `Option` or `Result` values.
@@ -59,26 +53,53 @@ impl<'tcx> LateLintPass<'tcx> for ForLoopsOverFallibles {
             _ => return,
         };
 
-        let sub =  if let Some(recv) = extract_iterator_next_call(cx, arg)
+        let msg = DelayDm(|| {
+            format!(
+                "for loop over {article} `{ty}`. This is more readably written as an `if let` statement",
+            )
+        });
+
+        cx.struct_span_lint(FOR_LOOPS_OVER_FALLIBLES, arg.span, msg, |lint| {
+            if let Some(recv) = extract_iterator_next_call(cx, arg)
             && let Ok(recv_snip) = cx.sess().source_map().span_to_snippet(recv.span)
             {
-                ForLoopsOverFalliblesLoopSub::RemoveNext { suggestion: recv.span.between(arg.span.shrink_to_hi()), recv_snip }
+                lint.span_suggestion(
+                    recv.span.between(arg.span.shrink_to_hi()),
+                    format!("to iterate over `{recv_snip}` remove the call to `next`"),
+                    ".by_ref()",
+                    Applicability::MaybeIncorrect
+                );
             } else {
-                ForLoopsOverFalliblesLoopSub::UseWhileLet { start_span: expr.span.with_hi(pat.span.lo()), end_span: pat.span.between(arg.span), var }
-            } ;
-        let question_mark = suggest_question_mark(cx, adt, substs, expr.span)
-            .then(|| ForLoopsOverFalliblesQuestionMark { suggestion: arg.span.shrink_to_hi() });
-        let suggestion = ForLoopsOverFalliblesSuggestion {
-            var,
-            start_span: expr.span.with_hi(pat.span.lo()),
-            end_span: pat.span.between(arg.span),
-        };
+                lint.multipart_suggestion_verbose(
+                    format!("to check pattern in a loop use `while let`"),
+                    vec![
+                        // NB can't use `until` here because `expr.span` and `pat.span` have different syntax contexts
+                        (expr.span.with_hi(pat.span.lo()), format!("while let {var}(")),
+                        (pat.span.between(arg.span), format!(") = ")),
+                    ],
+                    Applicability::MaybeIncorrect
+                );
+            }
 
-        cx.emit_spanned_lint(
-            FOR_LOOPS_OVER_FALLIBLES,
-            arg.span,
-            ForLoopsOverFalliblesDiag { article, ty, sub, question_mark, suggestion },
-        );
+            if suggest_question_mark(cx, adt, substs, expr.span) {
+                lint.span_suggestion(
+                    arg.span.shrink_to_hi(),
+                    "consider unwrapping the `Result` with `?` to iterate over its contents",
+                    "?",
+                    Applicability::MaybeIncorrect,
+                );
+            }
+
+            lint.multipart_suggestion_verbose(
+                "consider using `if let` to clear intent",
+                vec![
+                    // NB can't use `until` here because `expr.span` and `pat.span` have different syntax contexts
+                    (expr.span.with_hi(pat.span.lo()), format!("if let {var}(")),
+                    (pat.span.between(arg.span), format!(") = ")),
+                ],
+                Applicability::MaybeIncorrect,
+            )
+        })
     }
 }
 
@@ -137,22 +158,19 @@ fn suggest_question_mark<'tcx>(
 
     let ty = substs.type_at(0);
     let infcx = cx.tcx.infer_ctxt().build();
-    let ocx = ObligationCtxt::new(&infcx);
-
-    let body_def_id = cx.tcx.hir().body_owner_def_id(body_id);
     let cause = ObligationCause::new(
         span,
-        body_def_id,
+        body_id.hir_id,
         rustc_infer::traits::ObligationCauseCode::MiscObligation,
     );
-
-    ocx.register_bound(
+    let errors = rustc_trait_selection::traits::fully_solve_bound(
+        &infcx,
         cause,
-        cx.param_env,
+        ty::ParamEnv::empty(),
         // Erase any region vids from the type, which may not be resolved
         infcx.tcx.erase_regions(ty),
         into_iterator_did,
     );
 
-    ocx.select_all_or_error().is_empty()
+    errors.is_empty()
 }

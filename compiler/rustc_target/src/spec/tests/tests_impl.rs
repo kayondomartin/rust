@@ -2,15 +2,15 @@ use super::super::*;
 use std::assert_matches::assert_matches;
 
 // Test target self-consistency and JSON encoding/decoding roundtrip.
-pub(super) fn test_target(mut target: Target) {
+pub(super) fn test_target(mut target: Target, triple: &str) {
     let recycled_target = Target::from_json(target.to_json()).map(|(j, _)| j);
     target.update_to_cli();
-    target.check_consistency();
+    target.check_consistency(triple);
     assert_eq!(recycled_target, Ok(target));
 }
 
 impl Target {
-    fn check_consistency(&self) {
+    fn check_consistency(&self, triple: &str) {
         assert_eq!(self.is_like_osx, self.vendor == "apple");
         assert_eq!(self.is_like_solaris, self.os == "solaris" || self.os == "illumos");
         assert_eq!(self.is_like_windows, self.os == "windows" || self.os == "uefi");
@@ -129,7 +129,8 @@ impl Target {
         if self.dynamic_linking && !(self.is_like_wasm && self.os != "emscripten") {
             assert_eq!(self.relocation_model, RelocModel::Pic);
         }
-        if self.position_independent_executables {
+        // PIEs are supported but not enabled by default with linuxkernel target.
+        if self.position_independent_executables && !triple.ends_with("-linuxkernel") {
             assert_eq!(self.relocation_model, RelocModel::Pic);
         }
         // The UEFI targets do not support dynamic linking but still require PIC (#101377).

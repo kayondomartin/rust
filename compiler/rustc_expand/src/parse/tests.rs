@@ -18,10 +18,7 @@ use rustc_span::{BytePos, FileName, Pos, Span};
 use std::path::PathBuf;
 
 fn sess() -> ParseSess {
-    ParseSess::new(
-        vec![crate::DEFAULT_LOCALE_RESOURCE, rustc_parse::DEFAULT_LOCALE_RESOURCE],
-        FilePathMapping::empty(),
-    )
+    ParseSess::new(FilePathMapping::empty())
 }
 
 /// Parses an item.
@@ -179,9 +176,9 @@ fn get_spans_of_pat_idents(src: &str) -> Vec<Span> {
     }
     impl<'a> visit::Visitor<'a> for PatIdentVisitor {
         fn visit_pat(&mut self, p: &'a ast::Pat) {
-            match &p.kind {
-                PatKind::Ident(_, ident, _) => {
-                    self.spans.push(ident.span);
+            match p.kind {
+                PatKind::Ident(_, ref ident, _) => {
+                    self.spans.push(ident.span.clone());
                 }
                 _ => {
                     visit::walk_pat(self, p);
@@ -293,8 +290,10 @@ fn ttdelim_span() {
         )
         .unwrap();
 
-        let ast::ExprKind::MacCall(mac) = &expr.kind else { panic!("not a macro") };
-        let tts: Vec<_> = mac.args.tokens.clone().into_trees().collect();
+        let tts: Vec<_> = match expr.kind {
+            ast::ExprKind::MacCall(ref mac) => mac.args.inner_tokens().into_trees().collect(),
+            _ => panic!("not a macro"),
+        };
 
         let span = tts.iter().rev().next().unwrap().span();
 
@@ -319,8 +318,11 @@ fn out_of_line_mod() {
         .unwrap()
         .unwrap();
 
-        let ast::ItemKind::Mod(_, mod_kind) = &item.kind else { panic!() };
-        assert!(matches!(mod_kind, ast::ModKind::Loaded(items, ..) if items.len() == 2));
+        if let ast::ItemKind::Mod(_, ref mod_kind) = item.kind {
+            assert!(matches!(mod_kind, ast::ModKind::Loaded(items, ..) if items.len() == 2));
+        } else {
+            panic!();
+        }
     });
 }
 

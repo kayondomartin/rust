@@ -14,12 +14,11 @@ use crate::mir::operand::OperandRef;
 use crate::mir::place::PlaceRef;
 use crate::MemFlags;
 
-use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs;
 use rustc_middle::ty::layout::{HasParamEnv, TyAndLayout};
 use rustc_middle::ty::Ty;
 use rustc_span::Span;
 use rustc_target::abi::call::FnAbi;
-use rustc_target::abi::{Abi, Align, Scalar, Size, WrappingRange};
+use rustc_target::abi::{Abi, Align, Scalar, Size, WrappingRange, AllocaSpecial};
 use rustc_target::spec::HasTargetSpec;
 
 #[derive(Copy, Clone)]
@@ -73,7 +72,6 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn invoke(
         &mut self,
         llty: Self::Type,
-        fn_attrs: Option<&CodegenFnAttrs>,
         fn_abi: Option<&FnAbi<'tcx, Ty<'tcx>>>,
         llfn: Self::Value,
         args: &[Self::Value],
@@ -136,7 +134,7 @@ pub trait BuilderMethods<'a, 'tcx>:
     }
     fn to_immediate_scalar(&mut self, val: Self::Value, scalar: Scalar) -> Self::Value;
 
-    fn alloca(&mut self, ty: Self::Type, align: Align) -> Self::Value;
+    fn alloca(&mut self, ty: Self::Type, align: Align, is_special: AllocaSpecial) -> Self::Value;
     fn byte_array_alloca(&mut self, len: Self::Value, align: Align) -> Self::Value;
 
     fn load(&mut self, ty: Self::Type, ptr: Self::Value, align: Align) -> Self::Value;
@@ -149,15 +147,25 @@ pub trait BuilderMethods<'a, 'tcx>:
         size: Size,
     ) -> Self::Value;
     fn load_operand(&mut self, place: PlaceRef<'tcx, Self::Value>)
-    -> OperandRef<'tcx, Self::Value>;
+        -> OperandRef<'tcx, Self::Value>;
 
     /// Called for Rvalue::Repeat when the elem is neither a ZST nor optimizable using memset.
     fn write_operand_repeatedly(
-        &mut self,
+        self,
         elem: OperandRef<'tcx, Self::Value>,
         count: u64,
         dest: PlaceRef<'tcx, Self::Value>,
-    );
+    ) -> Self;
+
+    //RustMeta => setting metadata
+    fn mark_cached_exchange_malloc(&self, exchange_malloc: Self::Value,  inner_ty_id: u64);
+    //fn mark_need_safe_house_copy(&self, intrinsic_inst: Self::Value);
+    fn mark_field_projection(&self, inst: Self::Value, field_idx: usize);
+    fn set_smart_pointer_type_on_call(&self, smp_api_call: Self::Value, inner_ty_id: u64);
+    fn mark_special_ty_alloca(&self, alloca: Self::Value, pure: bool);
+    fn project_smart_pointer_field(&self, val: Self::Value) -> Self::Value;
+    fn get_smart_pointer_shadow(&mut self, val: Self::Value) -> Self::Value;
+    fn copy_smart_pointers(&mut self, src: Self::Value, src_ty: Ty<'tcx>, dst: Self::Value, dst_ty: Ty<'tcx>, align: Align, flags: MemFlags);
 
     fn range_metadata(&mut self, load: Self::Value, range: WrappingRange);
     fn nonnull_metadata(&mut self, load: Self::Value);
@@ -224,7 +232,11 @@ pub trait BuilderMethods<'a, 'tcx>:
             return if signed { self.fptosi(x, dest_ty) } else { self.fptoui(x, dest_ty) };
         }
 
-        if signed { self.fptosi_sat(x, dest_ty) } else { self.fptoui_sat(x, dest_ty) }
+        if signed {
+            self.fptosi_sat(x, dest_ty)
+        } else {
+            self.fptoui_sat(x, dest_ty)
+        }
     }
 
     fn icmp(&mut self, op: IntPredicate, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
@@ -273,9 +285,8 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn set_personality_fn(&mut self, personality: Self::Value);
 
     // These are used by everyone except msvc
-    fn cleanup_landing_pad(&mut self, pers_fn: Self::Value) -> (Self::Value, Self::Value);
-    fn filter_landing_pad(&mut self, pers_fn: Self::Value) -> (Self::Value, Self::Value);
-    fn resume(&mut self, exn0: Self::Value, exn1: Self::Value);
+    fn cleanup_landing_pad(&mut self, ty: Self::Type, pers_fn: Self::Value) -> Self::Value;
+    fn resume(&mut self, exn: Self::Value);
 
     // These are used only by msvc
     fn cleanup_pad(&mut self, parent: Option<Self::Value>, args: &[Self::Value]) -> Self::Funclet;
@@ -324,7 +335,6 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn call(
         &mut self,
         llty: Self::Type,
-        fn_attrs: Option<&CodegenFnAttrs>,
         fn_abi: Option<&FnAbi<'tcx, Ty<'tcx>>>,
         llfn: Self::Value,
         args: &[Self::Value],

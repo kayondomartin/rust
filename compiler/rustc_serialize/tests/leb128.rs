@@ -3,7 +3,6 @@
 
 use rustc_serialize::leb128::*;
 use std::mem::MaybeUninit;
-use rustc_serialize::Decoder;
 
 macro_rules! impl_test_unsigned_leb128 {
     ($test_name:ident, $write_fn_name:ident, $read_fn_name:ident, $int_ty:ident) => {
@@ -29,12 +28,12 @@ macro_rules! impl_test_unsigned_leb128 {
                 stream.extend($write_fn_name(&mut buf, x));
             }
 
-            let mut decoder = rustc_serialize::opaque::MemDecoder::new(&stream, 0);
+            let mut position = 0;
             for &expected in &values {
-                let actual = $read_fn_name(&mut decoder);
+                let actual = $read_fn_name(&stream, &mut position);
                 assert_eq!(expected, actual);
             }
-            assert_eq!(stream.len(), decoder.position());
+            assert_eq!(stream.len(), position);
         }
     };
 }
@@ -75,12 +74,12 @@ macro_rules! impl_test_signed_leb128 {
                 stream.extend($write_fn_name(&mut buf, x));
             }
 
-            let mut decoder = rustc_serialize::opaque::MemDecoder::new(&stream, 0);
+            let mut position = 0;
             for &expected in &values {
-                let actual = $read_fn_name(&mut decoder);
+                let actual = $read_fn_name(&stream, &mut position);
                 assert_eq!(expected, actual);
             }
-            assert_eq!(stream.len(), decoder.position());
+            assert_eq!(stream.len(), position);
         }
     };
 }

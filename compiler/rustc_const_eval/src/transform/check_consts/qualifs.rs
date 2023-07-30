@@ -9,7 +9,7 @@ use rustc_middle::mir;
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, subst::SubstsRef, AdtDef, Ty};
 use rustc_trait_selection::traits::{
-    self, ImplSource, Obligation, ObligationCause, ObligationCtxt, SelectionContext,
+    self, ImplSource, Obligation, ObligationCause, SelectionContext,
 };
 
 use super::ConstCx;
@@ -153,12 +153,19 @@ impl Qualif for NeedsNonConstDrop {
             return false;
         }
 
+        let destruct = cx.tcx.require_lang_item(LangItem::Destruct, None);
+
         let obligation = Obligation::new(
-            cx.tcx,
-            ObligationCause::dummy_with_span(cx.body.span),
+            ObligationCause::dummy(),
             cx.param_env,
-            ty::TraitRef::from_lang_item(cx.tcx, LangItem::Destruct, cx.body.span, [ty])
-                .with_constness(ty::BoundConstness::ConstIfConst),
+            ty::Binder::dummy(ty::TraitPredicate {
+                trait_ref: ty::TraitRef {
+                    def_id: destruct,
+                    substs: cx.tcx.mk_substs_trait(ty, &[]),
+                },
+                constness: ty::BoundConstness::ConstIfConst,
+                polarity: ty::ImplPolarity::Positive,
+            }),
         );
 
         let infcx = cx.tcx.infer_ctxt().build();
@@ -172,7 +179,7 @@ impl Qualif for NeedsNonConstDrop {
 
         if !matches!(
             impl_src,
-            ImplSource::Builtin(_) | ImplSource::Param(_, ty::BoundConstness::ConstIfConst)
+            ImplSource::ConstDestruct(_) | ImplSource::Param(_, ty::BoundConstness::ConstIfConst)
         ) {
             // If our const destruct candidate is not ConstDestruct or implied by the param env,
             // then it's bad
@@ -184,10 +191,7 @@ impl Qualif for NeedsNonConstDrop {
         }
 
         // If we had any errors, then it's bad
-        let ocx = ObligationCtxt::new(&infcx);
-        ocx.register_obligations(impl_src.nested_obligations());
-        let errors = ocx.select_all_or_error();
-        !errors.is_empty()
+        !traits::fully_solve_obligations(&infcx, impl_src.nested_obligations()).is_empty()
     }
 
     fn in_adt_inherently<'tcx>(
@@ -220,10 +224,10 @@ impl Qualif for CustomEq {
 
     fn in_adt_inherently<'tcx>(
         cx: &ConstCx<'_, 'tcx>,
-        def: AdtDef<'tcx>,
+        adt: AdtDef<'tcx>,
         substs: SubstsRef<'tcx>,
     ) -> bool {
-        let ty = Ty::new_adt(cx.tcx, def, substs);
+        let ty = cx.tcx.mk_ty(ty::Adt(adt, substs));
         !ty.is_structural_eq_shallow(cx.tcx)
     }
 }
@@ -344,18 +348,11 @@ where
     };
 
     // Check the qualifs of the value of `const` items.
+    // FIXME(valtrees): check whether const qualifs should behave the same
+    // way for type and mir constants.
     let uneval = match constant.literal {
-        ConstantKind::Ty(ct)
-            if matches!(
-                ct.kind(),
-                ty::ConstKind::Param(_) | ty::ConstKind::Error(_) | ty::ConstKind::Value(_)
-            ) =>
-        {
-            None
-        }
-        ConstantKind::Ty(c) => {
-            bug!("expected ConstKind::Param or ConstKind::Value here, found {:?}", c)
-        }
+        ConstantKind::Ty(ct) if matches!(ct.kind(), ty::ConstKind::Param(_)) => None,
+        ConstantKind::Ty(c) => bug!("expected ConstKind::Param here, found {:?}", c),
         ConstantKind::Unevaluated(uv, _) => Some(uv),
         ConstantKind::Val(..) => None,
     };
@@ -367,8 +364,9 @@ where
         assert!(promoted.is_none() || Q::ALLOW_PROMOTED);
 
         // Don't peek inside trait associated constants.
-        if promoted.is_none() && cx.tcx.trait_of_item(def).is_none() {
-            let qualifs = cx.tcx.at(constant.span).mir_const_qualif(def);
+        if promoted.is_none() && cx.tcx.trait_of_item(def.did).is_none() {
+            assert_eq!(def.const_param_did, None, "expected associated const: {def:?}");
+            let qualifs = cx.tcx.at(constant.span).mir_const_qualif(def.did);
 
             if !Q::in_qualifs(&qualifs) {
                 return false;

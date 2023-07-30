@@ -36,7 +36,7 @@ fn initialize_unfilled() {
 }
 
 #[test]
-fn advance_filled() {
+fn addvance_filled() {
     let buf: &mut [_] = &mut [0; 16];
     let mut rbuf: BorrowedBuf<'_> = buf.into();
 

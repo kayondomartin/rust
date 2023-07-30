@@ -238,7 +238,7 @@ impl<K, V> HashMap<K, V, RandomState> {
     ///
     /// The hash map will be able to hold at least `capacity` elements without
     /// reallocating. This method is allowed to allocate for more elements than
-    /// `capacity`. If `capacity` is 0, the hash map will not allocate.
+    /// `capacity`. If `capacity` is 0, the hash set will not allocate.
     ///
     /// # Examples
     ///
@@ -623,27 +623,28 @@ impl<K, V, S> HashMap<K, V, S> {
     /// If the closure returns false, or panics, the element remains in the map and will not be
     /// yielded.
     ///
-    /// Note that `extract_if` lets you mutate every value in the filter closure, regardless of
+    /// Note that `drain_filter` lets you mutate every value in the filter closure, regardless of
     /// whether you choose to keep or remove it.
     ///
-    /// If the returned `ExtractIf` is not exhausted, e.g. because it is dropped without iterating
-    /// or the iteration short-circuits, then the remaining elements will be retained.
-    /// Use [`retain`] with a negated predicate if you do not need the returned iterator.
+    /// If the iterator is only partially consumed or not consumed at all, each of the remaining
+    /// elements will still be subjected to the closure and removed and dropped if it returns true.
     ///
-    /// [`retain`]: HashMap::retain
+    /// It is unspecified how many more elements will be subjected to the closure
+    /// if a panic occurs in the closure, or a panic occurs while dropping an element,
+    /// or if the `DrainFilter` value is leaked.
     ///
     /// # Examples
     ///
     /// Splitting a map into even and odd keys, reusing the original map:
     ///
     /// ```
-    /// #![feature(hash_extract_if)]
+    /// #![feature(hash_drain_filter)]
     /// use std::collections::HashMap;
     ///
     /// let mut map: HashMap<i32, i32> = (0..8).map(|x| (x, x)).collect();
-    /// let extracted: HashMap<i32, i32> = map.extract_if(|k, _v| k % 2 == 0).collect();
+    /// let drained: HashMap<i32, i32> = map.drain_filter(|k, _v| k % 2 == 0).collect();
     ///
-    /// let mut evens = extracted.keys().copied().collect::<Vec<_>>();
+    /// let mut evens = drained.keys().copied().collect::<Vec<_>>();
     /// let mut odds = map.keys().copied().collect::<Vec<_>>();
     /// evens.sort();
     /// odds.sort();
@@ -653,12 +654,12 @@ impl<K, V, S> HashMap<K, V, S> {
     /// ```
     #[inline]
     #[rustc_lint_query_instability]
-    #[unstable(feature = "hash_extract_if", issue = "59618")]
-    pub fn extract_if<F>(&mut self, pred: F) -> ExtractIf<'_, K, V, F>
+    #[unstable(feature = "hash_drain_filter", issue = "59618")]
+    pub fn drain_filter<F>(&mut self, pred: F) -> DrainFilter<'_, K, V, F>
     where
         F: FnMut(&K, &mut V) -> bool,
     {
-        ExtractIf { base: self.base.extract_if(pred) }
+        DrainFilter { base: self.base.drain_filter(pred) }
     }
 
     /// Retains only the elements specified by the predicate.
@@ -1445,6 +1446,7 @@ impl<'a, K, V> IterMut<'a, K, V> {
 /// (provided by the [`IntoIterator`] trait). See its documentation for more.
 ///
 /// [`into_iter`]: IntoIterator::into_iter
+/// [`IntoIterator`]: crate::iter::IntoIterator
 ///
 /// # Example
 ///
@@ -1577,29 +1579,28 @@ impl<'a, K, V> Drain<'a, K, V> {
 
 /// A draining, filtering iterator over the entries of a `HashMap`.
 ///
-/// This `struct` is created by the [`extract_if`] method on [`HashMap`].
+/// This `struct` is created by the [`drain_filter`] method on [`HashMap`].
 ///
-/// [`extract_if`]: HashMap::extract_if
+/// [`drain_filter`]: HashMap::drain_filter
 ///
 /// # Example
 ///
 /// ```
-/// #![feature(hash_extract_if)]
+/// #![feature(hash_drain_filter)]
 ///
 /// use std::collections::HashMap;
 ///
 /// let mut map = HashMap::from([
 ///     ("a", 1),
 /// ]);
-/// let iter = map.extract_if(|_k, v| *v % 2 == 0);
+/// let iter = map.drain_filter(|_k, v| *v % 2 == 0);
 /// ```
-#[unstable(feature = "hash_extract_if", issue = "59618")]
-#[must_use = "iterators are lazy and do nothing unless consumed"]
-pub struct ExtractIf<'a, K, V, F>
+#[unstable(feature = "hash_drain_filter", issue = "59618")]
+pub struct DrainFilter<'a, K, V, F>
 where
     F: FnMut(&K, &mut V) -> bool,
 {
-    base: base::ExtractIf<'a, K, V, F>,
+    base: base::DrainFilter<'a, K, V, F>,
 }
 
 /// A mutable iterator over the values of a `HashMap`.
@@ -2479,8 +2480,8 @@ where
     }
 }
 
-#[unstable(feature = "hash_extract_if", issue = "59618")]
-impl<K, V, F> Iterator for ExtractIf<'_, K, V, F>
+#[unstable(feature = "hash_drain_filter", issue = "59618")]
+impl<K, V, F> Iterator for DrainFilter<'_, K, V, F>
 where
     F: FnMut(&K, &mut V) -> bool,
 {
@@ -2496,16 +2497,16 @@ where
     }
 }
 
-#[unstable(feature = "hash_extract_if", issue = "59618")]
-impl<K, V, F> FusedIterator for ExtractIf<'_, K, V, F> where F: FnMut(&K, &mut V) -> bool {}
+#[unstable(feature = "hash_drain_filter", issue = "59618")]
+impl<K, V, F> FusedIterator for DrainFilter<'_, K, V, F> where F: FnMut(&K, &mut V) -> bool {}
 
-#[unstable(feature = "hash_extract_if", issue = "59618")]
-impl<'a, K, V, F> fmt::Debug for ExtractIf<'a, K, V, F>
+#[unstable(feature = "hash_drain_filter", issue = "59618")]
+impl<'a, K, V, F> fmt::Debug for DrainFilter<'a, K, V, F>
 where
     F: FnMut(&K, &mut V) -> bool,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ExtractIf").finish_non_exhaustive()
+        f.debug_struct("DrainFilter").finish_non_exhaustive()
     }
 }
 
@@ -2543,12 +2544,12 @@ impl<'a, K, V> Entry<'a, K, V> {
     /// ```
     /// use std::collections::HashMap;
     ///
-    /// let mut map = HashMap::new();
-    /// let value = "hoho";
+    /// let mut map: HashMap<&str, String> = HashMap::new();
+    /// let s = "hoho".to_string();
     ///
-    /// map.entry("poneyland").or_insert_with(|| value);
+    /// map.entry("poneyland").or_insert_with(|| s);
     ///
-    /// assert_eq!(map["poneyland"], "hoho");
+    /// assert_eq!(map["poneyland"], "hoho".to_string());
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -3160,9 +3161,8 @@ impl DefaultHasher {
     #[stable(feature = "hashmap_default_hasher", since = "1.13.0")]
     #[inline]
     #[allow(deprecated)]
-    #[rustc_const_unstable(feature = "const_hash", issue = "104061")]
     #[must_use]
-    pub const fn new() -> DefaultHasher {
+    pub fn new() -> DefaultHasher {
         DefaultHasher(SipHasher13::new_with_keys(0, 0))
     }
 }

@@ -7,16 +7,16 @@ use rustc_data_structures::{
 use rustc_middle::ty::{self, Ty};
 
 impl<'tcx> FnCtxt<'_, 'tcx> {
-    /// Performs type inference fallback, setting `FnCtxt::fallback_has_occurred`
-    /// if fallback has occurred.
-    pub(super) fn type_inference_fallback(&self) {
+    /// Performs type inference fallback, returning true if any fallback
+    /// occurs.
+    pub(super) fn type_inference_fallback(&self) -> bool {
         debug!(
             "type-inference-fallback start obligations: {:#?}",
             self.fulfillment_cx.borrow_mut().pending_obligations()
         );
 
         // All type checking constraints were added, try to fallback unsolved variables.
-        self.select_obligations_where_possible(|_| {});
+        self.select_obligations_where_possible(false, |_| {});
 
         debug!(
             "type-inference-fallback post selection obligations: {:#?}",
@@ -26,23 +26,24 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         // Check if we have any unsolved variables. If not, no need for fallback.
         let unsolved_variables = self.unsolved_variables();
         if unsolved_variables.is_empty() {
-            return;
+            return false;
         }
 
         let diverging_fallback = self.calculate_diverging_fallback(&unsolved_variables);
 
+        let mut fallback_has_occurred = false;
         // We do fallback in two passes, to try to generate
         // better error messages.
         // The first time, we do *not* replace opaque types.
         for ty in unsolved_variables {
             debug!("unsolved_variable = {:?}", ty);
-            self.fallback_if_possible(ty, &diverging_fallback);
+            fallback_has_occurred |= self.fallback_if_possible(ty, &diverging_fallback);
         }
 
         // We now see if we can make progress. This might cause us to
         // unify inference variables for opaque types, since we may
         // have unified some other type variables during the first
-        // phase of fallback. This means that we only replace
+        // phase of fallback.  This means that we only replace
         // inference variables with their underlying opaque types as a
         // last resort.
         //
@@ -62,7 +63,9 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         // If we had tried to fallback the opaque inference variable to `MyType`,
         // we will generate a confusing type-check error that does not explicitly
         // refer to opaque types.
-        self.select_obligations_where_possible(|_| {});
+        self.select_obligations_where_possible(fallback_has_occurred, |_| {});
+
+        fallback_has_occurred
     }
 
     // Tries to apply a fallback to `ty` if it is an unsolved variable.
@@ -76,15 +79,14 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
     //   (and the setting of `#![feature(never_type_fallback)]`).
     //
     // Fallback becomes very dubious if we have encountered
-    // type-checking errors. In that case, fallback to Error.
+    // type-checking errors.  In that case, fallback to Error.
     //
-    // Sets `FnCtxt::fallback_has_occurred` if fallback is performed
-    // during this call.
+    // The return value indicates whether fallback has occurred.
     fn fallback_if_possible(
         &self,
         ty: Ty<'tcx>,
         diverging_fallback: &FxHashMap<Ty<'tcx>, Ty<'tcx>>,
-    ) {
+    ) -> bool {
         // Careful: we do NOT shallow-resolve `ty`. We know that `ty`
         // is an unsolved variable, and we determine its fallback
         // based solely on how it was created, not what other type
@@ -104,12 +106,12 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         // type, `?T` is not considered unsolved, but `?I` is. The
         // same is true for float variables.)
         let fallback = match ty.kind() {
-            _ if let Some(e) = self.tainted_by_errors() => Ty::new_error(self.tcx,e),
+            _ if self.is_tainted_by_errors() => self.tcx.ty_error(),
             ty::Infer(ty::IntVar(_)) => self.tcx.types.i32,
             ty::Infer(ty::FloatVar(_)) => self.tcx.types.f64,
             _ => match diverging_fallback.get(&ty) {
                 Some(&fallback_ty) => fallback_ty,
-                None => return,
+                None => return false,
             },
         };
         debug!("fallback_if_possible(ty={:?}): defaulting to `{:?}`", ty, fallback);
@@ -120,7 +122,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
             .map(|origin| origin.span)
             .unwrap_or(rustc_span::DUMMY_SP);
         self.demand_eqtype(span, ty, fallback);
-        self.fallback_has_occurred.set(true);
+        true
     }
 
     /// The "diverging fallback" system is rather complicated. This is
@@ -136,7 +138,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
     /// constrained to have some other type).
     ///
     /// However, the fallback used to be `()` (before the `!` type was
-    /// added). Moreover, there are cases where the `!` type 'leaks
+    /// added).  Moreover, there are cases where the `!` type 'leaks
     /// out' from dead code into type variables that affect live
     /// code. The most common case is something like this:
     ///
@@ -149,7 +151,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
     /// ```
     ///
     /// Here, coercing the type `!` into `?M` will create a diverging
-    /// type variable `?X` where `?X <: ?M`. We also have that `?D <:
+    /// type variable `?X` where `?X <: ?M`.  We also have that `?D <:
     /// ?M`. If `?M` winds up unconstrained, then `?X` will
     /// fallback. If it falls back to `!`, then all the type variables
     /// will wind up equal to `!` -- this includes the type `?D`
@@ -185,7 +187,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
     ///
     /// The algorithm we use:
     /// * Identify all variables that are coerced *into* by a
-    ///   diverging variable. Do this by iterating over each
+    ///   diverging variable.  Do this by iterating over each
     ///   diverging, unsolved variable and finding all variables
     ///   reachable from there. Call that set `D`.
     /// * Walk over all unsolved, non-diverging variables, and find
@@ -195,6 +197,8 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         unsolved_variables: &[Ty<'tcx>],
     ) -> FxHashMap<Ty<'tcx>, Ty<'tcx>> {
         debug!("calculate_diverging_fallback({:?})", unsolved_variables);
+
+        let relationships = self.fulfillment_cx.borrow_mut().relationships().clone();
 
         // Construct a coercion graph where an edge `A -> B` indicates
         // a type variable is that is coerced
@@ -279,7 +283,9 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
             roots_reachable_from_non_diverging,
         );
 
+        debug!("inherited: {:#?}", self.inh.fulfillment_cx.borrow_mut().pending_obligations());
         debug!("obligations: {:#?}", self.fulfillment_cx.borrow_mut().pending_obligations());
+        debug!("relationships: {:#?}", relationships);
 
         // For each diverging variable, figure out whether it can
         // reach a member of N. If so, it falls back to `()`. Else
@@ -287,24 +293,24 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         let mut diverging_fallback = FxHashMap::default();
         diverging_fallback.reserve(diverging_vids.len());
         for &diverging_vid in &diverging_vids {
-            let diverging_ty = Ty::new_var(self.tcx, diverging_vid);
+            let diverging_ty = self.tcx.mk_ty_var(diverging_vid);
             let root_vid = self.root_var(diverging_vid);
             let can_reach_non_diverging = coercion_graph
                 .depth_first_search(root_vid)
                 .any(|n| roots_reachable_from_non_diverging.visited(n));
 
-            let mut found_infer_var_info = ty::InferVarInfo { self_in_trait: false, output: false };
+            let mut relationship = ty::FoundRelationships { self_in_trait: false, output: false };
 
-            for (vid, info) in self.inh.infer_var_info.borrow().iter() {
-                if self.infcx.root_var(*vid) == root_vid {
-                    found_infer_var_info.self_in_trait |= info.self_in_trait;
-                    found_infer_var_info.output |= info.output;
+            for (vid, rel) in relationships.iter() {
+                if self.root_var(*vid) == root_vid {
+                    relationship.self_in_trait |= rel.self_in_trait;
+                    relationship.output |= rel.output;
                 }
             }
 
-            if found_infer_var_info.self_in_trait && found_infer_var_info.output {
+            if relationship.self_in_trait && relationship.output {
                 // This case falls back to () to ensure that the code pattern in
-                // tests/ui/never_type/fallback-closure-ret.rs continues to
+                // src/test/ui/never_type/fallback-closure-ret.rs continues to
                 // compile when never_type_fallback is enabled.
                 //
                 // This rule is not readily explainable from first principles,
@@ -334,7 +340,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
                 diverging_fallback.insert(diverging_ty, self.tcx.types.unit);
             } else {
                 debug!("fallback to ! - all diverging: {:?}", diverging_vid);
-                diverging_fallback.insert(diverging_ty, Ty::new_diverging_default(self.tcx));
+                diverging_fallback.insert(diverging_ty, self.tcx.mk_diverging_default());
             }
         }
 

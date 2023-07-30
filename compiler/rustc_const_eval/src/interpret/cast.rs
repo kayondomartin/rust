@@ -1,10 +1,11 @@
 use std::assert_matches::assert_matches;
+use std::convert::TryFrom;
 
 use rustc_apfloat::ieee::{Double, Single};
 use rustc_apfloat::{Float, FloatConvert};
 use rustc_middle::mir::interpret::{InterpResult, PointerArithmetic, Scalar};
 use rustc_middle::mir::CastKind;
-use rustc_middle::ty::adjustment::PointerCoercion;
+use rustc_middle::ty::adjustment::PointerCast;
 use rustc_middle::ty::layout::{IntegerExt, LayoutOf, TyAndLayout};
 use rustc_middle::ty::{self, FloatTy, Ty, TypeAndMut};
 use rustc_target::abi::Integer;
@@ -14,8 +15,6 @@ use super::{
     util::ensure_monomorphic_enough, FnVal, ImmTy, Immediate, InterpCx, Machine, OpTy, PlaceTy,
 };
 
-use crate::fluent_generated as fluent;
-
 impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     pub fn cast(
         &mut self,
@@ -24,58 +23,57 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         cast_ty: Ty<'tcx>,
         dest: &PlaceTy<'tcx, M::Provenance>,
     ) -> InterpResult<'tcx> {
+        use rustc_middle::mir::CastKind::*;
         // FIXME: In which cases should we trigger UB when the source is uninit?
         match cast_kind {
-            CastKind::PointerCoercion(PointerCoercion::Unsize) => {
+            Pointer(PointerCast::Unsize) => {
                 let cast_ty = self.layout_of(cast_ty)?;
                 self.unsize_into(src, cast_ty, dest)?;
             }
 
-            CastKind::PointerExposeAddress => {
+            PointerExposeAddress => {
                 let src = self.read_immediate(src)?;
                 let res = self.pointer_expose_address_cast(&src, cast_ty)?;
                 self.write_immediate(res, dest)?;
             }
 
-            CastKind::PointerFromExposedAddress => {
+            PointerFromExposedAddress => {
                 let src = self.read_immediate(src)?;
                 let res = self.pointer_from_exposed_address_cast(&src, cast_ty)?;
                 self.write_immediate(res, dest)?;
             }
 
-            CastKind::IntToInt | CastKind::IntToFloat => {
+            IntToInt | IntToFloat => {
                 let src = self.read_immediate(src)?;
                 let res = self.int_to_int_or_float(&src, cast_ty)?;
                 self.write_immediate(res, dest)?;
             }
 
-            CastKind::FloatToFloat | CastKind::FloatToInt => {
+            FloatToFloat | FloatToInt => {
                 let src = self.read_immediate(src)?;
                 let res = self.float_to_float_or_int(&src, cast_ty)?;
                 self.write_immediate(res, dest)?;
             }
 
-            CastKind::FnPtrToPtr | CastKind::PtrToPtr => {
+            FnPtrToPtr | PtrToPtr => {
                 let src = self.read_immediate(&src)?;
                 let res = self.ptr_to_ptr(&src, cast_ty)?;
                 self.write_immediate(res, dest)?;
             }
 
-            CastKind::PointerCoercion(
-                PointerCoercion::MutToConstPointer | PointerCoercion::ArrayToPointer,
-            ) => {
+            Pointer(PointerCast::MutToConstPointer | PointerCast::ArrayToPointer) => {
                 // These are NOPs, but can be wide pointers.
                 let v = self.read_immediate(src)?;
                 self.write_immediate(*v, dest)?;
             }
 
-            CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer) => {
-                // All reifications must be monomorphic, bail out otherwise.
-                ensure_monomorphic_enough(*self.tcx, src.layout.ty)?;
-
+            Pointer(PointerCast::ReifyFnPointer) => {
                 // The src operand does not matter, just its type
                 match *src.layout.ty.kind() {
                     ty::FnDef(def_id, substs) => {
+                        // All reifications must be monomorphic, bail out otherwise.
+                        ensure_monomorphic_enough(*self.tcx, src.layout.ty)?;
+
                         let instance = ty::Instance::resolve_for_fn_ptr(
                             *self.tcx,
                             self.param_env,
@@ -91,7 +89,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 }
             }
 
-            CastKind::PointerCoercion(PointerCoercion::UnsafeFnPointer) => {
+            Pointer(PointerCast::UnsafeFnPointer) => {
                 let src = self.read_immediate(src)?;
                 match cast_ty.kind() {
                     ty::FnPtr(_) => {
@@ -102,13 +100,13 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 }
             }
 
-            CastKind::PointerCoercion(PointerCoercion::ClosureFnPointer(_)) => {
-                // All reifications must be monomorphic, bail out otherwise.
-                ensure_monomorphic_enough(*self.tcx, src.layout.ty)?;
-
+            Pointer(PointerCast::ClosureFnPointer(_)) => {
                 // The src operand does not matter, just its type
                 match *src.layout.ty.kind() {
                     ty::Closure(def_id, substs) => {
+                        // All reifications must be monomorphic, bail out otherwise.
+                        ensure_monomorphic_enough(*self.tcx, src.layout.ty)?;
+
                         let instance = ty::Instance::resolve_closure(
                             *self.tcx,
                             def_id,
@@ -123,38 +121,18 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 }
             }
 
-            CastKind::DynStar => {
+            DynStar => {
                 if let ty::Dynamic(data, _, ty::DynStar) = cast_ty.kind() {
                     // Initial cast from sized to dyn trait
                     let vtable = self.get_vtable_ptr(src.layout.ty, data.principal())?;
                     let vtable = Scalar::from_maybe_pointer(vtable, self);
                     let data = self.read_immediate(src)?.to_scalar();
-                    let _assert_pointer_like = data.to_pointer(self)?;
+                    let _assert_pointer_sized = data.to_pointer(self)?;
                     let val = Immediate::ScalarPair(data, vtable);
                     self.write_immediate(val, dest)?;
                 } else {
                     bug!()
                 }
-            }
-
-            CastKind::Transmute => {
-                assert!(src.layout.is_sized());
-                assert!(dest.layout.is_sized());
-                if src.layout.size != dest.layout.size {
-                    let src_bytes = src.layout.size.bytes();
-                    let dest_bytes = dest.layout.size.bytes();
-                    let src_ty = format!("{}", src.layout.ty);
-                    let dest_ty = format!("{}", dest.layout.ty);
-                    throw_ub_custom!(
-                        fluent::const_eval_invalid_transmute,
-                        src_bytes = src_bytes,
-                        dest_bytes = dest_bytes,
-                        src = src_ty,
-                        dest = dest_ty,
-                    );
-                }
-
-                self.copy_op(src, dest, /*allow_transmute*/ true)?;
             }
         }
         Ok(())
@@ -254,7 +232,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         // First cast to usize.
         let scalar = src.to_scalar();
         let addr = self.cast_from_int_like(scalar, src.layout, self.tcx.types.usize)?;
-        let addr = addr.to_target_usize(self)?;
+        let addr = addr.to_machine_usize(self)?;
 
         // Then turn address into pointer.
         let ptr = M::ptr_from_addr_cast(&self, addr)?;
@@ -335,8 +313,6 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         }
     }
 
-    /// `src` is a *pointer to* a `source_ty`, and in `dest` we should store a pointer to th same
-    /// data at type `cast_ty`.
     fn unsize_into_ptr(
         &mut self,
         src: &OpTy<'tcx, M::Provenance>,
@@ -353,14 +329,11 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             (&ty::Array(_, length), &ty::Slice(_)) => {
                 let ptr = self.read_scalar(src)?;
                 // u64 cast is from usize to u64, which is always good
-                let val = Immediate::new_slice(
-                    ptr,
-                    length.eval_target_usize(*self.tcx, self.param_env),
-                    self,
-                );
+                let val =
+                    Immediate::new_slice(ptr, length.eval_usize(*self.tcx, self.param_env), self);
                 self.write_immediate(val, dest)
             }
-            (ty::Dynamic(data_a, _, ty::Dyn), ty::Dynamic(data_b, _, ty::Dyn)) => {
+            (&ty::Dynamic(ref data_a, ..), &ty::Dynamic(ref data_b, ..)) => {
                 let val = self.read_immediate(src)?;
                 if data_a.principal() == data_b.principal() {
                     // A NOP cast that doesn't actually change anything, should be allowed even with mismatching vtables.
@@ -370,29 +343,21 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 let old_vptr = old_vptr.to_pointer(self)?;
                 let (ty, old_trait) = self.get_ptr_vtable(old_vptr)?;
                 if old_trait != data_a.principal() {
-                    throw_ub_custom!(fluent::const_eval_upcast_mismatch);
+                    throw_ub_format!("upcast on a pointer whose vtable does not match its type");
                 }
                 let new_vptr = self.get_vtable_ptr(ty, data_b.principal())?;
                 self.write_immediate(Immediate::new_dyn_trait(old_data, new_vptr, self), dest)
             }
-            (_, &ty::Dynamic(data, _, ty::Dyn)) => {
+            (_, &ty::Dynamic(ref data, _, ty::Dyn)) => {
                 // Initial cast from sized to dyn trait
                 let vtable = self.get_vtable_ptr(src_pointee_ty, data.principal())?;
                 let ptr = self.read_scalar(src)?;
                 let val = Immediate::new_dyn_trait(ptr, vtable, &*self.tcx);
                 self.write_immediate(val, dest)
             }
-            _ => {
-                // Do not ICE if we are not monomorphic enough.
-                ensure_monomorphic_enough(*self.tcx, src.layout.ty)?;
-                ensure_monomorphic_enough(*self.tcx, cast_ty)?;
 
-                span_bug!(
-                    self.cur_span(),
-                    "invalid pointer unsizing {:?} -> {:?}",
-                    src.layout.ty,
-                    cast_ty
-                )
+            _ => {
+                span_bug!(self.cur_span(), "invalid unsizing {:?} -> {:?}", src.layout.ty, cast_ty)
             }
         }
     }
@@ -430,18 +395,12 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 }
                 Ok(())
             }
-            _ => {
-                // Do not ICE if we are not monomorphic enough.
-                ensure_monomorphic_enough(*self.tcx, src.layout.ty)?;
-                ensure_monomorphic_enough(*self.tcx, cast_ty.ty)?;
-
-                span_bug!(
-                    self.cur_span(),
-                    "unsize_into: invalid conversion: {:?} -> {:?}",
-                    src.layout,
-                    dest.layout
-                )
-            }
+            _ => span_bug!(
+                self.cur_span(),
+                "unsize_into: invalid conversion: {:?} -> {:?}",
+                src.layout,
+                dest.layout
+            ),
         }
     }
 }

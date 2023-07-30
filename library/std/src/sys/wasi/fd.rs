@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use super::err2io;
-use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut, SeekFrom};
+use crate::io::{self, IoSlice, IoSliceMut, SeekFrom};
 use crate::mem;
 use crate::net::Shutdown;
 use crate::os::wasi::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
@@ -46,22 +46,6 @@ impl WasiFd {
         unsafe { wasi::fd_read(self.as_raw_fd() as wasi::Fd, iovec(bufs)).map_err(err2io) }
     }
 
-    pub fn read_buf(&self, mut buf: BorrowedCursor<'_>) -> io::Result<()> {
-        unsafe {
-            let bufs = [wasi::Iovec {
-                buf: buf.as_mut().as_mut_ptr() as *mut u8,
-                buf_len: buf.capacity(),
-            }];
-            match wasi::fd_read(self.as_raw_fd() as wasi::Fd, &bufs) {
-                Ok(n) => {
-                    buf.advance(n);
-                    Ok(())
-                }
-                Err(e) => Err(err2io(e)),
-            }
-        }
-    }
-
     pub fn write(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         unsafe { wasi::fd_write(self.as_raw_fd() as wasi::Fd, ciovec(bufs)).map_err(err2io) }
     }
@@ -96,7 +80,7 @@ impl WasiFd {
         unsafe { wasi::fd_sync(self.as_raw_fd() as wasi::Fd).map_err(err2io) }
     }
 
-    pub(crate) fn advise(&self, offset: u64, len: u64, advice: wasi::Advice) -> io::Result<()> {
+    pub fn advise(&self, offset: u64, len: u64, advice: wasi::Advice) -> io::Result<()> {
         unsafe {
             wasi::fd_advise(self.as_raw_fd() as wasi::Fd, offset, len, advice).map_err(err2io)
         }
@@ -179,7 +163,7 @@ impl WasiFd {
         }
     }
 
-    pub(crate) fn filestat_get(&self) -> io::Result<wasi::Filestat> {
+    pub fn filestat_get(&self) -> io::Result<wasi::Filestat> {
         unsafe { wasi::fd_filestat_get(self.as_raw_fd() as wasi::Fd).map_err(err2io) }
     }
 
@@ -199,7 +183,7 @@ impl WasiFd {
         unsafe { wasi::fd_filestat_set_size(self.as_raw_fd() as wasi::Fd, size).map_err(err2io) }
     }
 
-    pub(crate) fn path_filestat_get(
+    pub fn path_filestat_get(
         &self,
         flags: wasi::Lookupflags,
         path: &str,
@@ -275,14 +259,12 @@ impl WasiFd {
 }
 
 impl AsInner<OwnedFd> for WasiFd {
-    #[inline]
     fn as_inner(&self) -> &OwnedFd {
         &self.fd
     }
 }
 
 impl AsInnerMut<OwnedFd> for WasiFd {
-    #[inline]
     fn as_inner_mut(&mut self) -> &mut OwnedFd {
         &mut self.fd
     }
@@ -307,7 +289,6 @@ impl AsFd for WasiFd {
 }
 
 impl AsRawFd for WasiFd {
-    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }

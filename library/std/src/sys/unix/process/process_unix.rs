@@ -15,12 +15,9 @@ use crate::sys::weak::raw_syscall;
 
 #[cfg(any(
     target_os = "macos",
-    target_os = "watchos",
-    target_os = "tvos",
     target_os = "freebsd",
     all(target_os = "linux", target_env = "gnu"),
     all(target_os = "linux", target_env = "musl"),
-    target_os = "nto",
 ))]
 use crate::sys::weak::weak;
 
@@ -30,40 +27,8 @@ use libc::RTP_ID as pid_t;
 #[cfg(not(target_os = "vxworks"))]
 use libc::{c_int, pid_t};
 
-#[cfg(not(any(
-    target_os = "vxworks",
-    target_os = "l4re",
-    target_os = "tvos",
-    target_os = "watchos",
-)))]
+#[cfg(not(any(target_os = "vxworks", target_os = "l4re")))]
 use libc::{gid_t, uid_t};
-
-cfg_if::cfg_if! {
-    if #[cfg(all(target_os = "nto", target_env = "nto71"))] {
-        use crate::thread;
-        use libc::{c_char, posix_spawn_file_actions_t, posix_spawnattr_t};
-        use crate::time::Duration;
-        use crate::sync::LazyLock;
-        // Get smallest amount of time we can sleep.
-        // Return a common value if it cannot be determined.
-        fn get_clock_resolution() -> Duration {
-            static MIN_DELAY: LazyLock<Duration, fn() -> Duration> = LazyLock::new(|| {
-                let mut mindelay = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-                if unsafe { libc::clock_getres(libc::CLOCK_MONOTONIC, &mut mindelay) } == 0
-                {
-                    Duration::from_nanos(mindelay.tv_nsec as u64)
-                } else {
-                    Duration::from_millis(1)
-                }
-            });
-            *MIN_DELAY
-        }
-        // Arbitrary minimum sleep duration for retrying fork/spawn
-        const MIN_FORKSPAWN_SLEEP: Duration = Duration::from_nanos(1);
-        // Maximum duration of sleeping before giving up and returning an error
-        const MAX_FORKSPAWN_SLEEP: Duration = Duration::from_millis(1000);
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -91,6 +56,7 @@ impl Command {
         if let Some(ret) = self.posix_spawn(&theirs, envp.as_ref())? {
             return Ok((ret, ours));
         }
+
         let (input, output) = sys::pipe::anon_pipe()?;
 
         // Whatever happens after the fork is almost for sure going to touch or
@@ -100,15 +66,14 @@ impl Command {
         //
         // Note that as soon as we're done with the fork there's no need to hold
         // a lock any more because the parent won't do anything and the child is
-        // in its own process. Thus the parent drops the lock guard immediately.
-        // The child calls `mem::forget` to leak the lock, which is crucial because
-        // releasing a lock is not async-signal-safe.
+        // in its own process. Thus the parent drops the lock guard while the child
+        // forgets it to avoid unlocking it on a new thread, which would be invalid.
         let env_lock = sys::os::env_read_lock();
         let (pid, pidfd) = unsafe { self.do_fork()? };
 
         if pid == 0 {
             crate::panic::always_abort();
-            mem::forget(env_lock); // avoid non-async-signal-safe unlocking
+            mem::forget(env_lock);
             drop(input);
             let Err(err) = unsafe { self.do_exec(theirs, envp.as_ref()) };
             let errno = err.raw_os_error().unwrap_or(libc::EINVAL) as u32;
@@ -167,71 +132,11 @@ impl Command {
         }
     }
 
-    pub fn output(&mut self) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
-        let (proc, pipes) = self.spawn(Stdio::MakePipe, false)?;
-        crate::sys_common::process::wait_with_output(proc, pipes)
-    }
-
-    // WatchOS and TVOS headers mark the `fork`/`exec*` functions with
-    // `__WATCHOS_PROHIBITED __TVOS_PROHIBITED`, and indicate that the
-    // `posix_spawn*` functions should be used instead. It isn't entirely clear
-    // what `PROHIBITED` means here (e.g. if calls to these functions are
-    // allowed to exist in dead code), but it sounds bad, so we go out of our
-    // way to avoid that all-together.
-    #[cfg(any(target_os = "tvos", target_os = "watchos"))]
-    const ERR_APPLE_TV_WATCH_NO_FORK_EXEC: Error = io::const_io_error!(
-        ErrorKind::Unsupported,
-        "`fork`+`exec`-based process spawning is not supported on this target",
-    );
-
-    #[cfg(any(target_os = "tvos", target_os = "watchos"))]
-    unsafe fn do_fork(&mut self) -> Result<(pid_t, pid_t), io::Error> {
-        return Err(Self::ERR_APPLE_TV_WATCH_NO_FORK_EXEC);
-    }
-
     // Attempts to fork the process. If successful, returns Ok((0, -1))
     // in the child, and Ok((child_pid, -1)) in the parent.
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "watchos",
-        target_os = "tvos",
-        all(target_os = "nto", target_env = "nto71"),
-    )))]
+    #[cfg(not(target_os = "linux"))]
     unsafe fn do_fork(&mut self) -> Result<(pid_t, pid_t), io::Error> {
         cvt(libc::fork()).map(|res| (res, -1))
-    }
-
-    // On QNX Neutrino, fork can fail with EBADF in case "another thread might have opened
-    // or closed a file descriptor while the fork() was occurring".
-    // Documentation says "... or try calling fork() again". This is what we do here.
-    // See also https://www.qnx.com/developers/docs/7.1/#com.qnx.doc.neutrino.lib_ref/topic/f/fork.html
-    #[cfg(all(target_os = "nto", target_env = "nto71"))]
-    unsafe fn do_fork(&mut self) -> Result<(pid_t, pid_t), io::Error> {
-        use crate::sys::os::errno;
-
-        let mut delay = MIN_FORKSPAWN_SLEEP;
-
-        loop {
-            let r = libc::fork();
-            if r == -1 as libc::pid_t && errno() as libc::c_int == libc::EBADF {
-                if delay < get_clock_resolution() {
-                    // We cannot sleep this short (it would be longer).
-                    // Yield instead.
-                    thread::yield_now();
-                } else if delay < MAX_FORKSPAWN_SLEEP {
-                    thread::sleep(delay);
-                } else {
-                    return Err(io::const_io_error!(
-                        ErrorKind::WouldBlock,
-                        "forking returned EBADF too often",
-                    ));
-                }
-                delay *= 2;
-                continue;
-            } else {
-                return cvt(r).map(|res| (res, -1));
-            }
-        }
     }
 
     // Attempts to fork the process. If successful, returns Ok((0, -1))
@@ -367,7 +272,6 @@ impl Command {
     // allocation). Instead we just close it manually. This will never
     // have the drop glue anyway because this code never returns (the
     // child will either exec() or invoke libc::exit)
-    #[cfg(not(any(target_os = "tvos", target_os = "watchos")))]
     unsafe fn do_exec(
         &mut self,
         stdio: ChildPipes,
@@ -474,23 +378,11 @@ impl Command {
         Err(io::Error::last_os_error())
     }
 
-    #[cfg(any(target_os = "tvos", target_os = "watchos"))]
-    unsafe fn do_exec(
-        &mut self,
-        _stdio: ChildPipes,
-        _maybe_envp: Option<&CStringArray>,
-    ) -> Result<!, io::Error> {
-        return Err(Self::ERR_APPLE_TV_WATCH_NO_FORK_EXEC);
-    }
-
     #[cfg(not(any(
         target_os = "macos",
-        target_os = "tvos",
-        target_os = "watchos",
         target_os = "freebsd",
         all(target_os = "linux", target_env = "gnu"),
         all(target_os = "linux", target_env = "musl"),
-        target_os = "nto",
     )))]
     fn posix_spawn(
         &mut self,
@@ -504,13 +396,9 @@ impl Command {
     // directly.
     #[cfg(any(
         target_os = "macos",
-        // FIXME: `target_os = "ios"`?
-        target_os = "tvos",
-        target_os = "watchos",
         target_os = "freebsd",
         all(target_os = "linux", target_env = "gnu"),
         all(target_os = "linux", target_env = "musl"),
-        target_os = "nto",
     ))]
     fn posix_spawn(
         &mut self,
@@ -542,45 +430,6 @@ impl Command {
             }
         }
 
-        // On QNX Neutrino, posix_spawnp can fail with EBADF in case "another thread might have opened
-        // or closed a file descriptor while the posix_spawn() was occurring".
-        // Documentation says "... or try calling posix_spawn() again". This is what we do here.
-        // See also http://www.qnx.com/developers/docs/7.1/#com.qnx.doc.neutrino.lib_ref/topic/p/posix_spawn.html
-        #[cfg(all(target_os = "nto", target_env = "nto71"))]
-        unsafe fn retrying_libc_posix_spawnp(
-            pid: *mut pid_t,
-            file: *const c_char,
-            file_actions: *const posix_spawn_file_actions_t,
-            attrp: *const posix_spawnattr_t,
-            argv: *const *mut c_char,
-            envp: *const *mut c_char,
-        ) -> io::Result<i32> {
-            let mut delay = MIN_FORKSPAWN_SLEEP;
-            loop {
-                match libc::posix_spawnp(pid, file, file_actions, attrp, argv, envp) {
-                    libc::EBADF => {
-                        if delay < get_clock_resolution() {
-                            // We cannot sleep this short (it would be longer).
-                            // Yield instead.
-                            thread::yield_now();
-                        } else if delay < MAX_FORKSPAWN_SLEEP {
-                            thread::sleep(delay);
-                        } else {
-                            return Err(io::const_io_error!(
-                                ErrorKind::WouldBlock,
-                                "posix_spawnp returned EBADF too often",
-                            ));
-                        }
-                        delay *= 2;
-                        continue;
-                    }
-                    r => {
-                        return Ok(r);
-                    }
-                }
-            }
-        }
-
         // Solaris, glibc 2.29+, and musl 1.24+ can set a new working directory,
         // and maybe others will gain this non-POSIX function too. We'll check
         // for this weak symbol as soon as it's needed, so we can return early
@@ -593,7 +442,7 @@ impl Command {
         }
         let addchdir = match self.get_cwd() {
             Some(cwd) => {
-                if cfg!(any(target_os = "macos", target_os = "tvos", target_os = "watchos")) {
+                if cfg!(target_os = "macos") {
                     // There is a bug in macOS where a relative executable
                     // path like "../myprogram" will cause `posix_spawn` to
                     // successfully launch the program, but erroneously return
@@ -700,25 +549,14 @@ impl Command {
             // Make sure we synchronize access to the global `environ` resource
             let _env_lock = sys::os::env_read_lock();
             let envp = envp.map(|c| c.as_ptr()).unwrap_or_else(|| *sys::os::environ() as *const _);
-
-            #[cfg(not(target_os = "nto"))]
-            let spawn_fn = libc::posix_spawnp;
-            #[cfg(target_os = "nto")]
-            let spawn_fn = retrying_libc_posix_spawnp;
-
-            let spawn_res = spawn_fn(
+            cvt_nz(libc::posix_spawnp(
                 &mut p.pid,
                 self.get_program_cstr().as_ptr(),
                 file_actions.0.as_ptr(),
                 attrs.0.as_ptr(),
                 self.get_argv().as_ptr() as *const _,
                 envp as *const _,
-            );
-
-            #[cfg(target_os = "nto")]
-            let spawn_res = spawn_res?;
-
-            cvt_nz(spawn_res)?;
+            ))?;
             Ok(Some(p))
         }
     }
@@ -762,9 +600,12 @@ impl Process {
     pub fn kill(&mut self) -> io::Result<()> {
         // If we've already waited on this process then the pid can be recycled
         // and used for another process, and we probably shouldn't be killing
-        // random processes, so return Ok because the process has exited already.
+        // random processes, so just return an error.
         if self.status.is_some() {
-            Ok(())
+            Err(io::const_io_error!(
+                ErrorKind::InvalidInput,
+                "invalid argument: can't kill an exited process",
+            ))
         } else {
             cvt(unsafe { libc::kill(self.pid, libc::SIGKILL) }).map(drop)
         }
@@ -819,11 +660,11 @@ impl ExitStatus {
     }
 
     pub fn exit_ok(&self) -> Result<(), ExitStatusError> {
-        // This assumes that WIFEXITED(status) && WEXITSTATUS==0 corresponds to status==0. This is
+        // This assumes that WIFEXITED(status) && WEXITSTATUS==0 corresponds to status==0.  This is
         // true on all actual versions of Unix, is widely assumed, and is specified in SuS
-        // https://pubs.opengroup.org/onlinepubs/9699919799/functions/wait.html. If it is not
+        // https://pubs.opengroup.org/onlinepubs/9699919799/functions/wait.html .  If it is not
         // true for a platform pretending to be Unix, the tests (our doctests, and also
-        // process_unix/tests.rs) will spot it. `ExitStatusError::code` assumes this too.
+        // procsss_unix/tests.rs) will spot it.  `ExitStatusError::code` assumes this too.
         match NonZero_c_int::try_from(self.0) {
             /* was nonzero */ Ok(failure) => Err(ExitStatusError(failure)),
             /* was zero, couldn't convert */ Err(_) => Ok(()),
@@ -876,47 +717,29 @@ fn signal_string(signal: i32) -> &'static str {
         libc::SIGILL => " (SIGILL)",
         libc::SIGTRAP => " (SIGTRAP)",
         libc::SIGABRT => " (SIGABRT)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGBUS => " (SIGBUS)",
         libc::SIGFPE => " (SIGFPE)",
         libc::SIGKILL => " (SIGKILL)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGUSR1 => " (SIGUSR1)",
         libc::SIGSEGV => " (SIGSEGV)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGUSR2 => " (SIGUSR2)",
         libc::SIGPIPE => " (SIGPIPE)",
         libc::SIGALRM => " (SIGALRM)",
         libc::SIGTERM => " (SIGTERM)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGCHLD => " (SIGCHLD)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGCONT => " (SIGCONT)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGSTOP => " (SIGSTOP)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGTSTP => " (SIGTSTP)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGTTIN => " (SIGTTIN)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGTTOU => " (SIGTTOU)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGURG => " (SIGURG)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGXCPU => " (SIGXCPU)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGXFSZ => " (SIGXFSZ)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGVTALRM => " (SIGVTALRM)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGPROF => " (SIGPROF)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGWINCH => " (SIGWINCH)",
-        #[cfg(not(any(target_os = "haiku", target_os = "l4re")))]
+        #[cfg(not(target_os = "haiku"))]
         libc::SIGIO => " (SIGIO)",
-        #[cfg(target_os = "haiku")]
-        libc::SIGPOLL => " (SIGPOLL)",
-        #[cfg(not(target_os = "l4re"))]
         libc::SIGSYS => " (SIGSYS)",
         // For information on Linux signals, run `man 7 signal`
         #[cfg(all(
@@ -929,7 +752,7 @@ fn signal_string(signal: i32) -> &'static str {
             )
         ))]
         libc::SIGSTKFLT => " (SIGSTKFLT)",
-        #[cfg(any(target_os = "linux", target_os = "nto"))]
+        #[cfg(target_os = "linux")]
         libc::SIGPWR => " (SIGPWR)",
         #[cfg(any(
             target_os = "macos",
@@ -938,8 +761,7 @@ fn signal_string(signal: i32) -> &'static str {
             target_os = "freebsd",
             target_os = "netbsd",
             target_os = "openbsd",
-            target_os = "dragonfly",
-            target_os = "nto",
+            target_os = "dragonfly"
         ))]
         libc::SIGEMT => " (SIGEMT)",
         #[cfg(any(

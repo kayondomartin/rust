@@ -3,10 +3,10 @@ use rustc_codegen_ssa::debuginfo::{
     wants_c_like_enum_debuginfo,
 };
 use rustc_hir::def::CtorKind;
-use rustc_index::IndexSlice;
+use rustc_index::vec::IndexVec;
 use rustc_middle::{
     bug,
-    mir::GeneratorLayout,
+    mir::{Field, GeneratorLayout, GeneratorSavedLocal},
     ty::{
         self,
         layout::{IntegerExt, LayoutOf, PrimitiveExt, TyAndLayout},
@@ -14,9 +14,7 @@ use rustc_middle::{
     },
 };
 use rustc_span::Symbol;
-use rustc_target::abi::{
-    FieldIdx, HasDataLayout, Integer, Primitive, TagEncoding, VariantIdx, Variants,
-};
+use rustc_target::abi::{HasDataLayout, Integer, Primitive, TagEncoding, VariantIdx, Variants};
 use std::borrow::Cow;
 
 use crate::{
@@ -93,7 +91,9 @@ fn build_c_style_enum_di_node<'ll, 'tcx>(
             tag_base_type(cx, enum_type_and_layout),
             enum_adt_def.discriminants(cx.tcx).map(|(variant_index, discr)| {
                 let name = Cow::from(enum_adt_def.variant(variant_index).name.as_str());
-                (name, discr.val)
+                // Is there anything we can do to support 128-bit C-Style enums?
+                let value = discr.val as u64;
+                (name, value)
             }),
             containing_scope,
         ),
@@ -124,8 +124,7 @@ fn tag_base_type<'ll, 'tcx>(
                 Primitive::Int(t, _) => t,
                 Primitive::F32 => Integer::I32,
                 Primitive::F64 => Integer::I64,
-                // FIXME(erikdesjardins): handle non-default addrspace ptr sizes
-                Primitive::Pointer(_) => {
+                Primitive::Pointer => {
                     // If the niche is the NULL value of a reference, then `discr_enum_ty` will be
                     // a RawPtr. CodeView doesn't know what to do with enums whose base type is a
                     // pointer so we fix this up to just be `usize`.
@@ -148,11 +147,14 @@ fn tag_base_type<'ll, 'tcx>(
 /// This is a helper function and does not register anything in the type map by itself.
 ///
 /// `variants` is an iterator of (discr-value, variant-name).
+///
+// NOTE: Handling of discriminant values is somewhat inconsistent. They can appear as u128,
+//       u64, and i64. Here everything gets mapped to i64 because that's what LLVM's API expects.
 fn build_enumeration_type_di_node<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     type_name: &str,
     base_type: Ty<'tcx>,
-    enumerators: impl Iterator<Item = (Cow<'tcx, str>, u128)>,
+    enumerators: impl Iterator<Item = (Cow<'tcx, str>, u64)>,
     containing_scope: &'ll DIType,
 ) -> &'ll DIType {
     let is_unsigned = match base_type.kind() {
@@ -160,21 +162,20 @@ fn build_enumeration_type_di_node<'ll, 'tcx>(
         ty::Uint(_) => true,
         _ => bug!("build_enumeration_type_di_node() called with non-integer tag type."),
     };
-    let (size, align) = cx.size_and_align_of(base_type);
 
     let enumerator_di_nodes: SmallVec<Option<&'ll DIType>> = enumerators
         .map(|(name, value)| unsafe {
-            let value = [value as u64, (value >> 64) as u64];
             Some(llvm::LLVMRustDIBuilderCreateEnumerator(
                 DIB(cx),
                 name.as_ptr().cast(),
                 name.len(),
-                value.as_ptr(),
-                size.bits() as libc::c_uint,
+                value as i64,
                 is_unsigned,
             ))
         })
         .collect();
+
+    let (size, align) = cx.size_and_align_of(base_type);
 
     unsafe {
         llvm::LLVMRustDIBuilderCreateEnumerationType(
@@ -272,10 +273,9 @@ fn build_enum_variant_struct_type_di_node<'ll, 'tcx>(
         |cx, struct_type_di_node| {
             (0..variant_layout.fields.count())
                 .map(|field_index| {
-                    let field_name = if variant_def.ctor_kind() != Some(CtorKind::Fn) {
+                    let field_name = if variant_def.ctor_kind != CtorKind::Fn {
                         // Fields have names
-                        let field = &variant_def.fields[FieldIdx::from_usize(field_index)];
-                        Cow::from(field.name.as_str())
+                        Cow::from(variant_def.fields[field_index].name.as_str())
                     } else {
                         // Tuple-like
                         super::tuple_field_name(field_index)
@@ -323,7 +323,8 @@ pub fn build_generator_variant_struct_type_di_node<'ll, 'tcx>(
     generator_type_and_layout: TyAndLayout<'tcx>,
     generator_type_di_node: &'ll DIType,
     generator_layout: &GeneratorLayout<'tcx>,
-    common_upvar_names: &IndexSlice<FieldIdx, Symbol>,
+    state_specific_upvar_names: &IndexVec<GeneratorSavedLocal, Option<Symbol>>,
+    common_upvar_names: &[String],
 ) -> &'ll DIType {
     let variant_name = GeneratorSubsts::variant_name(variant_index);
     let unique_type_id = UniqueTypeId::for_enum_variant_struct_type(
@@ -355,8 +356,8 @@ pub fn build_generator_variant_struct_type_di_node<'ll, 'tcx>(
             let state_specific_fields: SmallVec<_> = (0..variant_layout.fields.count())
                 .map(|field_index| {
                     let generator_saved_local = generator_layout.variant_fields[variant_index]
-                        [FieldIdx::from_usize(field_index)];
-                    let field_name_maybe = generator_layout.field_names[generator_saved_local];
+                        [Field::from_usize(field_index)];
+                    let field_name_maybe = state_specific_upvar_names[generator_saved_local];
                     let field_name = field_name_maybe
                         .as_ref()
                         .map(|s| Cow::from(s.as_str()))
@@ -379,13 +380,12 @@ pub fn build_generator_variant_struct_type_di_node<'ll, 'tcx>(
             // Fields that are common to all states
             let common_fields: SmallVec<_> = generator_substs
                 .prefix_tys()
-                .zip(common_upvar_names)
                 .enumerate()
-                .map(|(index, (upvar_ty, upvar_name))| {
+                .map(|(index, upvar_ty)| {
                     build_field_di_node(
                         cx,
                         variant_struct_type_di_node,
-                        upvar_name.as_str(),
+                        &common_upvar_names[index],
                         cx.size_and_align_of(upvar_ty),
                         generator_type_and_layout.fields.offset(index),
                         DIFlags::FlagZero,

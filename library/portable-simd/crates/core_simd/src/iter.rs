@@ -10,7 +10,6 @@ macro_rules! impl_traits {
         where
             LaneCount<LANES>: SupportedLaneCount,
         {
-            #[inline]
             fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
                 iter.fold(Simd::splat(0 as $type), Add::add)
             }
@@ -20,7 +19,6 @@ macro_rules! impl_traits {
         where
             LaneCount<LANES>: SupportedLaneCount,
         {
-            #[inline]
             fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
                 iter.fold(Simd::splat(1 as $type), Mul::mul)
             }
@@ -30,7 +28,6 @@ macro_rules! impl_traits {
         where
             LaneCount<LANES>: SupportedLaneCount,
         {
-            #[inline]
             fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
                 iter.fold(Simd::splat(0 as $type), Add::add)
             }
@@ -40,7 +37,6 @@ macro_rules! impl_traits {
         where
             LaneCount<LANES>: SupportedLaneCount,
         {
-            #[inline]
             fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
                 iter.fold(Simd::splat(1 as $type), Mul::mul)
             }

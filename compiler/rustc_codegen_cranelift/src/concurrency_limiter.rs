@@ -25,53 +25,28 @@ impl ConcurrencyLimiter {
             .clone()
             .into_helper_thread(move |token| {
                 let mut state = state_helper.lock().unwrap();
-                match token {
-                    Ok(token) => {
-                        state.add_new_token(token);
-                        available_token_condvar_helper.notify_one();
-                    }
-                    Err(err) => {
-                        state.poison(format!("failed to acquire jobserver token: {}", err));
-                        // Notify all threads waiting for a token to give them a chance to
-                        // gracefully exit.
-                        available_token_condvar_helper.notify_all();
-                    }
-                }
+                state.add_new_token(token.unwrap());
+                available_token_condvar_helper.notify_one();
             })
             .unwrap();
         ConcurrencyLimiter {
             helper_thread: Some(helper_thread),
             state,
-            available_token_condvar,
+            available_token_condvar: Arc::new(Condvar::new()),
             finished: false,
         }
     }
 
-    pub(super) fn acquire(&mut self, handler: &rustc_errors::Handler) -> ConcurrencyLimiterToken {
+    pub(super) fn acquire(&mut self) -> ConcurrencyLimiterToken {
         let mut state = self.state.lock().unwrap();
         loop {
             state.assert_invariants();
 
-            match state.try_start_job() {
-                Ok(true) => {
-                    return ConcurrencyLimiterToken {
-                        state: self.state.clone(),
-                        available_token_condvar: self.available_token_condvar.clone(),
-                    };
-                }
-                Ok(false) => {}
-                Err(err) => {
-                    // An error happened when acquiring the token. Raise it as fatal error.
-                    // Make sure to drop the mutex guard first to prevent poisoning the mutex.
-                    drop(state);
-                    if let Some(err) = err {
-                        handler.fatal(err).raise();
-                    } else {
-                        // The error was already emitted, but compilation continued. Raise a silent
-                        // fatal error.
-                        rustc_errors::FatalError.raise();
-                    }
-                }
+            if state.try_start_job() {
+                return ConcurrencyLimiterToken {
+                    state: self.state.clone(),
+                    available_token_condvar: self.available_token_condvar.clone(),
+                };
             }
 
             self.helper_thread.as_mut().unwrap().request_token();
@@ -125,22 +100,13 @@ mod state {
         pending_jobs: usize,
         active_jobs: usize,
 
-        poisoned: bool,
-        stored_error: Option<String>,
-
         // None is used to represent the implicit token, Some to represent explicit tokens
         tokens: Vec<Option<Acquired>>,
     }
 
     impl ConcurrencyLimiterState {
         pub(super) fn new(pending_jobs: usize) -> Self {
-            ConcurrencyLimiterState {
-                pending_jobs,
-                active_jobs: 0,
-                poisoned: false,
-                stored_error: None,
-                tokens: vec![None],
-            }
+            ConcurrencyLimiterState { pending_jobs, active_jobs: 0, tokens: vec![None] }
         }
 
         pub(super) fn assert_invariants(&self) {
@@ -161,18 +127,14 @@ mod state {
             self.drop_excess_capacity();
         }
 
-        pub(super) fn try_start_job(&mut self) -> Result<bool, Option<String>> {
-            if self.poisoned {
-                return Err(self.stored_error.take());
-            }
-
+        pub(super) fn try_start_job(&mut self) -> bool {
             if self.active_jobs < self.tokens.len() {
                 // Using existing token
                 self.job_started();
-                return Ok(true);
+                return true;
             }
 
-            Ok(false)
+            false
         }
 
         pub(super) fn job_started(&mut self) {
@@ -197,11 +159,6 @@ mod state {
             self.assert_invariants();
             self.drop_excess_capacity();
             self.assert_invariants();
-        }
-
-        pub(super) fn poison(&mut self, error: String) {
-            self.poisoned = true;
-            self.stored_error = Some(error);
         }
 
         fn drop_excess_capacity(&mut self) {

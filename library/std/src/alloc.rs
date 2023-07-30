@@ -93,7 +93,7 @@ pub use alloc_crate::alloc::*;
 ///
 /// ```rust
 /// use std::alloc::{System, GlobalAlloc, Layout};
-/// use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+/// use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 ///
 /// struct Counter;
 ///
@@ -103,14 +103,14 @@ pub use alloc_crate::alloc::*;
 ///     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
 ///         let ret = System.alloc(layout);
 ///         if !ret.is_null() {
-///             ALLOCATED.fetch_add(layout.size(), Relaxed);
+///             ALLOCATED.fetch_add(layout.size(), SeqCst);
 ///         }
 ///         ret
 ///     }
 ///
 ///     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
 ///         System.dealloc(ptr, layout);
-///         ALLOCATED.fetch_sub(layout.size(), Relaxed);
+///         ALLOCATED.fetch_sub(layout.size(), SeqCst);
 ///     }
 /// }
 ///
@@ -118,7 +118,7 @@ pub use alloc_crate::alloc::*;
 /// static A: Counter = Counter;
 ///
 /// fn main() {
-///     println!("allocated bytes before main: {}", ALLOCATED.load(Relaxed));
+///     println!("allocated bytes before main: {}", ALLOCATED.load(SeqCst));
 /// }
 /// ```
 ///
@@ -338,7 +338,7 @@ fn default_alloc_error_hook(layout: Layout) {
 
     #[allow(unused_unsafe)]
     if unsafe { __rust_alloc_error_handler_should_panic != 0 } {
-        panic!("memory allocation of {} bytes failed", layout.size());
+        panic!("memory allocation of {} bytes failed\n", layout.size());
     } else {
         rtprintpanic!("memory allocation of {} bytes failed\n", layout.size());
     }

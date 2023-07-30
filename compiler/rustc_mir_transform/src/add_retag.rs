@@ -10,6 +10,16 @@ use rustc_middle::ty::{self, Ty, TyCtxt};
 
 pub struct AddRetag;
 
+/// Determines whether this place is "stable": Whether, if we evaluate it again
+/// after the assignment, we can be sure to obtain the same place value.
+/// (Concurrent accesses by other threads are no problem as these are anyway non-atomic
+/// copies.  Data races are UB.)
+fn is_stable(place: PlaceRef<'_>) -> bool {
+    // Which place this evaluates to can change with any memory write,
+    // so cannot assume deref to be stable.
+    !place.has_deref()
+}
+
 /// Determine whether this type may contain a reference (or box), and thus needs retagging.
 /// We will only recurse `depth` times into Tuples/ADTs to bound the cost of this.
 fn may_contain_reference<'tcx>(ty: Ty<'tcx>, depth: u32, tcx: TyCtxt<'tcx>) -> bool {
@@ -28,7 +38,6 @@ fn may_contain_reference<'tcx>(ty: Ty<'tcx>, depth: u32, tcx: TyCtxt<'tcx>) -> b
         // References
         ty::Ref(..) => true,
         ty::Adt(..) if ty.is_box() => true,
-        ty::Adt(adt, _) if Some(adt.did()) == tcx.lang_items().ptr_unique() => true,
         // Compound types: recurse
         ty::Array(ty, _) | ty::Slice(ty) => {
             // This does not branch so we keep the depth the same.
@@ -60,9 +69,21 @@ impl<'tcx> MirPass<'tcx> for AddRetag {
         let basic_blocks = body.basic_blocks.as_mut();
         let local_decls = &body.local_decls;
         let needs_retag = |place: &Place<'tcx>| {
-            !place.has_deref() // we're not really interested in stores to "outside" locations, they are hard to keep track of anyway
+            // FIXME: Instead of giving up for unstable places, we should introduce
+            // a temporary and retag on that.
+            is_stable(place.as_ref())
                 && may_contain_reference(place.ty(&*local_decls, tcx).ty, /*depth*/ 3, tcx)
                 && !local_decls[place.local].is_deref_temp()
+        };
+        let place_base_raw = |place: &Place<'tcx>| {
+            // If this is a `Deref`, get the type of what we are deref'ing.
+            if place.has_deref() {
+                let ty = &local_decls[place.local].ty;
+                ty.is_unsafe_ptr()
+            } else {
+                // Not a deref, and thus not raw.
+                false
+            }
         };
 
         // PART 1
@@ -87,7 +108,7 @@ impl<'tcx> MirPass<'tcx> for AddRetag {
         }
 
         // PART 2
-        // Retag return values of functions.
+        // Retag return values of functions.  Also escape-to-raw the argument of `drop`.
         // We collect the return destinations because we cannot mutate while iterating.
         let returns = basic_blocks
             .iter_mut()
@@ -101,7 +122,7 @@ impl<'tcx> MirPass<'tcx> for AddRetag {
                     }
 
                     // `Drop` is also a call, but it doesn't return anything so we are good.
-                    TerminatorKind::Drop { .. } => None,
+                    TerminatorKind::Drop { .. } | TerminatorKind::DropAndReplace { .. } => None,
                     // Not a block ending in a Call -> ignore.
                     _ => None,
                 }
@@ -119,25 +140,30 @@ impl<'tcx> MirPass<'tcx> for AddRetag {
         }
 
         // PART 3
-        // Add retag after assignments where data "enters" this function: the RHS is behind a deref and the LHS is not.
+        // Add retag after assignment.
         for block_data in basic_blocks {
-            // We want to insert statements as we iterate. To this end, we
+            // We want to insert statements as we iterate.  To this end, we
             // iterate backwards using indices.
             for i in (0..block_data.statements.len()).rev() {
                 let (retag_kind, place) = match block_data.statements[i].kind {
+                    // Retag-as-raw after escaping to a raw pointer, if the referent
+                    // is not already a raw pointer.
+                    StatementKind::Assign(box (lplace, Rvalue::AddressOf(_, ref rplace)))
+                        if !place_base_raw(rplace) =>
+                    {
+                        (RetagKind::Raw, lplace)
+                    }
                     // Retag after assignments of reference type.
                     StatementKind::Assign(box (ref place, ref rvalue)) if needs_retag(place) => {
-                        let add_retag = match rvalue {
-                            // Ptr-creating operations already do their own internal retagging, no
-                            // need to also add a retag statement.
-                            Rvalue::Ref(..) | Rvalue::AddressOf(..) => false,
-                            _ => true,
+                        let kind = match rvalue {
+                            Rvalue::Ref(_, borrow_kind, _)
+                                if borrow_kind.allows_two_phase_borrow() =>
+                            {
+                                RetagKind::TwoPhase
+                            }
+                            _ => RetagKind::Default,
                         };
-                        if add_retag {
-                            (RetagKind::Default, *place)
-                        } else {
-                            continue;
-                        }
+                        (kind, *place)
                     }
                     // Do nothing for the rest
                     _ => continue,

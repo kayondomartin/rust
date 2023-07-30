@@ -4,8 +4,9 @@ use crate::{
     common::CodegenCx,
     debuginfo::{
         metadata::{
+            closure_saved_names_of_captured_variables,
             enums::tag_base_type,
-            file_metadata, size_and_align_of, type_di_node,
+            file_metadata, generator_layout_and_saved_local_names, size_and_align_of, type_di_node,
             type_map::{self, Stub, StubInfo, UniqueTypeId},
             unknown_file_metadata, DINodeCreationResult, SmallVec, NO_GENERICS,
             UNKNOWN_LINE_NUMBER,
@@ -155,8 +156,8 @@ pub(super) fn build_generator_di_node<'ll, 'tcx>(
             DIFlags::FlagZero,
         ),
         |cx, generator_type_di_node| {
-            let generator_layout =
-                cx.tcx.optimized_mir(generator_def_id).generator_layout().unwrap();
+            let (generator_layout, state_specific_upvar_names) =
+                generator_layout_and_saved_local_names(cx.tcx, generator_def_id);
 
             let Variants::Multiple { tag_encoding: TagEncoding::Direct, ref variants, .. } = generator_type_and_layout.variants else {
                 bug!(
@@ -166,7 +167,7 @@ pub(super) fn build_generator_di_node<'ll, 'tcx>(
             };
 
             let common_upvar_names =
-                cx.tcx.closure_saved_names_of_captured_variables(generator_def_id);
+                closure_saved_names_of_captured_variables(cx.tcx, generator_def_id);
 
             // Build variant struct types
             let variant_struct_type_di_nodes: SmallVec<_> = variants
@@ -195,6 +196,7 @@ pub(super) fn build_generator_di_node<'ll, 'tcx>(
                                 generator_type_and_layout,
                                 generator_type_di_node,
                                 generator_layout,
+                                &state_specific_upvar_names,
                                 &common_upvar_names,
                             ),
                         source_info,
@@ -411,7 +413,13 @@ fn build_enum_variant_member_di_node<'ll, 'tcx>(
             enum_type_and_layout.size.bits(),
             enum_type_and_layout.align.abi.bits() as u32,
             Size::ZERO.bits(),
-            discr_value.opt_single_val().map(|value| cx.const_u128(value)),
+            discr_value.opt_single_val().map(|value| {
+                // NOTE(eddyb) do *NOT* remove this assert, until
+                // we pass the full 128-bit value to LLVM, otherwise
+                // truncation will be silent and remain undetected.
+                assert_eq!(value as u64 as u128, value);
+                cx.const_u64(value as u64)
+            }),
             DIFlags::FlagZero,
             variant_member_info.variant_struct_type_di_node,
         )
@@ -431,7 +439,6 @@ fn build_enum_variant_member_di_node<'ll, 'tcx>(
 ///         DW_TAG_structure_type            (type of variant 1)
 ///         DW_TAG_structure_type            (type of variant 2)
 ///         DW_TAG_structure_type            (type of variant 3)
-/// ```
 struct VariantMemberInfo<'a, 'll> {
     variant_index: VariantIdx,
     variant_name: Cow<'a, str>,

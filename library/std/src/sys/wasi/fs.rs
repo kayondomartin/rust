@@ -104,7 +104,7 @@ impl FileAttr {
         Ok(SystemTime::from_wasi_timestamp(self.meta.ctim))
     }
 
-    pub(crate) fn as_wasi(&self) -> &wasi::Filestat {
+    pub fn as_wasi(&self) -> &wasi::Filestat {
         &self.meta
     }
 }
@@ -142,7 +142,7 @@ impl FileType {
         self.bits == wasi::FILETYPE_SYMBOLIC_LINK
     }
 
-    pub(crate) fn bits(&self) -> wasi::Filetype {
+    pub fn bits(&self) -> wasi::Filetype {
         self.bits
     }
 }
@@ -441,7 +441,7 @@ impl File {
     }
 
     pub fn read_buf(&self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
-        self.fd.read_buf(cursor)
+        crate::io::default_read_buf(|buf| self.read(buf), cursor)
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
@@ -498,7 +498,6 @@ impl File {
 }
 
 impl AsInner<WasiFd> for File {
-    #[inline]
     fn as_inner(&self) -> &WasiFd {
         &self.fd
     }
@@ -523,7 +522,6 @@ impl AsFd for File {
 }
 
 impl AsRawFd for File {
-    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }

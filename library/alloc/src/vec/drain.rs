@@ -16,7 +16,7 @@ use super::Vec;
 ///
 /// ```
 /// let mut v = vec![0, 1, 2];
-/// let iter: std::vec::Drain<'_, _> = v.drain(..);
+/// let iter: std::vec::Drain<_> = v.drain(..);
 /// ```
 #[stable(feature = "drain", since = "1.6.0")]
 pub struct Drain<
@@ -112,7 +112,9 @@ impl<'a, T, A: Allocator> Drain<'a, T, A> {
             let unyielded_ptr = this.iter.as_slice().as_ptr();
 
             // ZSTs have no identity, so we don't need to move them around.
-            if !T::IS_ZST {
+            let needs_move = mem::size_of::<T>() != 0;
+
+            if needs_move {
                 let start_ptr = source_vec.as_mut_ptr().add(start);
 
                 // memmove back unyielded elements
@@ -195,7 +197,7 @@ impl<T, A: Allocator> Drop for Drain<'_, T, A> {
             }
         }
 
-        let iter = mem::take(&mut self.iter);
+        let iter = mem::replace(&mut self.iter, (&mut []).iter());
         let drop_len = iter.len();
 
         let mut vec = self.vec;
@@ -221,9 +223,9 @@ impl<T, A: Allocator> Drop for Drain<'_, T, A> {
         }
 
         // as_slice() must only be called when iter.len() is > 0 because
-        // it also gets touched by vec::Splice which may turn it into a dangling pointer
-        // which would make it and the vec pointer point to different allocations which would
-        // lead to invalid pointer arithmetic below.
+        // vec::Splice modifies vec::Drain fields and may grow the vec which would invalidate
+        // the iterator's internal pointers. Creating a reference to deallocated memory
+        // is invalid even when it is zero-length
         let drop_ptr = iter.as_slice().as_ptr();
 
         unsafe {

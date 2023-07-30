@@ -2,7 +2,6 @@
 
 use crate::fmt;
 use crate::marker::{PhantomData, Unpin};
-use crate::ptr;
 
 /// A `RawWaker` allows the implementor of a task executor to create a [`Waker`]
 /// which provides customized wakeup behavior.
@@ -105,7 +104,7 @@ pub struct RawWakerVTable {
     /// pointer.
     wake_by_ref: unsafe fn(*const ()),
 
-    /// This function gets called when a [`Waker`] gets dropped.
+    /// This function gets called when a [`RawWaker`] gets dropped.
     ///
     /// The implementation of this function must make sure to release any
     /// resources that are associated with this instance of a [`RawWaker`] and
@@ -152,7 +151,7 @@ impl RawWakerVTable {
     ///
     /// # `drop`
     ///
-    /// This function gets called when a [`Waker`] gets dropped.
+    /// This function gets called when a [`RawWaker`] gets dropped.
     ///
     /// The implementation of this function must make sure to release any
     /// resources that are associated with this instance of a [`RawWaker`] and
@@ -175,7 +174,6 @@ impl RawWakerVTable {
 /// Currently, `Context` only serves to provide access to a [`&Waker`](Waker)
 /// which can be used to wake the current task.
 #[stable(feature = "futures_api", since = "1.36.0")]
-#[lang = "Context"]
 pub struct Context<'a> {
     waker: &'a Waker,
     // Ensure we future-proof against variance changes by forcing
@@ -183,9 +181,6 @@ pub struct Context<'a> {
     // are contravariant while return-position lifetimes are
     // covariant).
     _marker: PhantomData<fn(&'a ()) -> &'a ()>,
-    // Ensure `Context` is `!Send` and `!Sync` in order to allow
-    // for future `!Send` and / or `!Sync` fields.
-    _marker2: PhantomData<*mut ()>,
 }
 
 impl<'a> Context<'a> {
@@ -195,7 +190,7 @@ impl<'a> Context<'a> {
     #[must_use]
     #[inline]
     pub const fn from_waker(waker: &'a Waker) -> Self {
-        Context { waker, _marker: PhantomData, _marker2: PhantomData }
+        Context { waker, _marker: PhantomData }
     }
 
     /// Returns a reference to the [`Waker`] for the current task.
@@ -233,7 +228,7 @@ impl fmt::Debug for Context<'_> {
 ///
 /// [`Future::poll()`]: core::future::Future::poll
 /// [`Poll::Pending`]: core::task::Poll::Pending
-#[cfg_attr(not(doc), repr(transparent))] // work around https://github.com/rust-lang/rust/issues/66401
+#[repr(transparent)]
 #[stable(feature = "futures_api", since = "1.36.0")]
 pub struct Waker {
     waker: RawWaker,
@@ -321,45 +316,6 @@ impl Waker {
     #[rustc_const_unstable(feature = "const_waker", issue = "102012")]
     pub const unsafe fn from_raw(waker: RawWaker) -> Waker {
         Waker { waker }
-    }
-
-    /// Creates a new `Waker` that does nothing when `wake` is called.
-    ///
-    /// This is mostly useful for writing tests that need a [`Context`] to poll
-    /// some futures, but are not expecting those futures to wake the waker or
-    /// do not need to do anything specific if it happens.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(noop_waker)]
-    ///
-    /// use std::future::Future;
-    /// use std::task;
-    ///
-    /// let waker = task::Waker::noop();
-    /// let mut cx = task::Context::from_waker(&waker);
-    ///
-    /// let mut future = Box::pin(async { 10 });
-    /// assert_eq!(future.as_mut().poll(&mut cx), task::Poll::Ready(10));
-    /// ```
-    #[inline]
-    #[must_use]
-    #[unstable(feature = "noop_waker", issue = "98286")]
-    pub const fn noop() -> Waker {
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            // Cloning just returns a new no-op raw waker
-            |_| RAW,
-            // `wake` does nothing
-            |_| {},
-            // `wake_by_ref` does nothing
-            |_| {},
-            // Dropping does nothing as we don't allocate anything
-            |_| {},
-        );
-        const RAW: RawWaker = RawWaker::new(ptr::null(), &VTABLE);
-
-        Waker { waker: RAW }
     }
 
     /// Get a reference to the underlying [`RawWaker`].

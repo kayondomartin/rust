@@ -1,10 +1,10 @@
-use crate::errors;
 use crate::mir::operand::OperandRef;
 use crate::traits::*;
 use rustc_middle::mir;
 use rustc_middle::mir::interpret::{ConstValue, ErrorHandled};
 use rustc_middle::ty::layout::HasTyCtxt;
 use rustc_middle::ty::{self, Ty};
+use rustc_span::source_map::Span;
 use rustc_target::abi::Abi;
 
 use super::FunctionCx;
@@ -42,56 +42,27 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         };
 
         self.cx.tcx().const_eval_resolve(ty::ParamEnv::reveal_all(), uv, None).map_err(|err| {
-            match err {
-                ErrorHandled::Reported(_) => {
-                    self.cx.tcx().sess.emit_err(errors::ErroneousConstant { span: constant.span });
-                }
-                ErrorHandled::TooGeneric => {
-                    self.cx
-                        .tcx()
-                        .sess
-                        .diagnostic()
-                        .emit_bug(errors::PolymorphicConstantTooGeneric { span: constant.span });
-                }
-            }
+            self.cx.tcx().sess.span_err(constant.span, "erroneous constant encountered");
             err
         })
-    }
-
-    /// This is a convenience helper for `simd_shuffle_indices`. It has the precondition
-    /// that the given `constant` is an `ConstantKind::Unevaluated` and must be convertible to
-    /// a `ValTree`. If you want a more general version of this, talk to `wg-const-eval` on zulip.
-    pub fn eval_unevaluated_mir_constant_to_valtree(
-        &self,
-        constant: &mir::Constant<'tcx>,
-    ) -> Result<Option<ty::ValTree<'tcx>>, ErrorHandled> {
-        let uv = match constant.literal {
-            mir::ConstantKind::Unevaluated(uv, _) => uv.shrink(),
-            other => span_bug!(constant.span, "{other:#?}"),
-        };
-        let uv = self.monomorphize(uv);
-        self.cx.tcx().const_eval_resolve_for_typeck(
-            ty::ParamEnv::reveal_all(),
-            uv,
-            Some(constant.span),
-        )
     }
 
     /// process constant containing SIMD shuffle indices
     pub fn simd_shuffle_indices(
         &mut self,
         bx: &Bx,
-        constant: &mir::Constant<'tcx>,
+        span: Span,
+        ty: Ty<'tcx>,
+        constant: Result<ConstValue<'tcx>, ErrorHandled>,
     ) -> (Bx::Value, Ty<'tcx>) {
-        let ty = self.monomorphize(constant.ty());
-        let val = self
-            .eval_unevaluated_mir_constant_to_valtree(constant)
-            .ok()
-            .flatten()
+        constant
             .map(|val| {
                 let field_ty = ty.builtin_index().unwrap();
-                let values: Vec<_> = val
-                    .unwrap_branch()
+                let c = mir::ConstantKind::from_value(val, ty);
+                let values: Vec<_> = bx
+                    .tcx()
+                    .destructure_mir_constant(ty::ParamEnv::reveal_all(), c)
+                    .fields
                     .iter()
                     .map(|field| {
                         if let Some(prim) = field.try_to_scalar() {
@@ -105,14 +76,15 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         }
                     })
                     .collect();
-                bx.const_struct(&values, false)
+                let llval = bx.const_struct(&values, false);
+                (llval, c.ty())
             })
-            .unwrap_or_else(|| {
-                bx.tcx().sess.emit_err(errors::ShuffleIndicesEvaluation { span: constant.span });
+            .unwrap_or_else(|_| {
+                bx.tcx().sess.span_err(span, "could not evaluate shuffle_indices at compile time");
                 // We've errored, so we don't have to produce working code.
+                let ty = self.monomorphize(ty);
                 let llty = bx.backend_type(bx.layout_of(ty));
-                bx.const_undef(llty)
-            });
-        (val, ty)
+                (bx.const_undef(llty), ty)
+            })
     }
 }

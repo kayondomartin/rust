@@ -1,8 +1,9 @@
 #![allow(rustc::usage_of_ty_tykind)]
 
-use std::cmp::Ordering;
+use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::{fmt, hash};
 
+use crate::DebruijnIndex;
 use crate::FloatTy;
 use crate::HashStableContext;
 use crate::IntTy;
@@ -10,7 +11,6 @@ use crate::Interner;
 use crate::TyDecoder;
 use crate::TyEncoder;
 use crate::UintTy;
-use crate::{DebruijnIndex, DebugWithInfcx, InferCtxtLike, OptWithInfcx};
 
 use self::RegionKind::*;
 use self::TyKind::*;
@@ -19,34 +19,31 @@ use rustc_data_structures::stable_hasher::HashStable;
 use rustc_serialize::{Decodable, Decoder, Encodable};
 
 /// Specifies how a trait object is represented.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[derive(Encodable, Decodable, HashStable_Generic)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    Encodable,
+    Decodable,
+    HashStable_Generic
+)]
 pub enum DynKind {
     /// An unsized `dyn Trait` object
     Dyn,
     /// A sized `dyn* Trait` object
     ///
-    /// These objects are represented as a `(data, vtable)` pair where `data` is a value of some
-    /// ptr-sized and ptr-aligned dynamically determined type `T` and `vtable` is a pointer to the
-    /// vtable of `impl T for Trait`. This allows a `dyn*` object to be treated agnostically with
+    /// These objects are represented as a `(data, vtable)` pair where `data` is a ptr-sized value
+    /// (often a pointer to the real object, but not necessarily) and `vtable` is a pointer to
+    /// the vtable for `dyn* Trait`. The representation is essentially the same as `&dyn Trait`
+    /// or similar, but the drop function included in the vtable is responsible for freeing the
+    /// underlying storage if needed. This allows a `dyn*` object to be treated agnostically with
     /// respect to whether it points to a `Box<T>`, `Rc<T>`, etc.
     DynStar,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[derive(Encodable, Decodable, HashStable_Generic)]
-pub enum AliasKind {
-    /// A projection `<Type as Trait>::AssocType`.
-    /// Can get normalized away if monomorphic enough.
-    Projection,
-    Inherent,
-    /// An opaque type (usually from `impl Trait` in type aliases or function return types)
-    /// Can only be normalized away in RevealAll mode
-    Opaque,
-    /// A type alias that actually checks its trait bounds.
-    /// Currently only used if the type alias references opaque types.
-    /// Can always be normalized away.
-    Weak,
 }
 
 /// Defines the kinds of types used by the type system.
@@ -167,40 +164,27 @@ pub enum TyKind<I: Interner> {
     /// ```
     GeneratorWitness(I::BinderListTy),
 
-    /// A type representing the types stored inside a generator.
-    /// This should only appear as part of the `GeneratorSubsts`.
-    ///
-    /// Unlike upvars, the witness can reference lifetimes from
-    /// inside of the generator itself. To deal with them in
-    /// the type of the generator, we convert them to higher ranked
-    /// lifetimes bound by the witness itself.
-    ///
-    /// This variant is only using when `drop_tracking_mir` is set.
-    /// This contains the `DefId` and the `SubstsRef` of the generator.
-    /// The actual witness types are computed on MIR by the `mir_generator_witnesses` query.
-    ///
-    /// Looking at the following example, the witness for this generator
-    /// may end up as something like `for<'a> [Vec<i32>, &'a Vec<i32>]`:
-    ///
-    /// ```ignore UNSOLVED (ask @compiler-errors, should this error? can we just swap the yields?)
-    /// #![feature(generators)]
-    /// |a| {
-    ///     let x = &vec![3];
-    ///     yield a;
-    ///     yield x[0];
-    /// }
-    /// # ;
-    /// ```
-    GeneratorWitnessMIR(I::DefId, I::SubstsRef),
-
     /// The never type `!`.
     Never,
 
     /// A tuple type. For example, `(i32, bool)`.
     Tuple(I::ListTy),
 
-    /// A projection or opaque type. Both of these types
-    Alias(AliasKind, I::AliasTy),
+    /// The projection of an associated type. For example,
+    /// `<T as Trait<..>>::N`.
+    Projection(I::ProjectionTy),
+
+    /// Opaque (`impl Trait`) type found in a return type.
+    ///
+    /// The `DefId` comes either from
+    /// * the `impl Trait` ast::Ty node,
+    /// * or the `type Foo = impl Trait` declaration
+    ///
+    /// For RPIT the substitutions are for the generics of the function,
+    /// while for TAIT it is used for the generic parameters of the alias.
+    ///
+    /// During codegen, `tcx.type_of(def_id)` can be used to get the underlying type.
+    Opaque(I::DefId, I::SubstsRef),
 
     /// A type parameter; for example, `T` in `fn f<T>(x: T) {}`.
     Param(I::ParamTy),
@@ -212,10 +196,6 @@ pub enum TyKind<I: Interner> {
     /// `for<'a, T> &'a (): Trait<T>` and then convert the introduced bound variables
     /// back to inference variables in a new inference context when inside of the query.
     ///
-    /// It is conventional to render anonymous bound types like `^N` or `^D_N`,
-    /// where `N` is the bound variable's anonymous index into the binder, and
-    /// `D` is the debruijn index, or totally omitted if the debruijn index is zero.
-    ///
     /// See the `rustc-dev-guide` for more details about
     /// [higher-ranked trait bounds][1] and [canonical queries][2].
     ///
@@ -225,12 +205,6 @@ pub enum TyKind<I: Interner> {
 
     /// A placeholder type, used during higher ranked subtyping to instantiate
     /// bound variables.
-    ///
-    /// It is conventional to render anonymous placeholer types like `!N` or `!U_N`,
-    /// where `N` is the placeholder variable's anonymous index (which corresponds
-    /// to the bound variable's index from the binder from which it was instantiated),
-    /// and `U` is the universe index in which it is instantiated, or totally omitted
-    /// if the universe index is zero.
     Placeholder(I::PlaceholderType),
 
     /// A type variable used during type checking.
@@ -278,13 +252,13 @@ const fn tykind_discriminant<I: Interner>(value: &TyKind<I>) -> usize {
         GeneratorWitness(_) => 17,
         Never => 18,
         Tuple(_) => 19,
-        Alias(_, _) => 20,
-        Param(_) => 21,
-        Bound(_, _) => 22,
-        Placeholder(_) => 23,
-        Infer(_) => 24,
-        Error(_) => 25,
-        GeneratorWitnessMIR(_, _) => 26,
+        Projection(_) => 20,
+        Opaque(_, _) => 21,
+        Param(_) => 22,
+        Bound(_, _) => 23,
+        Placeholder(_) => 24,
+        Infer(_) => 25,
+        Error(_) => 26,
     }
 }
 
@@ -294,28 +268,28 @@ impl<I: Interner> Clone for TyKind<I> {
         match self {
             Bool => Bool,
             Char => Char,
-            Int(i) => Int(*i),
-            Uint(u) => Uint(*u),
-            Float(f) => Float(*f),
+            Int(i) => Int(i.clone()),
+            Uint(u) => Uint(u.clone()),
+            Float(f) => Float(f.clone()),
             Adt(d, s) => Adt(d.clone(), s.clone()),
             Foreign(d) => Foreign(d.clone()),
             Str => Str,
             Array(t, c) => Array(t.clone(), c.clone()),
             Slice(t) => Slice(t.clone()),
-            RawPtr(p) => RawPtr(p.clone()),
+            RawPtr(t) => RawPtr(t.clone()),
             Ref(r, t, m) => Ref(r.clone(), t.clone(), m.clone()),
             FnDef(d, s) => FnDef(d.clone(), s.clone()),
             FnPtr(s) => FnPtr(s.clone()),
-            Dynamic(p, r, repr) => Dynamic(p.clone(), r.clone(), *repr),
+            Dynamic(p, r, repr) => Dynamic(p.clone(), r.clone(), repr.clone()),
             Closure(d, s) => Closure(d.clone(), s.clone()),
             Generator(d, s, m) => Generator(d.clone(), s.clone(), m.clone()),
             GeneratorWitness(g) => GeneratorWitness(g.clone()),
-            GeneratorWitnessMIR(d, s) => GeneratorWitnessMIR(d.clone(), s.clone()),
             Never => Never,
             Tuple(t) => Tuple(t.clone()),
-            Alias(k, p) => Alias(*k, p.clone()),
+            Projection(p) => Projection(p.clone()),
+            Opaque(d, s) => Opaque(d.clone(), s.clone()),
             Param(p) => Param(p.clone()),
-            Bound(d, b) => Bound(*d, b.clone()),
+            Bound(d, b) => Bound(d.clone(), b.clone()),
             Placeholder(p) => Placeholder(p.clone()),
             Infer(t) => Infer(t.clone()),
             Error(e) => Error(e.clone()),
@@ -327,50 +301,60 @@ impl<I: Interner> Clone for TyKind<I> {
 impl<I: Interner> PartialEq for TyKind<I> {
     #[inline]
     fn eq(&self, other: &TyKind<I>) -> bool {
-        // You might expect this `match` to be preceded with this:
-        //
-        //   tykind_discriminant(self) == tykind_discriminant(other) &&
-        //
-        // but the data patterns in practice are such that a comparison
-        // succeeds 99%+ of the time, and it's faster to omit it.
-        match (self, other) {
-            (Int(a_i), Int(b_i)) => a_i == b_i,
-            (Uint(a_u), Uint(b_u)) => a_u == b_u,
-            (Float(a_f), Float(b_f)) => a_f == b_f,
-            (Adt(a_d, a_s), Adt(b_d, b_s)) => a_d == b_d && a_s == b_s,
-            (Foreign(a_d), Foreign(b_d)) => a_d == b_d,
-            (Array(a_t, a_c), Array(b_t, b_c)) => a_t == b_t && a_c == b_c,
-            (Slice(a_t), Slice(b_t)) => a_t == b_t,
-            (RawPtr(a_t), RawPtr(b_t)) => a_t == b_t,
-            (Ref(a_r, a_t, a_m), Ref(b_r, b_t, b_m)) => a_r == b_r && a_t == b_t && a_m == b_m,
-            (FnDef(a_d, a_s), FnDef(b_d, b_s)) => a_d == b_d && a_s == b_s,
-            (FnPtr(a_s), FnPtr(b_s)) => a_s == b_s,
-            (Dynamic(a_p, a_r, a_repr), Dynamic(b_p, b_r, b_repr)) => {
-                a_p == b_p && a_r == b_r && a_repr == b_repr
+        let __self_vi = tykind_discriminant(self);
+        let __arg_1_vi = tykind_discriminant(other);
+        if __self_vi == __arg_1_vi {
+            match (&*self, &*other) {
+                (&Int(ref __self_0), &Int(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Uint(ref __self_0), &Uint(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Float(ref __self_0), &Float(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Adt(ref __self_0, ref __self_1), &Adt(ref __arg_1_0, ref __arg_1_1)) => {
+                    __self_0 == __arg_1_0 && __self_1 == __arg_1_1
+                }
+                (&Foreign(ref __self_0), &Foreign(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Array(ref __self_0, ref __self_1), &Array(ref __arg_1_0, ref __arg_1_1)) => {
+                    __self_0 == __arg_1_0 && __self_1 == __arg_1_1
+                }
+                (&Slice(ref __self_0), &Slice(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&RawPtr(ref __self_0), &RawPtr(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (
+                    &Ref(ref __self_0, ref __self_1, ref __self_2),
+                    &Ref(ref __arg_1_0, ref __arg_1_1, ref __arg_1_2),
+                ) => __self_0 == __arg_1_0 && __self_1 == __arg_1_1 && __self_2 == __arg_1_2,
+                (&FnDef(ref __self_0, ref __self_1), &FnDef(ref __arg_1_0, ref __arg_1_1)) => {
+                    __self_0 == __arg_1_0 && __self_1 == __arg_1_1
+                }
+                (&FnPtr(ref __self_0), &FnPtr(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (
+                    &Dynamic(ref __self_0, ref __self_1, ref self_repr),
+                    &Dynamic(ref __arg_1_0, ref __arg_1_1, ref arg_repr),
+                ) => __self_0 == __arg_1_0 && __self_1 == __arg_1_1 && self_repr == arg_repr,
+                (&Closure(ref __self_0, ref __self_1), &Closure(ref __arg_1_0, ref __arg_1_1)) => {
+                    __self_0 == __arg_1_0 && __self_1 == __arg_1_1
+                }
+                (
+                    &Generator(ref __self_0, ref __self_1, ref __self_2),
+                    &Generator(ref __arg_1_0, ref __arg_1_1, ref __arg_1_2),
+                ) => __self_0 == __arg_1_0 && __self_1 == __arg_1_1 && __self_2 == __arg_1_2,
+                (&GeneratorWitness(ref __self_0), &GeneratorWitness(ref __arg_1_0)) => {
+                    __self_0 == __arg_1_0
+                }
+                (&Tuple(ref __self_0), &Tuple(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Projection(ref __self_0), &Projection(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Opaque(ref __self_0, ref __self_1), &Opaque(ref __arg_1_0, ref __arg_1_1)) => {
+                    __self_0 == __arg_1_0 && __self_1 == __arg_1_1
+                }
+                (&Param(ref __self_0), &Param(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Bound(ref __self_0, ref __self_1), &Bound(ref __arg_1_0, ref __arg_1_1)) => {
+                    __self_0 == __arg_1_0 && __self_1 == __arg_1_1
+                }
+                (&Placeholder(ref __self_0), &Placeholder(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Infer(ref __self_0), &Infer(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&Error(ref __self_0), &Error(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                _ => true,
             }
-            (Closure(a_d, a_s), Closure(b_d, b_s)) => a_d == b_d && a_s == b_s,
-            (Generator(a_d, a_s, a_m), Generator(b_d, b_s, b_m)) => {
-                a_d == b_d && a_s == b_s && a_m == b_m
-            }
-            (GeneratorWitness(a_g), GeneratorWitness(b_g)) => a_g == b_g,
-            (GeneratorWitnessMIR(a_d, a_s), GeneratorWitnessMIR(b_d, b_s)) => {
-                a_d == b_d && a_s == b_s
-            }
-            (Tuple(a_t), Tuple(b_t)) => a_t == b_t,
-            (Alias(a_i, a_p), Alias(b_i, b_p)) => a_i == b_i && a_p == b_p,
-            (Param(a_p), Param(b_p)) => a_p == b_p,
-            (Bound(a_d, a_b), Bound(b_d, b_b)) => a_d == b_d && a_b == b_b,
-            (Placeholder(a_p), Placeholder(b_p)) => a_p == b_p,
-            (Infer(a_t), Infer(b_t)) => a_t == b_t,
-            (Error(a_e), Error(b_e)) => a_e == b_e,
-            (Bool, Bool) | (Char, Char) | (Str, Str) | (Never, Never) => true,
-            _ => {
-                debug_assert!(
-                    tykind_discriminant(self) != tykind_discriminant(other),
-                    "This branch must be unreachable, maybe the match is missing an arm? self = self = {self:?}, other = {other:?}"
-                );
-                false
-            }
+        } else {
+            false
         }
     }
 }
@@ -382,7 +366,7 @@ impl<I: Interner> Eq for TyKind<I> {}
 impl<I: Interner> PartialOrd for TyKind<I> {
     #[inline]
     fn partial_cmp(&self, other: &TyKind<I>) -> Option<Ordering> {
-        Some(self.cmp(other))
+        Some(Ord::cmp(self, other))
     }
 }
 
@@ -390,195 +374,252 @@ impl<I: Interner> PartialOrd for TyKind<I> {
 impl<I: Interner> Ord for TyKind<I> {
     #[inline]
     fn cmp(&self, other: &TyKind<I>) -> Ordering {
-        tykind_discriminant(self).cmp(&tykind_discriminant(other)).then_with(|| {
-            match (self, other) {
-                (Int(a_i), Int(b_i)) => a_i.cmp(b_i),
-                (Uint(a_u), Uint(b_u)) => a_u.cmp(b_u),
-                (Float(a_f), Float(b_f)) => a_f.cmp(b_f),
-                (Adt(a_d, a_s), Adt(b_d, b_s)) => a_d.cmp(b_d).then_with(|| a_s.cmp(b_s)),
-                (Foreign(a_d), Foreign(b_d)) => a_d.cmp(b_d),
-                (Array(a_t, a_c), Array(b_t, b_c)) => a_t.cmp(b_t).then_with(|| a_c.cmp(b_c)),
-                (Slice(a_t), Slice(b_t)) => a_t.cmp(b_t),
-                (RawPtr(a_t), RawPtr(b_t)) => a_t.cmp(b_t),
-                (Ref(a_r, a_t, a_m), Ref(b_r, b_t, b_m)) => {
-                    a_r.cmp(b_r).then_with(|| a_t.cmp(b_t).then_with(|| a_m.cmp(b_m)))
+        let __self_vi = tykind_discriminant(self);
+        let __arg_1_vi = tykind_discriminant(other);
+        if __self_vi == __arg_1_vi {
+            match (&*self, &*other) {
+                (&Int(ref __self_0), &Int(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&Uint(ref __self_0), &Uint(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&Float(ref __self_0), &Float(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&Adt(ref __self_0, ref __self_1), &Adt(ref __arg_1_0, ref __arg_1_1)) => {
+                    match Ord::cmp(__self_0, __arg_1_0) {
+                        Ordering::Equal => Ord::cmp(__self_1, __arg_1_1),
+                        cmp => cmp,
+                    }
                 }
-                (FnDef(a_d, a_s), FnDef(b_d, b_s)) => a_d.cmp(b_d).then_with(|| a_s.cmp(b_s)),
-                (FnPtr(a_s), FnPtr(b_s)) => a_s.cmp(b_s),
-                (Dynamic(a_p, a_r, a_repr), Dynamic(b_p, b_r, b_repr)) => {
-                    a_p.cmp(b_p).then_with(|| a_r.cmp(b_r).then_with(|| a_repr.cmp(b_repr)))
+                (&Foreign(ref __self_0), &Foreign(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&Array(ref __self_0, ref __self_1), &Array(ref __arg_1_0, ref __arg_1_1)) => {
+                    match Ord::cmp(__self_0, __arg_1_0) {
+                        Ordering::Equal => Ord::cmp(__self_1, __arg_1_1),
+                        cmp => cmp,
+                    }
                 }
-                (Closure(a_p, a_s), Closure(b_p, b_s)) => a_p.cmp(b_p).then_with(|| a_s.cmp(b_s)),
-                (Generator(a_d, a_s, a_m), Generator(b_d, b_s, b_m)) => {
-                    a_d.cmp(b_d).then_with(|| a_s.cmp(b_s).then_with(|| a_m.cmp(b_m)))
-                }
-                (GeneratorWitness(a_g), GeneratorWitness(b_g)) => a_g.cmp(b_g),
+                (&Slice(ref __self_0), &Slice(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&RawPtr(ref __self_0), &RawPtr(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
                 (
-                    GeneratorWitnessMIR(a_d, a_s),
-                    GeneratorWitnessMIR(b_d, b_s),
-                ) => match Ord::cmp(a_d, b_d) {
-                    Ordering::Equal => Ord::cmp(a_s, b_s),
+                    &Ref(ref __self_0, ref __self_1, ref __self_2),
+                    &Ref(ref __arg_1_0, ref __arg_1_1, ref __arg_1_2),
+                ) => match Ord::cmp(__self_0, __arg_1_0) {
+                    Ordering::Equal => match Ord::cmp(__self_1, __arg_1_1) {
+                        Ordering::Equal => Ord::cmp(__self_2, __arg_1_2),
+                        cmp => cmp,
+                    },
                     cmp => cmp,
                 },
-                (Tuple(a_t), Tuple(b_t)) => a_t.cmp(b_t),
-                (Alias(a_i, a_p), Alias(b_i, b_p)) => a_i.cmp(b_i).then_with(|| a_p.cmp(b_p)),
-                (Param(a_p), Param(b_p)) => a_p.cmp(b_p),
-                (Bound(a_d, a_b), Bound(b_d, b_b)) => a_d.cmp(b_d).then_with(|| a_b.cmp(b_b)),
-                (Placeholder(a_p), Placeholder(b_p)) => a_p.cmp(b_p),
-                (Infer(a_t), Infer(b_t)) => a_t.cmp(b_t),
-                (Error(a_e), Error(b_e)) => a_e.cmp(b_e),
-                (Bool, Bool) | (Char, Char) | (Str, Str) | (Never, Never) => Ordering::Equal,
-                _ => {
-                    debug_assert!(false, "This branch must be unreachable, maybe the match is missing an arm? self = {self:?}, other = {other:?}");
-                    Ordering::Equal
+                (&FnDef(ref __self_0, ref __self_1), &FnDef(ref __arg_1_0, ref __arg_1_1)) => {
+                    match Ord::cmp(__self_0, __arg_1_0) {
+                        Ordering::Equal => Ord::cmp(__self_1, __arg_1_1),
+                        cmp => cmp,
+                    }
                 }
+                (&FnPtr(ref __self_0), &FnPtr(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (
+                    &Dynamic(ref __self_0, ref __self_1, ref self_repr),
+                    &Dynamic(ref __arg_1_0, ref __arg_1_1, ref arg_repr),
+                ) => match Ord::cmp(__self_0, __arg_1_0) {
+                    Ordering::Equal => match Ord::cmp(__self_1, __arg_1_1) {
+                        Ordering::Equal => Ord::cmp(self_repr, arg_repr),
+                        cmp => cmp,
+                    },
+                    cmp => cmp,
+                },
+                (&Closure(ref __self_0, ref __self_1), &Closure(ref __arg_1_0, ref __arg_1_1)) => {
+                    match Ord::cmp(__self_0, __arg_1_0) {
+                        Ordering::Equal => Ord::cmp(__self_1, __arg_1_1),
+                        cmp => cmp,
+                    }
+                }
+                (
+                    &Generator(ref __self_0, ref __self_1, ref __self_2),
+                    &Generator(ref __arg_1_0, ref __arg_1_1, ref __arg_1_2),
+                ) => match Ord::cmp(__self_0, __arg_1_0) {
+                    Ordering::Equal => match Ord::cmp(__self_1, __arg_1_1) {
+                        Ordering::Equal => Ord::cmp(__self_2, __arg_1_2),
+                        cmp => cmp,
+                    },
+                    cmp => cmp,
+                },
+                (&GeneratorWitness(ref __self_0), &GeneratorWitness(ref __arg_1_0)) => {
+                    Ord::cmp(__self_0, __arg_1_0)
+                }
+                (&Tuple(ref __self_0), &Tuple(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&Projection(ref __self_0), &Projection(ref __arg_1_0)) => {
+                    Ord::cmp(__self_0, __arg_1_0)
+                }
+                (&Opaque(ref __self_0, ref __self_1), &Opaque(ref __arg_1_0, ref __arg_1_1)) => {
+                    match Ord::cmp(__self_0, __arg_1_0) {
+                        Ordering::Equal => Ord::cmp(__self_1, __arg_1_1),
+                        cmp => cmp,
+                    }
+                }
+                (&Param(ref __self_0), &Param(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&Bound(ref __self_0, ref __self_1), &Bound(ref __arg_1_0, ref __arg_1_1)) => {
+                    match Ord::cmp(__self_0, __arg_1_0) {
+                        Ordering::Equal => Ord::cmp(__self_1, __arg_1_1),
+                        cmp => cmp,
+                    }
+                }
+                (&Placeholder(ref __self_0), &Placeholder(ref __arg_1_0)) => {
+                    Ord::cmp(__self_0, __arg_1_0)
+                }
+                (&Infer(ref __self_0), &Infer(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&Error(ref __self_0), &Error(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                _ => Ordering::Equal,
             }
-        })
+        } else {
+            Ord::cmp(&__self_vi, &__arg_1_vi)
+        }
     }
 }
 
 // This is manually implemented because a derive would require `I: Hash`
 impl<I: Interner> hash::Hash for TyKind<I> {
     fn hash<__H: hash::Hasher>(&self, state: &mut __H) -> () {
-        tykind_discriminant(self).hash(state);
-        match self {
-            Int(i) => i.hash(state),
-            Uint(u) => u.hash(state),
-            Float(f) => f.hash(state),
-            Adt(d, s) => {
-                d.hash(state);
-                s.hash(state)
+        match (&*self,) {
+            (&Int(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
             }
-            Foreign(d) => d.hash(state),
-            Array(t, c) => {
-                t.hash(state);
-                c.hash(state)
+            (&Uint(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
             }
-            Slice(t) => t.hash(state),
-            RawPtr(t) => t.hash(state),
-            Ref(r, t, m) => {
-                r.hash(state);
-                t.hash(state);
-                m.hash(state)
+            (&Float(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
             }
-            FnDef(d, s) => {
-                d.hash(state);
-                s.hash(state)
+            (&Adt(ref __self_0, ref __self_1),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state)
             }
-            FnPtr(s) => s.hash(state),
-            Dynamic(p, r, repr) => {
-                p.hash(state);
-                r.hash(state);
-                repr.hash(state)
+            (&Foreign(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
             }
-            Closure(d, s) => {
-                d.hash(state);
-                s.hash(state)
+            (&Array(ref __self_0, ref __self_1),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state)
             }
-            Generator(d, s, m) => {
-                d.hash(state);
-                s.hash(state);
-                m.hash(state)
+            (&Slice(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
             }
-            GeneratorWitness(g) => g.hash(state),
-            GeneratorWitnessMIR(d, s) => {
-                d.hash(state);
-                s.hash(state);
+            (&RawPtr(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
             }
-            Tuple(t) => t.hash(state),
-            Alias(i, p) => {
-                i.hash(state);
-                p.hash(state);
+            (&Ref(ref __self_0, ref __self_1, ref __self_2),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state);
+                hash::Hash::hash(__self_2, state)
             }
-            Param(p) => p.hash(state),
-            Bound(d, b) => {
-                d.hash(state);
-                b.hash(state)
+            (&FnDef(ref __self_0, ref __self_1),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state)
             }
-            Placeholder(p) => p.hash(state),
-            Infer(t) => t.hash(state),
-            Error(e) => e.hash(state),
-            Bool | Char | Str | Never => (),
+            (&FnPtr(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&Dynamic(ref __self_0, ref __self_1, ref repr),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state);
+                hash::Hash::hash(repr, state)
+            }
+            (&Closure(ref __self_0, ref __self_1),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state)
+            }
+            (&Generator(ref __self_0, ref __self_1, ref __self_2),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state);
+                hash::Hash::hash(__self_2, state)
+            }
+            (&GeneratorWitness(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&Tuple(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&Projection(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&Opaque(ref __self_0, ref __self_1),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state)
+            }
+            (&Param(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&Bound(ref __self_0, ref __self_1),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state)
+            }
+            (&Placeholder(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&Infer(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&Error(ref __self_0),) => {
+                hash::Hash::hash(&tykind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            _ => hash::Hash::hash(&tykind_discriminant(self), state),
         }
     }
 }
 
-impl<I: Interner> DebugWithInfcx<I> for TyKind<I> {
-    fn fmt<InfCtx: InferCtxtLike<I>>(
-        this: OptWithInfcx<'_, I, InfCtx, &Self>,
-        f: &mut core::fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        match this.data {
-            Bool => write!(f, "bool"),
-            Char => write!(f, "char"),
-            Int(i) => write!(f, "{i:?}"),
-            Uint(u) => write!(f, "{u:?}"),
-            Float(float) => write!(f, "{float:?}"),
-            Adt(d, s) => f.debug_tuple_field2_finish("Adt", d, &this.wrap(s)),
-            Foreign(d) => f.debug_tuple_field1_finish("Foreign", d),
-            Str => write!(f, "str"),
-            Array(t, c) => write!(f, "[{:?}; {:?}]", &this.wrap(t), &this.wrap(c)),
-            Slice(t) => write!(f, "[{:?}]", &this.wrap(t)),
-            RawPtr(p) => {
-                let (ty, mutbl) = I::ty_and_mut_to_parts(p.clone());
-                match I::mutability_is_mut(mutbl) {
-                    true => write!(f, "*mut "),
-                    false => write!(f, "*const "),
-                }?;
-                write!(f, "{:?}", &this.wrap(ty))
-            }
-            Ref(r, t, m) => match I::mutability_is_mut(m.clone()) {
-                true => write!(f, "&{:?} mut {:?}", &this.wrap(r), &this.wrap(t)),
-                false => write!(f, "&{:?} {:?}", &this.wrap(r), &this.wrap(t)),
-            },
-            FnDef(d, s) => f.debug_tuple_field2_finish("FnDef", d, &this.wrap(s)),
-            FnPtr(s) => write!(f, "{:?}", &this.wrap(s)),
-            Dynamic(p, r, repr) => match repr {
-                DynKind::Dyn => write!(f, "dyn {:?} + {:?}", &this.wrap(p), &this.wrap(r)),
-                DynKind::DynStar => {
-                    write!(f, "dyn* {:?} + {:?}", &this.wrap(p), &this.wrap(r))
-                }
-            },
-            Closure(d, s) => f.debug_tuple_field2_finish("Closure", d, &this.wrap(s)),
-            Generator(d, s, m) => f.debug_tuple_field3_finish("Generator", d, &this.wrap(s), m),
-            GeneratorWitness(g) => f.debug_tuple_field1_finish("GeneratorWitness", &this.wrap(g)),
-            GeneratorWitnessMIR(d, s) => {
-                f.debug_tuple_field2_finish("GeneratorWitnessMIR", d, &this.wrap(s))
-            }
-            Never => write!(f, "!"),
-            Tuple(t) => {
-                let mut iter = t.clone().into_iter();
-
-                write!(f, "(")?;
-
-                match iter.next() {
-                    None => return write!(f, ")"),
-                    Some(ty) => write!(f, "{:?}", &this.wrap(ty))?,
-                };
-
-                match iter.next() {
-                    None => return write!(f, ",)"),
-                    Some(ty) => write!(f, "{:?})", &this.wrap(ty))?,
-                }
-
-                for ty in iter {
-                    write!(f, ", {:?}", &this.wrap(ty))?;
-                }
-                write!(f, ")")
-            }
-            Alias(i, a) => f.debug_tuple_field2_finish("Alias", i, &this.wrap(a)),
-            Param(p) => write!(f, "{p:?}"),
-            Bound(d, b) => crate::debug_bound_var(f, *d, b),
-            Placeholder(p) => write!(f, "{p:?}"),
-            Infer(t) => write!(f, "{:?}", this.wrap(t)),
-            TyKind::Error(_) => write!(f, "{{type error}}"),
-        }
-    }
-}
 // This is manually implemented because a derive would require `I: Debug`
 impl<I: Interner> fmt::Debug for TyKind<I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        OptWithInfcx::new_no_ctx(self).fmt(f)
+        use std::fmt::*;
+        match self {
+            Bool => Formatter::write_str(f, "Bool"),
+            Char => Formatter::write_str(f, "Char"),
+            Int(f0) => Formatter::debug_tuple_field1_finish(f, "Int", f0),
+            Uint(f0) => Formatter::debug_tuple_field1_finish(f, "Uint", f0),
+            Float(f0) => Formatter::debug_tuple_field1_finish(f, "Float", f0),
+            Adt(f0, f1) => Formatter::debug_tuple_field2_finish(f, "Adt", f0, f1),
+            Foreign(f0) => Formatter::debug_tuple_field1_finish(f, "Foreign", f0),
+            Str => Formatter::write_str(f, "Str"),
+            Array(f0, f1) => Formatter::debug_tuple_field2_finish(f, "Array", f0, f1),
+            Slice(f0) => Formatter::debug_tuple_field1_finish(f, "Slice", f0),
+            RawPtr(f0) => Formatter::debug_tuple_field1_finish(f, "RawPtr", f0),
+            Ref(f0, f1, f2) => Formatter::debug_tuple_field3_finish(f, "Ref", f0, f1, f2),
+            FnDef(f0, f1) => Formatter::debug_tuple_field2_finish(f, "FnDef", f0, f1),
+            FnPtr(f0) => Formatter::debug_tuple_field1_finish(f, "FnPtr", f0),
+            Dynamic(f0, f1, f2) => Formatter::debug_tuple_field3_finish(f, "Dynamic", f0, f1, f2),
+            Closure(f0, f1) => Formatter::debug_tuple_field2_finish(f, "Closure", f0, f1),
+            Generator(f0, f1, f2) => {
+                Formatter::debug_tuple_field3_finish(f, "Generator", f0, f1, f2)
+            }
+            GeneratorWitness(f0) => Formatter::debug_tuple_field1_finish(f, "GeneratorWitness", f0),
+            Never => Formatter::write_str(f, "Never"),
+            Tuple(f0) => Formatter::debug_tuple_field1_finish(f, "Tuple", f0),
+            Projection(f0) => Formatter::debug_tuple_field1_finish(f, "Projection", f0),
+            Opaque(f0, f1) => Formatter::debug_tuple_field2_finish(f, "Opaque", f0, f1),
+            Param(f0) => Formatter::debug_tuple_field1_finish(f, "Param", f0),
+            Bound(f0, f1) => Formatter::debug_tuple_field2_finish(f, "Bound", f0, f1),
+            Placeholder(f0) => Formatter::debug_tuple_field1_finish(f, "Placeholder", f0),
+            Infer(f0) => Formatter::debug_tuple_field1_finish(f, "Infer", f0),
+            TyKind::Error(f0) => Formatter::debug_tuple_field1_finish(f, "Error", f0),
+        }
     }
 }
 
@@ -599,7 +640,7 @@ where
     I::ListBinderExistentialPredicate: Encodable<E>,
     I::BinderListTy: Encodable<E>,
     I::ListTy: Encodable<E>,
-    I::AliasTy: Encodable<E>,
+    I::ProjectionTy: Encodable<E>,
     I::ParamTy: Encodable<E>,
     I::BoundTy: Encodable<E>,
     I::PlaceholderType: Encodable<E>,
@@ -668,17 +709,16 @@ where
             GeneratorWitness(b) => e.emit_enum_variant(disc, |e| {
                 b.encode(e);
             }),
-            GeneratorWitnessMIR(def_id, substs) => e.emit_enum_variant(disc, |e| {
-                def_id.encode(e);
-                substs.encode(e);
-            }),
             Never => e.emit_enum_variant(disc, |_| {}),
             Tuple(substs) => e.emit_enum_variant(disc, |e| {
                 substs.encode(e);
             }),
-            Alias(k, p) => e.emit_enum_variant(disc, |e| {
-                k.encode(e);
+            Projection(p) => e.emit_enum_variant(disc, |e| {
                 p.encode(e);
+            }),
+            Opaque(def_id, substs) => e.emit_enum_variant(disc, |e| {
+                def_id.encode(e);
+                substs.encode(e);
             }),
             Param(p) => e.emit_enum_variant(disc, |e| {
                 p.encode(e);
@@ -717,9 +757,8 @@ where
     I::ListBinderExistentialPredicate: Decodable<D>,
     I::BinderListTy: Decodable<D>,
     I::ListTy: Decodable<D>,
-    I::AliasTy: Decodable<D>,
+    I::ProjectionTy: Decodable<D>,
     I::ParamTy: Decodable<D>,
-    I::AliasTy: Decodable<D>,
     I::BoundTy: Decodable<D>,
     I::PlaceholderType: Decodable<D>,
     I::InferTy: Decodable<D>,
@@ -748,13 +787,13 @@ where
             17 => GeneratorWitness(Decodable::decode(d)),
             18 => Never,
             19 => Tuple(Decodable::decode(d)),
-            20 => Alias(Decodable::decode(d), Decodable::decode(d)),
-            21 => Param(Decodable::decode(d)),
-            22 => Bound(Decodable::decode(d), Decodable::decode(d)),
-            23 => Placeholder(Decodable::decode(d)),
-            24 => Infer(Decodable::decode(d)),
-            25 => Error(Decodable::decode(d)),
-            26 => GeneratorWitnessMIR(Decodable::decode(d), Decodable::decode(d)),
+            20 => Projection(Decodable::decode(d)),
+            21 => Opaque(Decodable::decode(d), Decodable::decode(d)),
+            22 => Param(Decodable::decode(d)),
+            23 => Bound(Decodable::decode(d), Decodable::decode(d)),
+            24 => Placeholder(Decodable::decode(d)),
+            25 => Infer(Decodable::decode(d)),
+            26 => Error(Decodable::decode(d)),
             _ => panic!(
                 "{}",
                 format!(
@@ -783,7 +822,7 @@ where
     I::Mutability: HashStable<CTX>,
     I::BinderListTy: HashStable<CTX>,
     I::ListTy: HashStable<CTX>,
-    I::AliasTy: HashStable<CTX>,
+    I::ProjectionTy: HashStable<CTX>,
     I::BoundTy: HashStable<CTX>,
     I::ParamTy: HashStable<CTX>,
     I::PlaceholderType: HashStable<CTX>,
@@ -856,17 +895,16 @@ where
             GeneratorWitness(b) => {
                 b.hash_stable(__hcx, __hasher);
             }
-            GeneratorWitnessMIR(def_id, substs) => {
-                def_id.hash_stable(__hcx, __hasher);
-                substs.hash_stable(__hcx, __hasher);
-            }
             Never => {}
             Tuple(substs) => {
                 substs.hash_stable(__hcx, __hasher);
             }
-            Alias(k, p) => {
-                k.hash_stable(__hcx, __hasher);
+            Projection(p) => {
                 p.hash_stable(__hcx, __hasher);
+            }
+            Opaque(def_id, substs) => {
+                def_id.hash_stable(__hcx, __hasher);
+                substs.hash_stable(__hcx, __hasher);
             }
             Param(p) => {
                 p.hash_stable(__hcx, __hasher);
@@ -884,224 +922,6 @@ where
             Error(d) => {
                 d.hash_stable(__hcx, __hasher);
             }
-        }
-    }
-}
-
-/// Represents a constant in Rust.
-// #[derive(derive_more::From)]
-pub enum ConstKind<I: Interner> {
-    /// A const generic parameter.
-    Param(I::ParamConst),
-
-    /// Infer the value of the const.
-    Infer(I::InferConst),
-
-    /// Bound const variable, used only when preparing a trait query.
-    Bound(DebruijnIndex, I::BoundConst),
-
-    /// A placeholder const - universally quantified higher-ranked const.
-    Placeholder(I::PlaceholderConst),
-
-    /// An unnormalized const item such as an anon const or assoc const or free const item.
-    /// Right now anything other than anon consts does not actually work properly but this
-    /// should
-    Unevaluated(I::AliasConst),
-
-    /// Used to hold computed value.
-    Value(I::ValueConst),
-
-    /// A placeholder for a const which could not be computed; this is
-    /// propagated to avoid useless error messages.
-    Error(I::ErrorGuaranteed),
-
-    /// Unevaluated non-const-item, used by `feature(generic_const_exprs)` to represent
-    /// const arguments such as `N + 1` or `foo(N)`
-    Expr(I::ExprConst),
-}
-
-const fn const_kind_discriminant<I: Interner>(value: &ConstKind<I>) -> usize {
-    match value {
-        ConstKind::Param(_) => 0,
-        ConstKind::Infer(_) => 1,
-        ConstKind::Bound(_, _) => 2,
-        ConstKind::Placeholder(_) => 3,
-        ConstKind::Unevaluated(_) => 4,
-        ConstKind::Value(_) => 5,
-        ConstKind::Error(_) => 6,
-        ConstKind::Expr(_) => 7,
-    }
-}
-
-impl<I: Interner> hash::Hash for ConstKind<I> {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        const_kind_discriminant(self).hash(state);
-        match self {
-            ConstKind::Param(p) => p.hash(state),
-            ConstKind::Infer(i) => i.hash(state),
-            ConstKind::Bound(d, b) => {
-                d.hash(state);
-                b.hash(state);
-            }
-            ConstKind::Placeholder(p) => p.hash(state),
-            ConstKind::Unevaluated(u) => u.hash(state),
-            ConstKind::Value(v) => v.hash(state),
-            ConstKind::Error(e) => e.hash(state),
-            ConstKind::Expr(e) => e.hash(state),
-        }
-    }
-}
-
-impl<CTX: HashStableContext, I: Interner> HashStable<CTX> for ConstKind<I>
-where
-    I::ParamConst: HashStable<CTX>,
-    I::InferConst: HashStable<CTX>,
-    I::BoundConst: HashStable<CTX>,
-    I::PlaceholderConst: HashStable<CTX>,
-    I::AliasConst: HashStable<CTX>,
-    I::ValueConst: HashStable<CTX>,
-    I::ErrorGuaranteed: HashStable<CTX>,
-    I::ExprConst: HashStable<CTX>,
-{
-    fn hash_stable(
-        &self,
-        hcx: &mut CTX,
-        hasher: &mut rustc_data_structures::stable_hasher::StableHasher,
-    ) {
-        const_kind_discriminant(self).hash_stable(hcx, hasher);
-        match self {
-            ConstKind::Param(p) => p.hash_stable(hcx, hasher),
-            ConstKind::Infer(i) => i.hash_stable(hcx, hasher),
-            ConstKind::Bound(d, b) => {
-                d.hash_stable(hcx, hasher);
-                b.hash_stable(hcx, hasher);
-            }
-            ConstKind::Placeholder(p) => p.hash_stable(hcx, hasher),
-            ConstKind::Unevaluated(u) => u.hash_stable(hcx, hasher),
-            ConstKind::Value(v) => v.hash_stable(hcx, hasher),
-            ConstKind::Error(e) => e.hash_stable(hcx, hasher),
-            ConstKind::Expr(e) => e.hash_stable(hcx, hasher),
-        }
-    }
-}
-
-impl<I: Interner, D: TyDecoder<I = I>> Decodable<D> for ConstKind<I>
-where
-    I::ParamConst: Decodable<D>,
-    I::InferConst: Decodable<D>,
-    I::BoundConst: Decodable<D>,
-    I::PlaceholderConst: Decodable<D>,
-    I::AliasConst: Decodable<D>,
-    I::ValueConst: Decodable<D>,
-    I::ErrorGuaranteed: Decodable<D>,
-    I::ExprConst: Decodable<D>,
-{
-    fn decode(d: &mut D) -> Self {
-        match Decoder::read_usize(d) {
-            0 => ConstKind::Param(Decodable::decode(d)),
-            1 => ConstKind::Infer(Decodable::decode(d)),
-            2 => ConstKind::Bound(Decodable::decode(d), Decodable::decode(d)),
-            3 => ConstKind::Placeholder(Decodable::decode(d)),
-            4 => ConstKind::Unevaluated(Decodable::decode(d)),
-            5 => ConstKind::Value(Decodable::decode(d)),
-            6 => ConstKind::Error(Decodable::decode(d)),
-            7 => ConstKind::Expr(Decodable::decode(d)),
-            _ => panic!(
-                "{}",
-                format!(
-                    "invalid enum variant tag while decoding `{}`, expected 0..{}",
-                    "ConstKind", 8,
-                )
-            ),
-        }
-    }
-}
-
-impl<I: Interner, E: TyEncoder<I = I>> Encodable<E> for ConstKind<I>
-where
-    I::ParamConst: Encodable<E>,
-    I::InferConst: Encodable<E>,
-    I::BoundConst: Encodable<E>,
-    I::PlaceholderConst: Encodable<E>,
-    I::AliasConst: Encodable<E>,
-    I::ValueConst: Encodable<E>,
-    I::ErrorGuaranteed: Encodable<E>,
-    I::ExprConst: Encodable<E>,
-{
-    fn encode(&self, e: &mut E) {
-        let disc = const_kind_discriminant(self);
-        match self {
-            ConstKind::Param(p) => e.emit_enum_variant(disc, |e| p.encode(e)),
-            ConstKind::Infer(i) => e.emit_enum_variant(disc, |e| i.encode(e)),
-            ConstKind::Bound(d, b) => e.emit_enum_variant(disc, |e| {
-                d.encode(e);
-                b.encode(e);
-            }),
-            ConstKind::Placeholder(p) => e.emit_enum_variant(disc, |e| p.encode(e)),
-            ConstKind::Unevaluated(u) => e.emit_enum_variant(disc, |e| u.encode(e)),
-            ConstKind::Value(v) => e.emit_enum_variant(disc, |e| v.encode(e)),
-            ConstKind::Error(er) => e.emit_enum_variant(disc, |e| er.encode(e)),
-            ConstKind::Expr(ex) => e.emit_enum_variant(disc, |e| ex.encode(e)),
-        }
-    }
-}
-
-impl<I: Interner> PartialOrd for ConstKind<I> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<I: Interner> Ord for ConstKind<I> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        const_kind_discriminant(self)
-            .cmp(&const_kind_discriminant(other))
-            .then_with(|| match (self, other) {
-                (ConstKind::Param(p1), ConstKind::Param(p2)) => p1.cmp(p2),
-                (ConstKind::Infer(i1), ConstKind::Infer(i2)) => i1.cmp(i2),
-                (ConstKind::Bound(d1, b1), ConstKind::Bound(d2, b2)) => d1.cmp(d2).then_with(|| b1.cmp(b2)),
-                (ConstKind::Placeholder(p1), ConstKind::Placeholder(p2)) => p1.cmp(p2),
-                (ConstKind::Unevaluated(u1), ConstKind::Unevaluated(u2)) => u1.cmp(u2),
-                (ConstKind::Value(v1), ConstKind::Value(v2)) => v1.cmp(v2),
-                (ConstKind::Error(e1), ConstKind::Error(e2)) => e1.cmp(e2),
-                (ConstKind::Expr(e1), ConstKind::Expr(e2)) => e1.cmp(e2),
-                _ => {
-                    debug_assert!(false, "This branch must be unreachable, maybe the match is missing an arm? self = {self:?}, other = {other:?}");
-                    Ordering::Equal
-                }
-            })
-    }
-}
-
-impl<I: Interner> PartialEq for ConstKind<I> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Param(l0), Self::Param(r0)) => l0 == r0,
-            (Self::Infer(l0), Self::Infer(r0)) => l0 == r0,
-            (Self::Bound(l0, l1), Self::Bound(r0, r1)) => l0 == r0 && l1 == r1,
-            (Self::Placeholder(l0), Self::Placeholder(r0)) => l0 == r0,
-            (Self::Unevaluated(l0), Self::Unevaluated(r0)) => l0 == r0,
-            (Self::Value(l0), Self::Value(r0)) => l0 == r0,
-            (Self::Error(l0), Self::Error(r0)) => l0 == r0,
-            (Self::Expr(l0), Self::Expr(r0)) => l0 == r0,
-            _ => false,
-        }
-    }
-}
-
-impl<I: Interner> Eq for ConstKind<I> {}
-
-impl<I: Interner> Clone for ConstKind<I> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Param(arg0) => Self::Param(arg0.clone()),
-            Self::Infer(arg0) => Self::Infer(arg0.clone()),
-            Self::Bound(arg0, arg1) => Self::Bound(arg0.clone(), arg1.clone()),
-            Self::Placeholder(arg0) => Self::Placeholder(arg0.clone()),
-            Self::Unevaluated(arg0) => Self::Unevaluated(arg0.clone()),
-            Self::Value(arg0) => Self::Value(arg0.clone()),
-            Self::Error(arg0) => Self::Error(arg0.clone()),
-            Self::Expr(arg0) => Self::Expr(arg0.clone()),
         }
     }
 }
@@ -1143,7 +963,7 @@ impl<I: Interner> Clone for ConstKind<I> {
 ///
 /// Note that inference variables and bound regions are not included
 /// in this diagram. In the case of inference variables, they should
-/// be inferred to some other region from the diagram. In the case of
+/// be inferred to some other region from the diagram.  In the case of
 /// bound regions, they are excluded because they don't make sense to
 /// include -- the diagram indicates the relationship between free
 /// regions.
@@ -1239,9 +1059,6 @@ pub enum RegionKind<I: Interner> {
 
     /// Erased region, used by trait selection, in MIR and during codegen.
     ReErased,
-
-    /// A region that resulted from some other error. Used exclusively for diagnostics.
-    ReError(I::ErrorGuaranteed),
 }
 
 // This is manually implemented for `RegionKind` because `std::mem::discriminant`
@@ -1256,7 +1073,6 @@ const fn regionkind_discriminant<I: Interner>(value: &RegionKind<I>) -> usize {
         ReVar(_) => 4,
         RePlaceholder(_) => 5,
         ReErased => 6,
-        ReError(_) => 7,
     }
 }
 
@@ -1268,7 +1084,6 @@ where
     I::FreeRegion: Copy,
     I::RegionVid: Copy,
     I::PlaceholderRegion: Copy,
-    I::ErrorGuaranteed: Copy,
 {
 }
 
@@ -1276,14 +1091,13 @@ where
 impl<I: Interner> Clone for RegionKind<I> {
     fn clone(&self) -> Self {
         match self {
-            ReEarlyBound(r) => ReEarlyBound(r.clone()),
-            ReLateBound(d, r) => ReLateBound(*d, r.clone()),
-            ReFree(r) => ReFree(r.clone()),
+            ReEarlyBound(a) => ReEarlyBound(a.clone()),
+            ReLateBound(a, b) => ReLateBound(a.clone(), b.clone()),
+            ReFree(a) => ReFree(a.clone()),
             ReStatic => ReStatic,
-            ReVar(r) => ReVar(r.clone()),
-            RePlaceholder(r) => RePlaceholder(r.clone()),
+            ReVar(a) => ReVar(a.clone()),
+            RePlaceholder(a) => RePlaceholder(a.clone()),
             ReErased => ReErased,
-            ReError(r) => ReError(r.clone()),
         }
     }
 }
@@ -1292,24 +1106,29 @@ impl<I: Interner> Clone for RegionKind<I> {
 impl<I: Interner> PartialEq for RegionKind<I> {
     #[inline]
     fn eq(&self, other: &RegionKind<I>) -> bool {
-        regionkind_discriminant(self) == regionkind_discriminant(other)
-            && match (self, other) {
-                (ReEarlyBound(a_r), ReEarlyBound(b_r)) => a_r == b_r,
-                (ReLateBound(a_d, a_r), ReLateBound(b_d, b_r)) => a_d == b_d && a_r == b_r,
-                (ReFree(a_r), ReFree(b_r)) => a_r == b_r,
-                (ReStatic, ReStatic) => true,
-                (ReVar(a_r), ReVar(b_r)) => a_r == b_r,
-                (RePlaceholder(a_r), RePlaceholder(b_r)) => a_r == b_r,
-                (ReErased, ReErased) => true,
-                (ReError(_), ReError(_)) => true,
-                _ => {
-                    debug_assert!(
-                        false,
-                        "This branch must be unreachable, maybe the match is missing an arm? self = {self:?}, other = {other:?}"
-                    );
-                    true
+        let __self_vi = regionkind_discriminant(self);
+        let __arg_1_vi = regionkind_discriminant(other);
+        if __self_vi == __arg_1_vi {
+            match (&*self, &*other) {
+                (&ReEarlyBound(ref __self_0), &ReEarlyBound(ref __arg_1_0)) => {
+                    __self_0 == __arg_1_0
                 }
+                (
+                    &ReLateBound(ref __self_0, ref __self_1),
+                    &ReLateBound(ref __arg_1_0, ref __arg_1_1),
+                ) => __self_0 == __arg_1_0 && __self_1 == __arg_1_1,
+                (&ReFree(ref __self_0), &ReFree(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&ReStatic, &ReStatic) => true,
+                (&ReVar(ref __self_0), &ReVar(ref __arg_1_0)) => __self_0 == __arg_1_0,
+                (&RePlaceholder(ref __self_0), &RePlaceholder(ref __arg_1_0)) => {
+                    __self_0 == __arg_1_0
+                }
+                (&ReErased, &ReErased) => true,
+                _ => true,
             }
+        } else {
+            false
+        }
     }
 }
 
@@ -1320,7 +1139,7 @@ impl<I: Interner> Eq for RegionKind<I> {}
 impl<I: Interner> PartialOrd for RegionKind<I> {
     #[inline]
     fn partial_cmp(&self, other: &RegionKind<I>) -> Option<Ordering> {
-        Some(self.cmp(other))
+        Some(Ord::cmp(self, other))
     }
 }
 
@@ -1328,75 +1147,90 @@ impl<I: Interner> PartialOrd for RegionKind<I> {
 impl<I: Interner> Ord for RegionKind<I> {
     #[inline]
     fn cmp(&self, other: &RegionKind<I>) -> Ordering {
-        regionkind_discriminant(self).cmp(&regionkind_discriminant(other)).then_with(|| {
-            match (self, other) {
-                (ReEarlyBound(a_r), ReEarlyBound(b_r)) => a_r.cmp(b_r),
-                (ReLateBound(a_d, a_r), ReLateBound(b_d, b_r)) => {
-                    a_d.cmp(b_d).then_with(|| a_r.cmp(b_r))
+        let __self_vi = regionkind_discriminant(self);
+        let __arg_1_vi = regionkind_discriminant(other);
+        if __self_vi == __arg_1_vi {
+            match (&*self, &*other) {
+                (&ReEarlyBound(ref __self_0), &ReEarlyBound(ref __arg_1_0)) => {
+                    Ord::cmp(__self_0, __arg_1_0)
                 }
-                (ReFree(a_r), ReFree(b_r)) => a_r.cmp(b_r),
-                (ReStatic, ReStatic) => Ordering::Equal,
-                (ReVar(a_r), ReVar(b_r)) => a_r.cmp(b_r),
-                (RePlaceholder(a_r), RePlaceholder(b_r)) => a_r.cmp(b_r),
-                (ReErased, ReErased) => Ordering::Equal,
-                _ => {
-                    debug_assert!(false, "This branch must be unreachable, maybe the match is missing an arm? self = self = {self:?}, other = {other:?}");
-                    Ordering::Equal
+                (
+                    &ReLateBound(ref __self_0, ref __self_1),
+                    &ReLateBound(ref __arg_1_0, ref __arg_1_1),
+                ) => match Ord::cmp(__self_0, __arg_1_0) {
+                    Ordering::Equal => Ord::cmp(__self_1, __arg_1_1),
+                    cmp => cmp,
+                },
+                (&ReFree(ref __self_0), &ReFree(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&ReStatic, &ReStatic) => Ordering::Equal,
+                (&ReVar(ref __self_0), &ReVar(ref __arg_1_0)) => Ord::cmp(__self_0, __arg_1_0),
+                (&RePlaceholder(ref __self_0), &RePlaceholder(ref __arg_1_0)) => {
+                    Ord::cmp(__self_0, __arg_1_0)
                 }
+                (&ReErased, &ReErased) => Ordering::Equal,
+                _ => Ordering::Equal,
             }
-        })
+        } else {
+            Ord::cmp(&__self_vi, &__arg_1_vi)
+        }
     }
 }
 
 // This is manually implemented because a derive would require `I: Hash`
 impl<I: Interner> hash::Hash for RegionKind<I> {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) -> () {
-        regionkind_discriminant(self).hash(state);
-        match self {
-            ReEarlyBound(r) => r.hash(state),
-            ReLateBound(d, r) => {
-                d.hash(state);
-                r.hash(state)
+    fn hash<__H: hash::Hasher>(&self, state: &mut __H) -> () {
+        match (&*self,) {
+            (&ReEarlyBound(ref __self_0),) => {
+                hash::Hash::hash(&regionkind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
             }
-            ReFree(r) => r.hash(state),
-            ReStatic => (),
-            ReVar(r) => r.hash(state),
-            RePlaceholder(r) => r.hash(state),
-            ReErased => (),
-            ReError(_) => (),
+            (&ReLateBound(ref __self_0, ref __self_1),) => {
+                hash::Hash::hash(&regionkind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state);
+                hash::Hash::hash(__self_1, state)
+            }
+            (&ReFree(ref __self_0),) => {
+                hash::Hash::hash(&regionkind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&ReStatic,) => {
+                hash::Hash::hash(&regionkind_discriminant(self), state);
+            }
+            (&ReVar(ref __self_0),) => {
+                hash::Hash::hash(&regionkind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&RePlaceholder(ref __self_0),) => {
+                hash::Hash::hash(&regionkind_discriminant(self), state);
+                hash::Hash::hash(__self_0, state)
+            }
+            (&ReErased,) => {
+                hash::Hash::hash(&regionkind_discriminant(self), state);
+            }
         }
     }
 }
 
-impl<I: Interner> DebugWithInfcx<I> for RegionKind<I> {
-    fn fmt<InfCtx: InferCtxtLike<I>>(
-        this: OptWithInfcx<'_, I, InfCtx, &Self>,
-        f: &mut core::fmt::Formatter<'_>,
-    ) -> core::fmt::Result {
-        match this.data {
-            ReEarlyBound(data) => write!(f, "ReEarlyBound({data:?})"),
-
-            ReLateBound(binder_id, bound_region) => {
-                write!(f, "ReLateBound({binder_id:?}, {bound_region:?})")
-            }
-
-            ReFree(fr) => write!(f, "{fr:?}"),
-
-            ReStatic => f.write_str("ReStatic"),
-
-            ReVar(vid) => write!(f, "{:?}", &this.wrap(vid)),
-
-            RePlaceholder(placeholder) => write!(f, "RePlaceholder({placeholder:?})"),
-
-            ReErased => f.write_str("ReErased"),
-
-            ReError(_) => f.write_str("ReError"),
-        }
-    }
-}
+// This is manually implemented because a derive would require `I: Debug`
 impl<I: Interner> fmt::Debug for RegionKind<I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        OptWithInfcx::new_no_ctx(self).fmt(f)
+        match self {
+            ReEarlyBound(ref data) => write!(f, "ReEarlyBound({:?})", data),
+
+            ReLateBound(binder_id, ref bound_region) => {
+                write!(f, "ReLateBound({:?}, {:?})", binder_id, bound_region)
+            }
+
+            ReFree(ref fr) => fr.fmt(f),
+
+            ReStatic => write!(f, "ReStatic"),
+
+            ReVar(ref vid) => vid.fmt(f),
+
+            RePlaceholder(placeholder) => write!(f, "RePlaceholder({:?})", placeholder),
+
+            ReErased => write!(f, "ReErased"),
+        }
     }
 }
 
@@ -1430,7 +1264,6 @@ where
                 a.encode(e);
             }),
             ReErased => e.emit_enum_variant(disc, |_| {}),
-            ReError(_) => e.emit_enum_variant(disc, |_| {}),
         }
     }
 }
@@ -1443,7 +1276,6 @@ where
     I::FreeRegion: Decodable<D>,
     I::RegionVid: Decodable<D>,
     I::PlaceholderRegion: Decodable<D>,
-    I::ErrorGuaranteed: Decodable<D>,
 {
     fn decode(d: &mut D) -> Self {
         match Decoder::read_usize(d) {
@@ -1454,7 +1286,6 @@ where
             4 => ReVar(Decodable::decode(d)),
             5 => RePlaceholder(Decodable::decode(d)),
             6 => ReErased,
-            7 => ReError(Decodable::decode(d)),
             _ => panic!(
                 "{}",
                 format!(
@@ -1483,21 +1314,21 @@ where
     ) {
         std::mem::discriminant(self).hash_stable(hcx, hasher);
         match self {
-            ReErased | ReStatic | ReError(_) => {
+            ReErased | ReStatic => {
                 // No variant fields to hash for these ...
             }
-            ReLateBound(d, r) => {
-                d.hash_stable(hcx, hasher);
-                r.hash_stable(hcx, hasher);
+            ReLateBound(db, br) => {
+                db.hash_stable(hcx, hasher);
+                br.hash_stable(hcx, hasher);
             }
-            ReEarlyBound(r) => {
-                r.hash_stable(hcx, hasher);
+            ReEarlyBound(eb) => {
+                eb.hash_stable(hcx, hasher);
             }
-            ReFree(r) => {
-                r.hash_stable(hcx, hasher);
+            ReFree(ref free_region) => {
+                free_region.hash_stable(hcx, hasher);
             }
-            RePlaceholder(r) => {
-                r.hash_stable(hcx, hasher);
+            RePlaceholder(p) => {
+                p.hash_stable(hcx, hasher);
             }
             ReVar(_) => {
                 panic!("region variables should not be hashed: {self:?}")

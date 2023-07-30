@@ -9,7 +9,7 @@ use crate::fs;
 use crate::io;
 use crate::marker::PhantomData;
 use crate::mem::forget;
-#[cfg(not(any(target_arch = "wasm32", target_env = "sgx", target_os = "hermit")))]
+#[cfg(not(any(target_arch = "wasm32", target_env = "sgx")))]
 use crate::sys::cvt;
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 
@@ -89,7 +89,7 @@ impl OwnedFd {
 impl BorrowedFd<'_> {
     /// Creates a new `OwnedFd` instance that shares the same underlying file
     /// description as the existing `BorrowedFd` instance.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "hermit")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[stable(feature = "io_safety", since = "1.63.0")]
     pub fn try_clone_to_owned(&self) -> crate::io::Result<OwnedFd> {
         // We want to atomically duplicate this file descriptor and set the
@@ -100,7 +100,7 @@ impl BorrowedFd<'_> {
 
         // For ESP-IDF, F_DUPFD is used instead, because the CLOEXEC semantics
         // will never be supported, as this is a bare metal framework with
-        // no capabilities for multi-process execution. While F_DUPFD is also
+        // no capabilities for multi-process execution.  While F_DUPFD is also
         // not supported yet, it might be (currently it returns ENOSYS).
         #[cfg(target_os = "espidf")]
         let cmd = libc::F_DUPFD;
@@ -112,7 +112,7 @@ impl BorrowedFd<'_> {
 
     /// Creates a new `OwnedFd` instance that shares the same underlying file
     /// description as the existing `BorrowedFd` instance.
-    #[cfg(any(target_arch = "wasm32", target_os = "hermit"))]
+    #[cfg(target_arch = "wasm32")]
     #[stable(feature = "io_safety", since = "1.63.0")]
     pub fn try_clone_to_owned(&self) -> crate::io::Result<OwnedFd> {
         Err(crate::io::const_io_error!(
@@ -174,10 +174,7 @@ impl Drop for OwnedFd {
             // the file descriptor was closed or not, and if we retried (for
             // something like EINTR), we might close another valid file descriptor
             // opened after we closed ours.
-            #[cfg(not(target_os = "hermit"))]
             let _ = libc::close(self.fd);
-            #[cfg(target_os = "hermit")]
-            let _ = hermit_abi::close(self.fd);
         }
     }
 }
@@ -201,7 +198,7 @@ macro_rules! impl_is_terminal {
         #[unstable(feature = "sealed", issue = "none")]
         impl crate::sealed::Sealed for $t {}
 
-        #[stable(feature = "is_terminal", since = "1.70.0")]
+        #[unstable(feature = "is_terminal", issue = "98070")]
         impl crate::io::IsTerminal for $t {
             #[inline]
             fn is_terminal(&self) -> bool {
@@ -268,7 +265,7 @@ impl AsFd for OwnedFd {
     #[inline]
     fn as_fd(&self) -> BorrowedFd<'_> {
         // Safety: `OwnedFd` and `BorrowedFd` have the same validity
-        // invariants, and the `BorrowedFd` is bounded by the lifetime
+        // invariants, and the `BorrowdFd` is bounded by the lifetime
         // of `&self`.
         unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
     }
@@ -393,14 +390,6 @@ impl From<OwnedFd> for crate::net::UdpSocket {
 /// # }
 /// ```
 impl<T: AsFd> AsFd for crate::sync::Arc<T> {
-    #[inline]
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        (**self).as_fd()
-    }
-}
-
-#[stable(feature = "asfd_rc", since = "1.69.0")]
-impl<T: AsFd> AsFd for crate::rc::Rc<T> {
     #[inline]
     fn as_fd(&self) -> BorrowedFd<'_> {
         (**self).as_fd()

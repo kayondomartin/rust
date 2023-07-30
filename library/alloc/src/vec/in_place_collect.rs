@@ -178,8 +178,7 @@ where
             )
         };
 
-        // SAFETY: `dst_buf` and `dst_end` are the start and end of the buffer.
-        let len = unsafe { SpecInPlaceCollect::collect_in_place(&mut iterator, dst_buf, dst_end) };
+        let len = SpecInPlaceCollect::collect_in_place(&mut iterator, dst_buf, dst_end);
 
         let src = unsafe { iterator.as_inner().as_into_iter() };
         // check if SourceIter contract was upheld
@@ -202,7 +201,7 @@ where
         //
         // Note: This access to the source wouldn't be allowed by the TrustedRandomIteratorNoCoerce
         // contract (used by SpecInPlaceCollect below). But see the "O(1) collect" section in the
-        // module documentation why this is ok anyway.
+        // module documenttation why this is ok anyway.
         let dst_guard = InPlaceDstBufDrop { ptr: dst_buf, len, cap };
         src.forget_allocation_drop_remaining();
         mem::forget(dst_guard);
@@ -240,7 +239,7 @@ trait SpecInPlaceCollect<T, I>: Iterator<Item = T> {
     /// `Iterator::__iterator_get_unchecked` calls with a `TrustedRandomAccessNoCoerce` bound
     /// on `I` which means the caller of this method must take the safety conditions
     /// of that trait into consideration.
-    unsafe fn collect_in_place(&mut self, dst: *mut T, end: *const T) -> usize;
+    fn collect_in_place(&mut self, dst: *mut T, end: *const T) -> usize;
 }
 
 impl<T, I> SpecInPlaceCollect<T, I> for I
@@ -248,7 +247,7 @@ where
     I: Iterator<Item = T>,
 {
     #[inline]
-    default unsafe fn collect_in_place(&mut self, dst_buf: *mut T, end: *const T) -> usize {
+    default fn collect_in_place(&mut self, dst_buf: *mut T, end: *const T) -> usize {
         // use try-fold since
         // - it vectorizes better for some iterator adapters
         // - unlike most internal iteration methods, it only takes a &mut self
@@ -266,7 +265,7 @@ where
     I: Iterator<Item = T> + TrustedRandomAccessNoCoerce,
 {
     #[inline]
-    unsafe fn collect_in_place(&mut self, dst_buf: *mut T, end: *const T) -> usize {
+    fn collect_in_place(&mut self, dst_buf: *mut T, end: *const T) -> usize {
         let len = self.size();
         let mut drop_guard = InPlaceDrop { inner: dst_buf, dst: dst_buf };
         for i in 0..len {

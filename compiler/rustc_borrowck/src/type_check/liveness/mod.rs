@@ -11,6 +11,7 @@ use crate::{
     constraints::OutlivesConstraintSet,
     facts::{AllFacts, AllFactsExt},
     location::LocationTable,
+    nll::ToRegionVid,
     region_infer::values::RegionValueElements,
     universal_regions::UniversalRegions,
 };
@@ -49,11 +50,13 @@ pub(super) fn generate<'mir, 'tcx>(
         compute_relevant_live_locals(typeck.tcx(), &free_regions, &body);
     let facts_enabled = use_polonius || AllFacts::enabled(typeck.tcx());
 
-    let polonius_drop_used = facts_enabled.then(|| {
+    let polonius_drop_used = if facts_enabled {
         let mut drop_used = Vec::new();
         polonius::populate_access_facts(typeck, body, location_table, move_data, &mut drop_used);
-        drop_used
-    });
+        Some(drop_used)
+    } else {
+        None
+    };
 
     trace::trace(
         typeck,
@@ -79,7 +82,9 @@ fn compute_relevant_live_locals<'tcx>(
 ) -> (Vec<Local>, Vec<Local>) {
     let (boring_locals, relevant_live_locals): (Vec<_>, Vec<_>) =
         body.local_decls.iter_enumerated().partition_map(|(local, local_decl)| {
-            if tcx.all_free_regions_meet(&local_decl.ty, |r| free_regions.contains(&r.as_var())) {
+            if tcx.all_free_regions_meet(&local_decl.ty, |r| {
+                free_regions.contains(&r.to_region_vid())
+            }) {
                 Either::Left(local)
             } else {
                 Either::Right(local)

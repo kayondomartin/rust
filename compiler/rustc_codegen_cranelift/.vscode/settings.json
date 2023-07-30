@@ -1,6 +1,4 @@
 {
-    "editor.formatOnSave": true,
-
     // source for rustc_* is not included in the rust-src component; disable the errors about this
     "rust-analyzer.diagnostics.disabled": ["unresolved-extern-crate", "unresolved-macro-call"],
     "rust-analyzer.imports.granularity.enforce": true,
@@ -9,8 +7,13 @@
     "rust-analyzer.cargo.features": ["unstable-features"],
     "rust-analyzer.linkedProjects": [
         "./Cargo.toml",
-        "./build_system/Cargo.toml",
+        //"./build_sysroot/sysroot_src/library/std/Cargo.toml",
         {
+            "roots": [
+                "./example/mini_core.rs",
+                "./example/mini_core_hello_world.rs",
+                "./example/mod_bench.rs"
+            ],
             "crates": [
                 {
                     "root_module": "./example/mini_core.rs",
@@ -33,11 +36,34 @@
             ]
         },
         {
-            "sysroot_src": "./download/sysroot/sysroot_src/library",
+            "roots": ["./example/std_example.rs"],
             "crates": [
                 {
                     "root_module": "./example/std_example.rs",
-                    "edition": "2015",
+                    "edition": "2018",
+                    "deps": [{ "crate": 1, "name": "std" }],
+                    "cfg": [],
+                },
+                {
+                    "root_module": "./build_sysroot/sysroot_src/library/std/src/lib.rs",
+                    "edition": "2018",
+                    "deps": [],
+                    "cfg": [],
+                },
+            ]
+        },
+        {
+            "roots": ["./y.rs"],
+            "crates": [
+                {
+                    "root_module": "./y.rs",
+                    "edition": "2018",
+                    "deps": [{ "crate": 1, "name": "std" }],
+                    "cfg": [],
+                },
+                {
+                    "root_module": "./build_sysroot/sysroot_src/library/std/src/lib.rs",
+                    "edition": "2018",
                     "deps": [],
                     "cfg": [],
                 },

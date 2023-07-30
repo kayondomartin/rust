@@ -1,12 +1,8 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 use crate::ArtificialField;
 use crate::Overlap;
 use crate::{AccessDepth, Deep, Shallow};
 use rustc_hir as hir;
-use rustc_middle::mir::{
-    Body, BorrowKind, Local, MutBorrowKind, Place, PlaceElem, PlaceRef, ProjectionElem,
-};
+use rustc_middle::mir::{Body, BorrowKind, Local, Place, PlaceElem, PlaceRef, ProjectionElem};
 use rustc_middle::ty::{self, TyCtxt};
 use std::cmp::max;
 use std::iter;
@@ -18,7 +14,7 @@ use std::iter;
 /// being run in the calling context, the conservative choice is to assume the compared indices
 /// are disjoint (and therefore, do not overlap).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum PlaceConflictBias {
+pub(crate) enum PlaceConflictBias {
     Overlap,
     NoOverlap,
 }
@@ -26,7 +22,7 @@ pub enum PlaceConflictBias {
 /// Helper function for checking if places conflict with a mutable borrow and deep access depth.
 /// This is used to check for places conflicting outside of the borrow checking code (such as in
 /// dataflow).
-pub fn places_conflict<'tcx>(
+pub(crate) fn places_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     borrow_place: Place<'tcx>,
@@ -37,7 +33,7 @@ pub fn places_conflict<'tcx>(
         tcx,
         body,
         borrow_place,
-        BorrowKind::Mut { kind: MutBorrowKind::TwoPhaseBorrow },
+        BorrowKind::Mut { allow_two_phase_borrow: true },
         access_place.as_ref(),
         AccessDepth::Deep,
         bias,
@@ -137,10 +133,12 @@ fn place_components_conflict<'tcx>(
     }
 
     // loop invariant: borrow_c is always either equal to access_c or disjoint from it.
-    for ((borrow_place, borrow_c), &access_c) in
-        iter::zip(borrow_place.iter_projections(), access_place.projection)
+    for (i, (borrow_c, &access_c)) in
+        iter::zip(borrow_place.projection, access_place.projection).enumerate()
     {
         debug!(?borrow_c, ?access_c);
+
+        let borrow_proj_base = &borrow_place.projection[..i];
 
         // Borrow and access path both have more components.
         //
@@ -154,7 +152,15 @@ fn place_components_conflict<'tcx>(
         // check whether the components being borrowed vs
         // accessed are disjoint (as in the second example,
         // but not the first).
-        match place_projection_conflict(tcx, body, borrow_place, borrow_c, access_c, bias) {
+        match place_projection_conflict(
+            tcx,
+            body,
+            borrow_local,
+            borrow_proj_base,
+            borrow_c,
+            access_c,
+            bias,
+        ) {
             Overlap::Arbitrary => {
                 // We have encountered different fields of potentially
                 // the same union - the borrow now partially overlaps.
@@ -185,7 +191,8 @@ fn place_components_conflict<'tcx>(
     }
 
     if borrow_place.projection.len() > access_place.projection.len() {
-        for (base, elem) in borrow_place.iter_projections().skip(access_place.projection.len()) {
+        for (i, elem) in borrow_place.projection[access_place.projection.len()..].iter().enumerate()
+        {
             // Borrow path is longer than the access path. Examples:
             //
             // - borrow of `a.b.c`, access to `a.b`
@@ -194,12 +201,13 @@ fn place_components_conflict<'tcx>(
             // our place. This is a conflict if that is a part our
             // access cares about.
 
-            let base_ty = base.ty(body, tcx).ty;
+            let proj_base = &borrow_place.projection[..access_place.projection.len() + i];
+            let base_ty = Place::ty_from(borrow_local, proj_base, body, tcx).ty;
 
             match (elem, &base_ty.kind(), access) {
                 (_, _, Shallow(Some(ArtificialField::ArrayLength)))
                 | (_, _, Shallow(Some(ArtificialField::ShallowBorrow))) => {
-                    // The array length is like additional fields on the
+                    // The array length is like  additional fields on the
                     // type; it does not overlap any existing data there.
                     // Furthermore, if cannot actually be a prefix of any
                     // borrowed place (at least in MIR as it is currently.)
@@ -298,7 +306,8 @@ fn place_base_conflict(l1: Local, l2: Local) -> Overlap {
 fn place_projection_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
-    pi1: PlaceRef<'tcx>,
+    pi1_local: Local,
+    pi1_proj_base: &[PlaceElem<'tcx>],
     pi1_elem: PlaceElem<'tcx>,
     pi2_elem: PlaceElem<'tcx>,
     bias: PlaceConflictBias,
@@ -309,10 +318,16 @@ fn place_projection_conflict<'tcx>(
             debug!("place_element_conflict: DISJOINT-OR-EQ-DEREF");
             Overlap::EqualOrDisjoint
         }
-        (ProjectionElem::OpaqueCast(_), ProjectionElem::OpaqueCast(_)) => {
-            // casts to other types may always conflict irrespective of the type being cast to.
-            debug!("place_element_conflict: DISJOINT-OR-EQ-OPAQUE");
-            Overlap::EqualOrDisjoint
+        (ProjectionElem::OpaqueCast(v1), ProjectionElem::OpaqueCast(v2)) => {
+            if v1 == v2 {
+                // same type - recur.
+                debug!("place_element_conflict: DISJOINT-OR-EQ-OPAQUE");
+                Overlap::EqualOrDisjoint
+            } else {
+                // Different types. Disjoint!
+                debug!("place_element_conflict: DISJOINT-OPAQUE");
+                Overlap::Disjoint
+            }
         }
         (ProjectionElem::Field(f1, _), ProjectionElem::Field(f2, _)) => {
             if f1 == f2 {
@@ -320,7 +335,7 @@ fn place_projection_conflict<'tcx>(
                 debug!("place_element_conflict: DISJOINT-OR-EQ-FIELD");
                 Overlap::EqualOrDisjoint
             } else {
-                let ty = pi1.ty(body, tcx).ty;
+                let ty = Place::ty_from(pi1_local, pi1_proj_base, body, tcx).ty;
                 if ty.is_union() {
                     // Different fields of a union, we are basically stuck.
                     debug!("place_element_conflict: STUCK-UNION");

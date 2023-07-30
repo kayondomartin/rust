@@ -4,20 +4,14 @@ use crate::mem;
 
 /// A cell which can be written to only once.
 ///
-/// This allows obtaining a shared `&T` reference to its inner value without copying or replacing
-/// it (unlike [`Cell`]), and without runtime borrow checks (unlike [`RefCell`]). However,
-/// only immutable references can be obtained unless one has a mutable reference to the cell
-/// itself.
-///
-/// For a thread-safe version of this struct, see [`std::sync::OnceLock`].
-///
-/// [`RefCell`]: crate::cell::RefCell
-/// [`Cell`]: crate::cell::Cell
-/// [`std::sync::OnceLock`]: ../../std/sync/struct.OnceLock.html
+/// Unlike `RefCell`, a `OnceCell` only provides shared `&T` references to its value.
+/// Unlike `Cell`, a `OnceCell` doesn't require copying or replacing the value to access it.
 ///
 /// # Examples
 ///
 /// ```
+/// #![feature(once_cell)]
+///
 /// use std::cell::OnceCell;
 ///
 /// let cell = OnceCell::new();
@@ -29,7 +23,7 @@ use crate::mem;
 /// assert_eq!(value, "Hello, World!");
 /// assert!(cell.get().is_some());
 /// ```
-#[stable(feature = "once_cell", since = "1.70.0")]
+#[unstable(feature = "once_cell", issue = "74465")]
 pub struct OnceCell<T> {
     // Invariant: written to at most once.
     inner: UnsafeCell<Option<T>>,
@@ -37,10 +31,8 @@ pub struct OnceCell<T> {
 
 impl<T> OnceCell<T> {
     /// Creates a new empty cell.
-    #[inline]
+    #[unstable(feature = "once_cell", issue = "74465")]
     #[must_use]
-    #[stable(feature = "once_cell", since = "1.70.0")]
-    #[rustc_const_stable(feature = "once_cell", since = "1.70.0")]
     pub const fn new() -> OnceCell<T> {
         OnceCell { inner: UnsafeCell::new(None) }
     }
@@ -48,8 +40,7 @@ impl<T> OnceCell<T> {
     /// Gets the reference to the underlying value.
     ///
     /// Returns `None` if the cell is empty.
-    #[inline]
-    #[stable(feature = "once_cell", since = "1.70.0")]
+    #[unstable(feature = "once_cell", issue = "74465")]
     pub fn get(&self) -> Option<&T> {
         // SAFETY: Safe due to `inner`'s invariant
         unsafe { &*self.inner.get() }.as_ref()
@@ -58,8 +49,7 @@ impl<T> OnceCell<T> {
     /// Gets the mutable reference to the underlying value.
     ///
     /// Returns `None` if the cell is empty.
-    #[inline]
-    #[stable(feature = "once_cell", since = "1.70.0")]
+    #[unstable(feature = "once_cell", issue = "74465")]
     pub fn get_mut(&mut self) -> Option<&mut T> {
         self.inner.get_mut().as_mut()
     }
@@ -74,6 +64,8 @@ impl<T> OnceCell<T> {
     /// # Examples
     ///
     /// ```
+    /// #![feature(once_cell)]
+    ///
     /// use std::cell::OnceCell;
     ///
     /// let cell = OnceCell::new();
@@ -84,8 +76,7 @@ impl<T> OnceCell<T> {
     ///
     /// assert!(cell.get().is_some());
     /// ```
-    #[inline]
-    #[stable(feature = "once_cell", since = "1.70.0")]
+    #[unstable(feature = "once_cell", issue = "74465")]
     pub fn set(&self, value: T) -> Result<(), T> {
         // SAFETY: Safe because we cannot have overlapping mutable borrows
         let slot = unsafe { &*self.inner.get() };
@@ -116,6 +107,8 @@ impl<T> OnceCell<T> {
     /// # Examples
     ///
     /// ```
+    /// #![feature(once_cell)]
+    ///
     /// use std::cell::OnceCell;
     ///
     /// let cell = OnceCell::new();
@@ -124,8 +117,7 @@ impl<T> OnceCell<T> {
     /// let value = cell.get_or_init(|| unreachable!());
     /// assert_eq!(value, &92);
     /// ```
-    #[inline]
-    #[stable(feature = "once_cell", since = "1.70.0")]
+    #[unstable(feature = "once_cell", issue = "74465")]
     pub fn get_or_init<F>(&self, f: F) -> &T
     where
         F: FnOnce() -> T,
@@ -150,7 +142,7 @@ impl<T> OnceCell<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(once_cell_try)]
+    /// #![feature(once_cell)]
     ///
     /// use std::cell::OnceCell;
     ///
@@ -163,7 +155,7 @@ impl<T> OnceCell<T> {
     /// assert_eq!(value, Ok(&92));
     /// assert_eq!(cell.get(), Some(&92))
     /// ```
-    #[unstable(feature = "once_cell_try", issue = "109737")]
+    #[unstable(feature = "once_cell", issue = "74465")]
     pub fn get_or_try_init<F, E>(&self, f: F) -> Result<&T, E>
     where
         F: FnOnce() -> Result<T, E>,
@@ -196,6 +188,8 @@ impl<T> OnceCell<T> {
     /// # Examples
     ///
     /// ```
+    /// #![feature(once_cell)]
+    ///
     /// use std::cell::OnceCell;
     ///
     /// let cell: OnceCell<String> = OnceCell::new();
@@ -205,8 +199,7 @@ impl<T> OnceCell<T> {
     /// cell.set("hello".to_string()).unwrap();
     /// assert_eq!(cell.into_inner(), Some("hello".to_string()));
     /// ```
-    #[inline]
-    #[stable(feature = "once_cell", since = "1.70.0")]
+    #[unstable(feature = "once_cell", issue = "74465")]
     pub fn into_inner(self) -> Option<T> {
         // Because `into_inner` takes `self` by value, the compiler statically verifies
         // that it is not currently borrowed. So it is safe to move out `Option<T>`.
@@ -222,6 +215,8 @@ impl<T> OnceCell<T> {
     /// # Examples
     ///
     /// ```
+    /// #![feature(once_cell)]
+    ///
     /// use std::cell::OnceCell;
     ///
     /// let mut cell: OnceCell<String> = OnceCell::new();
@@ -232,22 +227,20 @@ impl<T> OnceCell<T> {
     /// assert_eq!(cell.take(), Some("hello".to_string()));
     /// assert_eq!(cell.get(), None);
     /// ```
-    #[inline]
-    #[stable(feature = "once_cell", since = "1.70.0")]
+    #[unstable(feature = "once_cell", issue = "74465")]
     pub fn take(&mut self) -> Option<T> {
         mem::take(self).into_inner()
     }
 }
 
-#[stable(feature = "once_cell", since = "1.70.0")]
+#[unstable(feature = "once_cell", issue = "74465")]
 impl<T> Default for OnceCell<T> {
-    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[stable(feature = "once_cell", since = "1.70.0")]
+#[unstable(feature = "once_cell", issue = "74465")]
 impl<T: fmt::Debug> fmt::Debug for OnceCell<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.get() {
@@ -257,9 +250,8 @@ impl<T: fmt::Debug> fmt::Debug for OnceCell<T> {
     }
 }
 
-#[stable(feature = "once_cell", since = "1.70.0")]
+#[unstable(feature = "once_cell", issue = "74465")]
 impl<T: Clone> Clone for OnceCell<T> {
-    #[inline]
     fn clone(&self) -> OnceCell<T> {
         let res = OnceCell::new();
         if let Some(value) = self.get() {
@@ -272,26 +264,20 @@ impl<T: Clone> Clone for OnceCell<T> {
     }
 }
 
-#[stable(feature = "once_cell", since = "1.70.0")]
+#[unstable(feature = "once_cell", issue = "74465")]
 impl<T: PartialEq> PartialEq for OnceCell<T> {
-    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.get() == other.get()
     }
 }
 
-#[stable(feature = "once_cell", since = "1.70.0")]
+#[unstable(feature = "once_cell", issue = "74465")]
 impl<T: Eq> Eq for OnceCell<T> {}
 
-#[stable(feature = "once_cell", since = "1.70.0")]
-impl<T> From<T> for OnceCell<T> {
+#[unstable(feature = "once_cell", issue = "74465")]
+impl<T> const From<T> for OnceCell<T> {
     /// Creates a new `OnceCell<T>` which already contains the given `value`.
-    #[inline]
     fn from(value: T) -> Self {
         OnceCell { inner: UnsafeCell::new(Some(value)) }
     }
 }
-
-// Just like for `Cell<T>` this isn't needed, but results in nicer error messages.
-#[stable(feature = "once_cell", since = "1.70.0")]
-impl<T> !Sync for OnceCell<T> {}

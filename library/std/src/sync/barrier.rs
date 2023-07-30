@@ -13,10 +13,9 @@ use crate::sync::{Condvar, Mutex};
 /// use std::sync::{Arc, Barrier};
 /// use std::thread;
 ///
-/// let n = 10;
-/// let mut handles = Vec::with_capacity(n);
-/// let barrier = Arc::new(Barrier::new(n));
-/// for _ in 0..n {
+/// let mut handles = Vec::with_capacity(10);
+/// let barrier = Arc::new(Barrier::new(10));
+/// for _ in 0..10 {
 ///     let c = Arc::clone(&barrier);
 ///     // The same messages will be printed together.
 ///     // You will NOT see any interleaving.
@@ -106,10 +105,9 @@ impl Barrier {
     /// use std::sync::{Arc, Barrier};
     /// use std::thread;
     ///
-    /// let n = 10;
-    /// let mut handles = Vec::with_capacity(n);
-    /// let barrier = Arc::new(Barrier::new(n));
-    /// for _ in 0..n {
+    /// let mut handles = Vec::with_capacity(10);
+    /// let barrier = Arc::new(Barrier::new(10));
+    /// for _ in 0..10 {
     ///     let c = Arc::clone(&barrier);
     ///     // The same messages will be printed together.
     ///     // You will NOT see any interleaving.

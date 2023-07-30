@@ -30,7 +30,7 @@ impl<'tcx> ExplicitPredicatesMap<'tcx> {
             // process predicates and convert to `RequiredPredicates` entry, see below
             for &(predicate, span) in predicates.predicates {
                 match predicate.kind().skip_binder() {
-                    ty::ClauseKind::TypeOutlives(OutlivesPredicate(ty, reg)) => {
+                    ty::PredicateKind::TypeOutlives(OutlivesPredicate(ty, reg)) => {
                         insert_outlives_predicate(
                             tcx,
                             ty.into(),
@@ -40,7 +40,7 @@ impl<'tcx> ExplicitPredicatesMap<'tcx> {
                         )
                     }
 
-                    ty::ClauseKind::RegionOutlives(OutlivesPredicate(reg1, reg2)) => {
+                    ty::PredicateKind::RegionOutlives(OutlivesPredicate(reg1, reg2)) => {
                         insert_outlives_predicate(
                             tcx,
                             reg1.into(),
@@ -49,15 +49,21 @@ impl<'tcx> ExplicitPredicatesMap<'tcx> {
                             &mut required_predicates,
                         )
                     }
-                    ty::ClauseKind::Trait(_)
-                    | ty::ClauseKind::Projection(_)
-                    | ty::ClauseKind::ConstArgHasType(_, _)
-                    | ty::ClauseKind::WellFormed(_)
-                    | ty::ClauseKind::ConstEvaluatable(_) => {}
+
+                    ty::PredicateKind::Trait(..)
+                    | ty::PredicateKind::Projection(..)
+                    | ty::PredicateKind::WellFormed(..)
+                    | ty::PredicateKind::ObjectSafe(..)
+                    | ty::PredicateKind::ClosureKind(..)
+                    | ty::PredicateKind::Subtype(..)
+                    | ty::PredicateKind::Coerce(..)
+                    | ty::PredicateKind::ConstEvaluatable(..)
+                    | ty::PredicateKind::ConstEquate(..)
+                    | ty::PredicateKind::TypeWellFormedFromEnv(..) => (),
                 }
             }
 
-            ty::EarlyBinder::bind(required_predicates)
+            ty::EarlyBinder(required_predicates)
         })
     }
 }

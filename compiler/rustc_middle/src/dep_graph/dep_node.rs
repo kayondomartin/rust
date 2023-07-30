@@ -175,7 +175,7 @@ impl DepNodeExt for DepNode {
     /// DepNode. Condition (2) might not be fulfilled if a DepNode
     /// refers to something from the previous compilation session that
     /// has been removed.
-    fn extract_def_id(&self, tcx: TyCtxt<'_>) -> Option<DefId> {
+    fn extract_def_id<'tcx>(&self, tcx: TyCtxt<'tcx>) -> Option<DefId> {
         if tcx.fingerprint_style(self.kind) == FingerprintStyle::DefPathHash {
             Some(tcx.def_path_hash_to_def_id(DefPathHash(self.hash.into()), &mut || {
                 panic!("Failed to extract DefId: {:?} {}", self.kind, self.hash)
@@ -357,20 +357,20 @@ impl<'tcx> DepNodeParams<TyCtxt<'tcx>> for HirId {
         Fingerprint::new(
             // `owner` is local, so is completely defined by the local hash
             def_path_hash.local_hash(),
-            local_id.as_u32() as u64,
+            local_id.as_u32().into(),
         )
     }
 
     #[inline(always)]
     fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
         let HirId { owner, local_id } = *self;
-        format!("{}.{}", tcx.def_path_str(owner), local_id.as_u32())
+        format!("{}.{}", tcx.def_path_str(owner.to_def_id()), local_id.as_u32())
     }
 
     #[inline(always)]
     fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
         if tcx.fingerprint_style(dep_node.kind) == FingerprintStyle::HirId {
-            let (local_hash, local_id) = Fingerprint::from(dep_node.hash).split();
+            let (local_hash, local_id) = Fingerprint::from(dep_node.hash).as_value();
             let def_path_hash = DefPathHash::new(tcx.sess.local_stable_crate_id(), local_hash);
             let def_id = tcx
                 .def_path_hash_to_def_id(def_path_hash, &mut || {
@@ -378,7 +378,6 @@ impl<'tcx> DepNodeParams<TyCtxt<'tcx>> for HirId {
                 })
                 .expect_local();
             let local_id = local_id
-                .as_u64()
                 .try_into()
                 .unwrap_or_else(|_| panic!("local id should be u32, found {:?}", local_id));
             Some(HirId { owner: OwnerId { def_id }, local_id: ItemLocalId::from_u32(local_id) })

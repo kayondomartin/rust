@@ -1,4 +1,6 @@
-//! Redundant constants module for the [`i32` primitive type][i32].
+//! Constants for the 32-bit signed integer type.
+//!
+//! *[See also the `i32` primitive type][i32].*
 //!
 //! New code should use the associated constants directly on the primitive type.
 

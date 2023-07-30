@@ -10,7 +10,7 @@
 //! > self-consistent and sensible LLVM IR generation, but does not
 //! > conform to any particular ABI.
 //! >
-//! > - Doxygen Documentation of `clang::DefaultABIInfo`
+//! > - Doxygen Doxumentation of `clang::DefaultABIInfo`
 //!
 //! This calling convention may not match AVR-GCC in all cases.
 //!

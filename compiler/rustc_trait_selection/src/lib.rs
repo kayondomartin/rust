@@ -10,17 +10,16 @@
 //!
 //! This API is completely unstable and subject to change.
 
+#![allow(rustc::potential_query_instability)]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
-#![feature(associated_type_bounds)]
 #![feature(box_patterns)]
 #![feature(control_flow_enum)]
-#![feature(extract_if)]
+#![feature(drain_filter)]
+#![feature(hash_drain_filter)]
 #![feature(let_chains)]
 #![feature(if_let_guard)]
 #![feature(never_type)]
-#![feature(result_option_inspect)]
 #![feature(type_alias_impl_trait)]
-#![feature(min_specialization)]
 #![recursion_limit = "512"] // For rustdoc
 
 #[macro_use]
@@ -35,12 +34,7 @@ extern crate rustc_middle;
 #[macro_use]
 extern crate smallvec;
 
-use rustc_errors::{DiagnosticMessage, SubdiagnosticMessage};
-use rustc_fluent_macro::fluent_messages;
-
+pub mod autoderef;
 pub mod errors;
 pub mod infer;
-pub mod solve;
 pub mod traits;
-
-fluent_messages! { "../messages.ftl" }

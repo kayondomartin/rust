@@ -3,7 +3,7 @@
 //! zero-sized structure.
 
 use rustc_index::bit_set::{BitSet, ChunkedBitSet};
-use rustc_index::Idx;
+use rustc_index::vec::Idx;
 use rustc_middle::mir::visit::{MirVisitable, Visitor};
 use rustc_middle::mir::{self, Body, Location};
 use rustc_middle::ty::{self, TyCtxt};
@@ -19,14 +19,16 @@ use crate::{drop_flag_effects, on_all_children_bits};
 use crate::{lattice, AnalysisDomain, GenKill, GenKillAnalysis};
 
 mod borrowed_locals;
+mod init_locals;
 mod liveness;
 mod storage_liveness;
 
 pub use self::borrowed_locals::borrowed_locals;
 pub use self::borrowed_locals::MaybeBorrowedLocals;
+pub use self::init_locals::MaybeInitializedLocals;
 pub use self::liveness::MaybeLiveLocals;
 pub use self::liveness::MaybeTransitiveLiveLocals;
-pub use self::storage_liveness::{MaybeRequiresStorage, MaybeStorageDead, MaybeStorageLive};
+pub use self::storage_liveness::{MaybeRequiresStorage, MaybeStorageLive};
 
 /// `MaybeInitializedPlaces` tracks all places that might be
 /// initialized upon reaching a particular point in the control flow
@@ -306,7 +308,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
     type Idx = MovePathIndex;
 
     fn statement_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         statement: &mir::Statement<'tcx>,
         location: Location,
@@ -329,7 +331,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
     }
 
     fn terminator_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         terminator: &mir::Terminator<'tcx>,
         location: Location,
@@ -351,7 +353,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
     }
 
     fn call_return_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         _block: mir::BasicBlock,
         return_places: CallReturnPlaces<'_, 'tcx>,
@@ -372,7 +374,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
     }
 
     fn switch_int_edge_effects<G: GenKill<Self::Idx>>(
-        &mut self,
+        &self,
         block: mir::BasicBlock,
         discr: &mir::Operand<'tcx>,
         edge_effects: &mut impl SwitchIntEdgeEffects<G>,
@@ -442,7 +444,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
     type Idx = MovePathIndex;
 
     fn statement_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         _statement: &mir::Statement<'tcx>,
         location: Location,
@@ -456,7 +458,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
     }
 
     fn terminator_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         _terminator: &mir::Terminator<'tcx>,
         location: Location,
@@ -467,7 +469,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
     }
 
     fn call_return_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         _block: mir::BasicBlock,
         return_places: CallReturnPlaces<'_, 'tcx>,
@@ -488,7 +490,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
     }
 
     fn switch_int_edge_effects<G: GenKill<Self::Idx>>(
-        &mut self,
+        &self,
         block: mir::BasicBlock,
         discr: &mir::Operand<'tcx>,
         edge_effects: &mut impl SwitchIntEdgeEffects<G>,
@@ -562,7 +564,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for DefinitelyInitializedPlaces<'_, 'tcx> {
     type Idx = MovePathIndex;
 
     fn statement_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         _statement: &mir::Statement<'tcx>,
         location: Location,
@@ -573,7 +575,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for DefinitelyInitializedPlaces<'_, 'tcx> {
     }
 
     fn terminator_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         _terminator: &mir::Terminator<'tcx>,
         location: Location,
@@ -584,7 +586,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for DefinitelyInitializedPlaces<'_, 'tcx> {
     }
 
     fn call_return_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         _block: mir::BasicBlock,
         return_places: CallReturnPlaces<'_, 'tcx>,
@@ -627,7 +629,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for EverInitializedPlaces<'_, 'tcx> {
 
     #[instrument(skip(self, trans), level = "debug")]
     fn statement_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         stmt: &mir::Statement<'tcx>,
         location: Location,
@@ -651,7 +653,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for EverInitializedPlaces<'_, 'tcx> {
 
     #[instrument(skip(self, trans, _terminator), level = "debug")]
     fn terminator_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         _terminator: &mir::Terminator<'tcx>,
         location: Location,
@@ -672,7 +674,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for EverInitializedPlaces<'_, 'tcx> {
     }
 
     fn call_return_effect(
-        &mut self,
+        &self,
         trans: &mut impl GenKill<Self::Idx>,
         block: mir::BasicBlock,
         _return_places: CallReturnPlaces<'_, 'tcx>,
@@ -731,11 +733,11 @@ fn switch_on_enum_discriminant<'mir, 'tcx>(
 
 struct OnMutBorrow<F>(F);
 
-impl<'tcx, F> Visitor<'tcx> for OnMutBorrow<F>
+impl<F> Visitor<'_> for OnMutBorrow<F>
 where
-    F: FnMut(&mir::Place<'tcx>),
+    F: FnMut(&mir::Place<'_>),
 {
-    fn visit_rvalue(&mut self, rvalue: &mir::Rvalue<'tcx>, location: Location) {
+    fn visit_rvalue(&mut self, rvalue: &mir::Rvalue<'_>, location: Location) {
         // FIXME: Does `&raw const foo` allow mutation? See #90413.
         match rvalue {
             mir::Rvalue::Ref(_, mir::BorrowKind::Mut { .. }, place)
@@ -750,13 +752,13 @@ where
 
 /// Calls `f` for each mutable borrow or raw reference in the program.
 ///
-/// This DOES NOT call `f` for a shared borrow of a type with interior mutability. That's okay for
+/// This DOES NOT call `f` for a shared borrow of a type with interior mutability.  That's okay for
 /// initializedness, because we cannot move from an `UnsafeCell` (outside of `core::cell`), but
 /// other analyses will likely need to check for `!Freeze`.
 fn for_each_mut_borrow<'tcx>(
     mir: &impl MirVisitable<'tcx>,
     location: Location,
-    f: impl FnMut(&mir::Place<'tcx>),
+    f: impl FnMut(&mir::Place<'_>),
 ) {
     let mut vis = OnMutBorrow(f);
 

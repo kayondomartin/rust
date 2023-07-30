@@ -11,6 +11,8 @@ pub struct Mutex {
     mtx: SpinIdOnceCell<()>,
 }
 
+pub type MovableMutex = Mutex;
+
 /// Create a mutex object. This function never panics.
 fn new_mtx() -> Result<abi::ID, ItronError> {
     ItronError::err_if_negative(unsafe {
@@ -37,7 +39,7 @@ impl Mutex {
         }
     }
 
-    pub fn lock(&self) {
+    pub unsafe fn lock(&self) {
         let mtx = self.raw();
         expect_success(unsafe { abi::loc_mtx(mtx) }, &"loc_mtx");
     }
@@ -47,7 +49,7 @@ impl Mutex {
         expect_success_aborting(unsafe { abi::unl_mtx(mtx) }, &"unl_mtx");
     }
 
-    pub fn try_lock(&self) -> bool {
+    pub unsafe fn try_lock(&self) -> bool {
         let mtx = self.raw();
         match unsafe { abi::ploc_mtx(mtx) } {
             abi::E_TMOUT => false,
@@ -72,7 +74,7 @@ pub(super) struct MutexGuard<'a>(&'a Mutex);
 impl<'a> MutexGuard<'a> {
     #[inline]
     pub(super) fn lock(x: &'a Mutex) -> Self {
-        x.lock();
+        unsafe { x.lock() };
         Self(x)
     }
 }

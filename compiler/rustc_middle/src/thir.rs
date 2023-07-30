@@ -9,22 +9,22 @@
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/thir.html
 
 use rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece};
-use rustc_errors::{DiagnosticArgValue, IntoDiagnosticArg};
 use rustc_hir as hir;
+use rustc_hir::def::CtorKind;
 use rustc_hir::def_id::DefId;
 use rustc_hir::RangeEnd;
 use rustc_index::newtype_index;
-use rustc_index::IndexVec;
+use rustc_index::vec::IndexVec;
 use rustc_middle::middle::region;
 use rustc_middle::mir::interpret::AllocId;
-use rustc_middle::mir::{self, BinOp, BorrowKind, FakeReadCause, Mutability, UnOp};
-use rustc_middle::ty::adjustment::PointerCoercion;
+use rustc_middle::mir::{self, BinOp, BorrowKind, FakeReadCause, Field, Mutability, UnOp};
+use rustc_middle::ty::adjustment::PointerCast;
 use rustc_middle::ty::subst::SubstsRef;
-use rustc_middle::ty::{self, AdtDef, FnSig, List, Ty, UpvarSubsts};
+use rustc_middle::ty::{self, AdtDef, Ty, UpvarSubsts};
 use rustc_middle::ty::{CanonicalUserType, CanonicalUserTypeAnnotation};
 use rustc_span::def_id::LocalDefId;
 use rustc_span::{sym, Span, Symbol, DUMMY_SP};
-use rustc_target::abi::{FieldIdx, VariantIdx};
+use rustc_target::abi::VariantIdx;
 use rustc_target::asm::InlineAsmRegOrRegClass;
 use std::fmt;
 use std::ops::Index;
@@ -32,17 +32,13 @@ use std::ops::Index;
 pub mod visit;
 
 macro_rules! thir_with_elements {
-    (
-        $($field_name:ident: $field_ty:ty,)*
-
-    @elements:
-        $($name:ident: $id:ty => $value:ty => $format:literal,)*
-    ) => {
+    ($($name:ident: $id:ty => $value:ty => $format:literal,)*) => {
         $(
             newtype_index! {
                 #[derive(HashStable)]
-                #[debug_format = $format]
-                pub struct $id {}
+                pub struct $id {
+                    DEBUG_FORMAT = $format
+                }
             }
         )*
 
@@ -52,19 +48,13 @@ macro_rules! thir_with_elements {
         #[derive(Debug, HashStable, Clone)]
         pub struct Thir<'tcx> {
             $(
-                pub $field_name: $field_ty,
-            )*
-            $(
                 pub $name: IndexVec<$id, $value>,
             )*
         }
 
         impl<'tcx> Thir<'tcx> {
-            pub fn new($($field_name: $field_ty,)*) -> Thir<'tcx> {
+            pub fn new() -> Thir<'tcx> {
                 Thir {
-                    $(
-                        $field_name,
-                    )*
                     $(
                         $name: IndexVec::new(),
                     )*
@@ -86,20 +76,11 @@ macro_rules! thir_with_elements {
 pub const UPVAR_ENV_PARAM: ParamId = ParamId::from_u32(0);
 
 thir_with_elements! {
-    body_type: BodyTy<'tcx>,
-
-@elements:
     arms: ArmId => Arm<'tcx> => "a{}",
     blocks: BlockId => Block => "b{}",
     exprs: ExprId => Expr<'tcx> => "e{}",
     stmts: StmtId => Stmt<'tcx> => "s{}",
     params: ParamId => Param<'tcx> => "p{}",
-}
-
-#[derive(Debug, HashStable, Clone)]
-pub enum BodyTy<'tcx> {
-    Const(Ty<'tcx>),
-    Fn(FnSig<'tcx>),
 }
 
 /// Description of a type-checked function parameter.
@@ -227,21 +208,16 @@ pub enum StmtKind<'tcx> {
 
         /// The lint level for this `let` statement.
         lint_level: LintLevel,
-
-        /// Span of the `let <PAT> = <INIT>` part.
-        span: Span,
     },
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, HashStable, TyEncodable, TyDecodable)]
+#[derive(TypeFoldable, TypeVisitable)]
 pub struct LocalVarId(pub hir::HirId);
 
 /// A THIR expression.
 #[derive(Clone, Debug, HashStable)]
 pub struct Expr<'tcx> {
-    /// kind of expression
-    pub kind: ExprKind<'tcx>,
-
     /// The type of this expression
     pub ty: Ty<'tcx>,
 
@@ -251,6 +227,9 @@ pub struct Expr<'tcx> {
 
     /// span of the expression in the source
     pub span: Span,
+
+    /// kind of expression
+    pub kind: ExprKind<'tcx>,
 }
 
 #[derive(Clone, Debug, HashStable)]
@@ -329,10 +308,9 @@ pub enum ExprKind<'tcx> {
     NeverToAny {
         source: ExprId,
     },
-    /// A pointer coercion. More information can be found in [`PointerCoercion`].
-    /// Pointer casts that cannot be done by coercions are represented by [`ExprKind::Cast`].
-    PointerCoercion {
-        cast: PointerCoercion,
+    /// A pointer cast. More information can be found in [`PointerCast`].
+    Pointer {
+        cast: PointerCast,
         source: ExprId,
     },
     /// A `loop` expression.
@@ -369,7 +347,7 @@ pub enum ExprKind<'tcx> {
         /// Variant containing the field.
         variant_index: VariantIdx,
         /// This can be a named (`.foo`) or unnamed (`.0`) field.
-        name: FieldIdx,
+        name: Field,
     },
     /// A *non-overloaded* indexing operation.
     Index {
@@ -410,10 +388,6 @@ pub enum ExprKind<'tcx> {
     /// A `return` expression.
     Return {
         value: Option<ExprId>,
-    },
-    /// A `become` expression.
-    Become {
-        value: ExprId,
     },
     /// An inline `const` block, e.g. `const {}`.
     ConstBlock {
@@ -485,11 +459,6 @@ pub enum ExprKind<'tcx> {
     },
     /// Inline assembly, i.e. `asm!()`.
     InlineAsm(Box<InlineAsmExpr<'tcx>>),
-    /// Field offset (`offset_of!`)
-    OffsetOf {
-        container: Ty<'tcx>,
-        fields: &'tcx List<FieldIdx>,
-    },
     /// An expression taking a reference to a thread local.
     ThreadLocalRef(DefId),
     /// A `yield` expression.
@@ -503,7 +472,7 @@ pub enum ExprKind<'tcx> {
 /// This is used in struct constructors.
 #[derive(Clone, Debug, HashStable)]
 pub struct FieldExpr {
-    pub name: FieldIdx,
+    pub name: Field,
     pub expr: ExprId,
 }
 
@@ -582,7 +551,7 @@ pub enum BindingMode {
 
 #[derive(Clone, Debug, HashStable)]
 pub struct FieldPat<'tcx> {
-    pub field: FieldIdx,
+    pub field: Field,
     pub pattern: Box<Pat<'tcx>>,
 }
 
@@ -605,61 +574,6 @@ impl<'tcx> Pat<'tcx> {
             }
             _ => None,
         }
-    }
-
-    /// Call `f` on every "binding" in a pattern, e.g., on `a` in
-    /// `match foo() { Some(a) => (), None => () }`
-    pub fn each_binding(&self, mut f: impl FnMut(Symbol, BindingMode, Ty<'tcx>, Span)) {
-        self.walk_always(|p| {
-            if let PatKind::Binding { name, mode, ty, .. } = p.kind {
-                f(name, mode, ty, p.span);
-            }
-        });
-    }
-
-    /// Walk the pattern in left-to-right order.
-    ///
-    /// If `it(pat)` returns `false`, the children are not visited.
-    pub fn walk(&self, mut it: impl FnMut(&Pat<'tcx>) -> bool) {
-        self.walk_(&mut it)
-    }
-
-    fn walk_(&self, it: &mut impl FnMut(&Pat<'tcx>) -> bool) {
-        if !it(self) {
-            return;
-        }
-
-        use PatKind::*;
-        match &self.kind {
-            Wild | Range(..) | Binding { subpattern: None, .. } | Constant { .. } => {}
-            AscribeUserType { subpattern, .. }
-            | Binding { subpattern: Some(subpattern), .. }
-            | Deref { subpattern } => subpattern.walk_(it),
-            Leaf { subpatterns } | Variant { subpatterns, .. } => {
-                subpatterns.iter().for_each(|field| field.pattern.walk_(it))
-            }
-            Or { pats } => pats.iter().for_each(|p| p.walk_(it)),
-            Array { box ref prefix, ref slice, box ref suffix }
-            | Slice { box ref prefix, ref slice, box ref suffix } => {
-                prefix.iter().chain(slice.iter()).chain(suffix.iter()).for_each(|p| p.walk_(it))
-            }
-        }
-    }
-
-    /// Walk the pattern in left-to-right order.
-    ///
-    /// If you always want to recurse, prefer this method over `walk`.
-    pub fn walk_always(&self, mut it: impl FnMut(&Pat<'tcx>)) {
-        self.walk(|p| {
-            it(p);
-            true
-        })
-    }
-}
-
-impl<'tcx> IntoDiagnosticArg for Pat<'tcx> {
-    fn into_diagnostic_arg(self) -> DiagnosticArgValue<'static> {
-        format!("{}", self).into_diagnostic_arg()
     }
 }
 
@@ -837,7 +751,7 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
 
                     // Only for Adt we can have `S {...}`,
                     // which we handle separately here.
-                    if variant.ctor.is_none() {
+                    if variant.ctor_kind == CtorKind::Fictive {
                         write!(f, " {{ ")?;
 
                         let mut printed = 0;
@@ -845,7 +759,7 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
                             if let PatKind::Wild = p.pattern.kind {
                                 continue;
                             }
-                            let name = variant.fields[p.field].name;
+                            let name = variant.fields[p.field.index()].name;
                             write!(f, "{}{}: {}", start_or_comma(), name, p.pattern)?;
                             printed += 1;
                         }
@@ -938,9 +852,9 @@ mod size_asserts {
     static_assert_size!(Block, 56);
     static_assert_size!(Expr<'_>, 64);
     static_assert_size!(ExprKind<'_>, 40);
-    static_assert_size!(Pat<'_>, 64);
-    static_assert_size!(PatKind<'_>, 48);
-    static_assert_size!(Stmt<'_>, 56);
-    static_assert_size!(StmtKind<'_>, 48);
+    static_assert_size!(Pat<'_>, 72);
+    static_assert_size!(PatKind<'_>, 56);
+    static_assert_size!(Stmt<'_>, 48);
+    static_assert_size!(StmtKind<'_>, 40);
     // tidy-alphabetical-end
 }

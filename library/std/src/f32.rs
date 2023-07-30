@@ -69,8 +69,8 @@ impl f32 {
         unsafe { intrinsics::ceilf32(self) }
     }
 
-    /// Returns the nearest integer to `self`. If a value is half-way between two
-    /// integers, round away from `0.0`.
+    /// Returns the nearest integer to `self`. Round half-way cases away from
+    /// `0.0`.
     ///
     /// # Examples
     ///
@@ -78,14 +78,10 @@ impl f32 {
     /// let f = 3.3_f32;
     /// let g = -3.3_f32;
     /// let h = -3.7_f32;
-    /// let i = 3.5_f32;
-    /// let j = 4.5_f32;
     ///
     /// assert_eq!(f.round(), 3.0);
     /// assert_eq!(g.round(), -3.0);
     /// assert_eq!(h.round(), -4.0);
-    /// assert_eq!(i.round(), 4.0);
-    /// assert_eq!(j.round(), 5.0);
     /// ```
     #[rustc_allow_incoherent_impl]
     #[must_use = "method returns a new number and does not mutate the original value"]
@@ -93,32 +89,6 @@ impl f32 {
     #[inline]
     pub fn round(self) -> f32 {
         unsafe { intrinsics::roundf32(self) }
-    }
-
-    /// Returns the nearest integer to a number. Rounds half-way cases to the number
-    /// with an even least significant digit.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(round_ties_even)]
-    ///
-    /// let f = 3.3_f32;
-    /// let g = -3.3_f32;
-    /// let h = 3.5_f32;
-    /// let i = 4.5_f32;
-    ///
-    /// assert_eq!(f.round_ties_even(), 3.0);
-    /// assert_eq!(g.round_ties_even(), -3.0);
-    /// assert_eq!(h.round_ties_even(), 4.0);
-    /// assert_eq!(i.round_ties_even(), 4.0);
-    /// ```
-    #[rustc_allow_incoherent_impl]
-    #[must_use = "method returns a new number and does not mutate the original value"]
-    #[unstable(feature = "round_ties_even", issue = "96710")]
-    #[inline]
-    pub fn round_ties_even(self) -> f32 {
-        unsafe { intrinsics::rintf32(self) }
     }
 
     /// Returns the integer part of `self`.
@@ -500,7 +470,10 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn log2(self) -> f32 {
-        crate::sys::log2f32(self)
+        #[cfg(target_os = "android")]
+        return crate::sys::android::log2f32(self);
+        #[cfg(not(target_os = "android"))]
+        return unsafe { intrinsics::log2f32(self) };
     }
 
     /// Returns the base 10 logarithm of the number.
@@ -525,7 +498,7 @@ impl f32 {
 
     /// The positive difference of two numbers.
     ///
-    /// * If `self <= other`: `0.0`
+    /// * If `self <= other`: `0:0`
     /// * Else: `self - other`
     ///
     /// # Examples
@@ -578,10 +551,8 @@ impl f32 {
         unsafe { cmath::cbrtf(self) }
     }
 
-    /// Compute the distance between the origin and a point (`x`, `y`) on the
-    /// Euclidean plane. Equivalently, compute the length of the hypotenuse of a
-    /// right-angle triangle with other sides having length `x.abs()` and
-    /// `y.abs()`.
+    /// Calculates the length of the hypotenuse of a right-angle triangle given
+    /// legs of length `x` and `y`.
     ///
     /// # Examples
     ///
@@ -909,9 +880,7 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn asinh(self) -> f32 {
-        let ax = self.abs();
-        let ix = 1.0 / ax;
-        (ax + (ax / (Self::hypot(1.0, ix) + ix))).ln_1p().copysign(self)
+        (self.abs() + ((self * self) + 1.0).sqrt()).ln().copysign(self)
     }
 
     /// Inverse hyperbolic cosine function.
@@ -931,11 +900,7 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn acosh(self) -> f32 {
-        if self < 1.0 {
-            Self::NAN
-        } else {
-            (self + ((self - 1.0).sqrt() * (self + 1.0).sqrt())).ln()
-        }
+        if self < 1.0 { Self::NAN } else { (self + ((self * self) - 1.0).sqrt()).ln() }
     }
 
     /// Inverse hyperbolic tangent function.

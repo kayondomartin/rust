@@ -6,6 +6,7 @@ use rustc_ast::InlineAsmOptions;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_hir as hir;
+use rustc_index::vec::Idx;
 use rustc_middle::mir::*;
 use rustc_middle::thir::*;
 use rustc_middle::ty::CanonicalUserTypeAnnotation;
@@ -107,7 +108,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             ExprKind::Let { expr, ref pat } => {
                 let scope = this.local_scope();
                 let (true_block, false_block) = this.in_if_then_scope(scope, expr_span, |this| {
-                    this.lower_let_expr(block, &this.thir[expr], pat, scope, None, expr_span, true)
+                    this.lower_let_expr(block, &this.thir[expr], pat, scope, None, expr_span)
                 });
 
                 this.cfg.push_assign_constant(
@@ -163,13 +164,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 //
                 // [block: If(lhs)] -true-> [else_block: dest = (rhs)]
                 //        | (false)
-                //  [shortcircuit_block: dest = false]
+                //  [shortcurcuit_block: dest = false]
                 //
                 // Or:
                 //
                 // [block: If(lhs)] -false-> [else_block: dest = (rhs)]
                 //        | (true)
-                //  [shortcircuit_block: dest = true]
+                //  [shortcurcuit_block: dest = true]
 
                 let (shortcircuit_block, mut else_block, join_block) = (
                     this.cfg.start_new_block(),
@@ -182,7 +183,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     LogicalOp::And => (else_block, shortcircuit_block),
                     LogicalOp::Or => (shortcircuit_block, else_block),
                 };
-                let term = TerminatorKind::if_(lhs, blocks.0, blocks.1);
+                let term = TerminatorKind::if_(this.tcx, lhs, blocks.0, blocks.1);
                 this.cfg.terminate(block, source_info, term);
 
                 this.cfg.push_assign_constant(
@@ -228,10 +229,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     this.cfg.terminate(
                         loop_block,
                         source_info,
-                        TerminatorKind::FalseUnwind {
-                            real_target: body_block,
-                            unwind: UnwindAction::Continue,
-                        },
+                        TerminatorKind::FalseUnwind { real_target: body_block, unwind: None },
                     );
                     this.diverge_from(loop_block);
 
@@ -267,21 +265,22 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     TerminatorKind::Call {
                         func: fun,
                         args,
-                        unwind: UnwindAction::Continue,
+                        cleanup: None,
                         destination,
                         // The presence or absence of a return edge affects control-flow sensitive
                         // MIR checks and ultimately whether code is accepted or not. We can only
                         // omit the return edge if a return type is visibly uninhabited to a module
                         // that makes the call.
-                        target: expr
-                            .ty
-                            .is_inhabited_from(this.tcx, this.parent_module, this.param_env)
-                            .then_some(success),
-                        call_source: if from_hir_call {
-                            CallSource::Normal
+                        target: if this.tcx.is_ty_uninhabited_from(
+                            this.parent_module,
+                            expr.ty,
+                            this.param_env,
+                        ) {
+                            None
                         } else {
-                            CallSource::OverloadedOperator
+                            Some(success)
                         },
+                        from_hir_call,
                         fn_span,
                     },
                 );
@@ -325,7 +324,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 // See the notes for `ExprKind::Array` in `as_rvalue` and for
                 // `ExprKind::Borrow` above.
                 let is_union = adt_def.is_union();
-                let active_field_index = is_union.then(|| fields[0].name);
+                let active_field_index = if is_union { Some(fields[0].name.index()) } else { None };
 
                 let scope = this.local_scope();
 
@@ -334,6 +333,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let fields_map: FxHashMap<_, _> = fields
                     .into_iter()
                     .map(|f| {
+                        let local_info = Box::new(LocalInfo::AggregateTemp);
                         (
                             f.name,
                             unpack!(
@@ -341,7 +341,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                                     block,
                                     Some(scope),
                                     &this.thir[f.expr],
-                                    LocalInfo::AggregateTemp,
+                                    Some(local_info),
                                     NeedsTemporary::Maybe,
                                 )
                             ),
@@ -349,9 +349,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     })
                     .collect();
 
-                let field_names = adt_def.variant(variant_index).fields.indices();
+                let field_names: Vec<_> =
+                    (0..adt_def.variant(variant_index).fields.len()).map(Field::new).collect();
 
-                let fields = if let Some(FruInfo { base, field_types }) = base {
+                let fields: Vec<_> = if let Some(FruInfo { base, field_types }) = base {
                     let place_builder =
                         unpack!(block = this.as_place_builder(block, &this.thir[*base]));
 
@@ -362,13 +363,15 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         .map(|(n, ty)| match fields_map.get(&n) {
                             Some(v) => v.clone(),
                             None => {
-                                let place = place_builder.clone_project(PlaceElem::Field(n, *ty));
-                                this.consume_by_copy_or_move(place.to_place(this))
+                                let place_builder = place_builder.clone();
+                                this.consume_by_copy_or_move(
+                                    place_builder.field(n, *ty).into_place(this),
+                                )
                             }
                         })
                         .collect()
                 } else {
-                    field_names.filter_map(|n| fields_map.get(&n).cloned()).collect()
+                    field_names.iter().filter_map(|n| fields_map.get(n).cloned()).collect()
                 };
 
                 let inferred_ty = expr.ty;
@@ -473,11 +476,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         } else {
                             Some(destination_block)
                         },
-                        unwind: if options.contains(InlineAsmOptions::MAY_UNWIND) {
-                            UnwindAction::Continue
-                        } else {
-                            UnwindAction::Unreachable
-                        },
+                        cleanup: None,
                     },
                 );
                 if options.contains(InlineAsmOptions::MAY_UNWIND) {
@@ -493,10 +492,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 block.unit()
             }
 
-            ExprKind::Continue { .. }
-            | ExprKind::Break { .. }
-            | ExprKind::Return { .. }
-            | ExprKind::Become { .. } => {
+            ExprKind::Continue { .. } | ExprKind::Break { .. } | ExprKind::Return { .. } => {
                 unpack!(block = this.stmt_expr(block, expr, None));
                 // No assign, as these have type `!`.
                 block.unit()
@@ -537,7 +533,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         block,
                         Some(scope),
                         &this.thir[value],
-                        LocalInfo::Boring,
+                        None,
                         NeedsTemporary::No
                     )
                 );
@@ -556,7 +552,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             | ExprKind::Binary { .. }
             | ExprKind::Box { .. }
             | ExprKind::Cast { .. }
-            | ExprKind::PointerCoercion { .. }
+            | ExprKind::Pointer { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Array { .. }
             | ExprKind::Tuple { .. }
@@ -568,8 +564,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             | ExprKind::ZstLiteral { .. }
             | ExprKind::ConstParam { .. }
             | ExprKind::ThreadLocalRef(_)
-            | ExprKind::StaticRef { .. }
-            | ExprKind::OffsetOf { .. } => {
+            | ExprKind::StaticRef { .. } => {
                 debug_assert!(match Category::of(&expr.kind).unwrap() {
                     // should be handled above
                     Category::Rvalue(RvalueFunc::Into) => false,

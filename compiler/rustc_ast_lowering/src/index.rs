@@ -5,7 +5,7 @@ use rustc_hir::def_id::LocalDefId;
 use rustc_hir::definitions;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::*;
-use rustc_index::{Idx, IndexVec};
+use rustc_index::vec::{Idx, IndexVec};
 use rustc_middle::span_bug;
 use rustc_session::Session;
 use rustc_span::source_map::SourceMap;
@@ -38,7 +38,7 @@ pub(super) fn index_hir<'hir>(
 ) -> (IndexVec<ItemLocalId, Option<ParentedNode<'hir>>>, FxHashMap<LocalDefId, ItemLocalId>) {
     let mut nodes = IndexVec::new();
     // This node's parent should never be accessed: the owner's parent is computed by the
-    // hir_owner_parent query. Make it invalid (= ItemLocalId::MAX) to force an ICE whenever it is
+    // hir_owner_parent query.  Make it invalid (= ItemLocalId::MAX) to force an ICE whenever it is
     // used.
     nodes.push(Some(ParentedNode { parent: ItemLocalId::INVALID, node: item.into() }));
     let mut collector = NodeCollector {
@@ -77,7 +77,7 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
             if hir_id.owner != self.owner {
                 span_bug!(
                     span,
-                    "inconsistent HirId at `{:?}` for `{:?}`: \
+                    "inconsistent DepNode at `{:?}` for `{:?}`: \
                      current_dep_node_owner={} ({:?}), hir_id.owner={} ({:?})",
                     self.source_map.span_to_diagnostic_string(span),
                     node,
@@ -145,7 +145,7 @@ impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
     fn visit_item(&mut self, i: &'hir Item<'hir>) {
         debug_assert_eq!(i.owner_id, self.owner);
         self.with_parent(i.hir_id(), |this| {
-            if let ItemKind::Struct(struct_def, _) = &i.kind {
+            if let ItemKind::Struct(ref struct_def, _) = i.kind {
                 // If this is a tuple or unit-like struct, register the constructor.
                 if let Some(ctor_hir_id) = struct_def.ctor_hir_id() {
                     this.insert(i.span, ctor_hir_id, Node::Ctor(struct_def));
@@ -223,14 +223,6 @@ impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
         });
     }
 
-    fn visit_inline_const(&mut self, constant: &'hir ConstBlock) {
-        self.insert(DUMMY_SP, constant.hir_id, Node::ConstBlock(constant));
-
-        self.with_parent(constant.hir_id, |this| {
-            intravisit::walk_inline_const(this, constant);
-        });
-    }
-
     fn visit_expr(&mut self, expr: &'hir Expr<'hir>) {
         self.insert(expr.span, expr.hir_id, Node::Expr(expr));
 
@@ -283,6 +275,19 @@ impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
         });
     }
 
+    fn visit_fn(
+        &mut self,
+        fk: intravisit::FnKind<'hir>,
+        fd: &'hir FnDecl<'hir>,
+        b: BodyId,
+        _: Span,
+        id: HirId,
+    ) {
+        assert_eq!(self.owner, id.owner);
+        assert_eq!(self.parent_node, id.local_id);
+        intravisit::walk_fn(self, fk, fd, b, id);
+    }
+
     fn visit_block(&mut self, block: &'hir Block<'hir>) {
         self.insert(block.span, block.hir_id, Node::Block(block));
         self.with_parent(block.hir_id, |this| {
@@ -298,12 +303,12 @@ impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
     }
 
     fn visit_lifetime(&mut self, lifetime: &'hir Lifetime) {
-        self.insert(lifetime.ident.span, lifetime.hir_id, Node::Lifetime(lifetime));
+        self.insert(lifetime.span, lifetime.hir_id, Node::Lifetime(lifetime));
     }
 
     fn visit_variant(&mut self, v: &'hir Variant<'hir>) {
-        self.insert(v.span, v.hir_id, Node::Variant(v));
-        self.with_parent(v.hir_id, |this| {
+        self.insert(v.span, v.id, Node::Variant(v));
+        self.with_parent(v.id, |this| {
             // Register the constructor of this variant.
             if let Some(ctor_hir_id) = v.data.ctor_hir_id() {
                 this.insert(v.span, ctor_hir_id, Node::Ctor(&v.data));

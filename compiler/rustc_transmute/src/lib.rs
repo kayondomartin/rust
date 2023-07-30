@@ -1,4 +1,4 @@
-#![feature(alloc_layout_extra, decl_macro, iterator_try_reduce, never_type)]
+#![feature(alloc_layout_extra, control_flow_enum, decl_macro, iterator_try_reduce, never_type)]
 #![allow(dead_code, unused_variables)]
 #![deny(rustc::untranslatable_diagnostic)]
 #![deny(rustc::diagnostic_outside_of_impl)]
@@ -8,7 +8,7 @@ extern crate tracing;
 
 pub(crate) use rustc_data_structures::fx::{FxIndexMap as Map, FxIndexSet as Set};
 
-pub mod layout;
+pub(crate) mod layout;
 pub(crate) mod maybe_transmutable;
 
 #[derive(Default)]
@@ -19,29 +19,29 @@ pub struct Assume {
     pub validity: bool,
 }
 
-/// Either we have an error, transmutation is allowed, or we have an optional
-/// Condition that must hold.
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub enum Answer<R> {
+/// The type encodes answers to the question: "Are these types transmutable?"
+#[derive(Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Clone)]
+pub enum Answer<R>
+where
+    R: layout::Ref,
+{
+    /// `Src` is transmutable into `Dst`.
     Yes,
-    No(Reason),
-    If(Condition<R>),
-}
 
-/// A condition which must hold for safe transmutation to be possible.
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub enum Condition<R> {
+    /// `Src` is NOT transmutable into `Dst`.
+    No(Reason),
+
     /// `Src` is transmutable into `Dst`, if `src` is transmutable into `dst`.
     IfTransmutable { src: R, dst: R },
 
     /// `Src` is transmutable into `Dst`, if all of the enclosed requirements are met.
-    IfAll(Vec<Condition<R>>),
+    IfAll(Vec<Answer<R>>),
 
     /// `Src` is transmutable into `Dst` if any of the enclosed requirements are met.
-    IfAny(Vec<Condition<R>>),
+    IfAny(Vec<Answer<R>>),
 }
 
-/// Answers "why wasn't the source type transmutable into the destination type?"
+/// Answers: Why wasn't the source type transmutable into the destination type?
 #[derive(Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Clone)]
 pub enum Reason {
     /// The layout of the source type is unspecified.
@@ -54,16 +54,6 @@ pub enum Reason {
     DstIsPrivate,
     /// `Dst` is larger than `Src`, and the excess bytes were not exclusively uninitialized.
     DstIsTooBig,
-    /// Src should have a stricter alignment than Dst, but it does not.
-    DstHasStricterAlignment { src_min_align: usize, dst_min_align: usize },
-    /// Can't go from shared pointer to unique pointer
-    DstIsMoreUnique,
-    /// Encountered a type error
-    TypeError,
-    /// The layout of src is unknown
-    SrcLayoutUnknown,
-    /// The layout of dst is unknown
-    DstLayoutUnknown,
 }
 
 #[cfg(feature = "rustc")]
@@ -72,15 +62,16 @@ mod rustc {
 
     use rustc_hir::lang_items::LangItem;
     use rustc_infer::infer::InferCtxt;
-    use rustc_macros::TypeVisitable;
+    use rustc_macros::{TypeFoldable, TypeVisitable};
     use rustc_middle::traits::ObligationCause;
+    use rustc_middle::ty::Binder;
     use rustc_middle::ty::Const;
     use rustc_middle::ty::ParamEnv;
     use rustc_middle::ty::Ty;
     use rustc_middle::ty::TyCtxt;
 
     /// The source and destination types of a transmutation.
-    #[derive(TypeVisitable, Debug, Clone, Copy)]
+    #[derive(TypeFoldable, TypeVisitable, Debug, Clone, Copy)]
     pub struct Types<'tcx> {
         /// The source type.
         pub src: Ty<'tcx>,
@@ -101,13 +92,15 @@ mod rustc {
         pub fn is_transmutable(
             &mut self,
             cause: ObligationCause<'tcx>,
-            types: Types<'tcx>,
+            src_and_dst: Binder<'tcx, Types<'tcx>>,
             scope: Ty<'tcx>,
             assume: crate::Assume,
         ) -> crate::Answer<crate::layout::rustc::Ref<'tcx>> {
+            let src = src_and_dst.map_bound(|types| types.src).skip_binder();
+            let dst = src_and_dst.map_bound(|types| types.dst).skip_binder();
             crate::maybe_transmutable::MaybeTransmutableQuery::new(
-                types.src,
-                types.dst,
+                src,
+                dst,
                 scope,
                 assume,
                 self.infcx.tcx,
@@ -124,7 +117,7 @@ mod rustc {
             c: Const<'tcx>,
         ) -> Option<Self> {
             use rustc_middle::ty::ScalarInt;
-            use rustc_middle::ty::TypeVisitableExt;
+            use rustc_middle::ty::TypeVisitable;
             use rustc_span::symbol::sym;
 
             let c = c.eval(tcx, param_env);
@@ -156,7 +149,7 @@ mod rustc {
                     .iter()
                     .enumerate()
                     .find(|(_, field_def)| name == field_def.name)
-                    .unwrap_or_else(|| panic!("There were no fields named `{name}`."));
+                    .expect(&format!("There were no fields named `{name}`."));
                 fields[field_idx].unwrap_leaf() == ScalarInt::TRUE
             };
 

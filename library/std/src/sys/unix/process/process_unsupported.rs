@@ -20,10 +20,6 @@ impl Command {
         unsupported()
     }
 
-    pub fn output(&mut self) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
-        unsupported()
-    }
-
     pub fn exec(&mut self, _default: Stdio) -> io::Error {
         unsupported_err()
     }

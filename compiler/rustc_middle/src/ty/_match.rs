@@ -36,7 +36,6 @@ impl<'tcx> TypeRelation<'tcx> for Match<'tcx> {
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
-
     fn param_env(&self) -> ty::ParamEnv<'tcx> {
         self.param_env
     }
@@ -81,9 +80,9 @@ impl<'tcx> TypeRelation<'tcx> for Match<'tcx> {
                 Err(TypeError::Sorts(relate::expected_found(self, a, b)))
             }
 
-            (&ty::Error(guar), _) | (_, &ty::Error(guar)) => Ok(Ty::new_error(self.tcx(), guar)),
+            (&ty::Error(_), _) | (_, &ty::Error(_)) => Ok(self.tcx().ty_error()),
 
-            _ => relate::structurally_relate_tys(self, a, b),
+            _ => relate::super_relate_tys(self, a, b),
         }
     }
 
@@ -109,7 +108,7 @@ impl<'tcx> TypeRelation<'tcx> for Match<'tcx> {
             _ => {}
         }
 
-        relate::structurally_relate_consts(self, a, b)
+        relate::super_relate_consts(self, a, b)
     }
 
     fn binders<T>(

@@ -1,5 +1,4 @@
 use crate::iter::{FusedIterator, TrustedLen};
-use crate::num::NonZeroUsize;
 use crate::ops::Try;
 
 /// A double-ended iterator with the direction inverted.
@@ -39,7 +38,7 @@ where
     }
 
     #[inline]
-    fn advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_by(&mut self, n: usize) -> Result<(), usize> {
         self.iter.advance_back_by(n)
     }
 
@@ -84,7 +83,7 @@ where
     }
 
     #[inline]
-    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_back_by(&mut self, n: usize) -> Result<(), usize> {
         self.iter.advance_by(n)
     }
 
@@ -136,17 +135,3 @@ impl<I> FusedIterator for Rev<I> where I: FusedIterator + DoubleEndedIterator {}
 
 #[unstable(feature = "trusted_len", issue = "37572")]
 unsafe impl<I> TrustedLen for Rev<I> where I: TrustedLen + DoubleEndedIterator {}
-
-#[stable(feature = "default_iters", since = "1.70.0")]
-impl<I: Default> Default for Rev<I> {
-    /// Creates a `Rev` iterator from the default value of `I`
-    /// ```
-    /// # use core::slice;
-    /// # use core::iter::Rev;
-    /// let iter: Rev<slice::Iter<'_, u8>> = Default::default();
-    /// assert_eq!(iter.len(), 0);
-    /// ```
-    fn default() -> Self {
-        Rev::new(Default::default())
-    }
-}

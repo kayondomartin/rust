@@ -8,26 +8,28 @@ use crate::{
     CachedModuleCodegen, CodegenResults, CompiledModule, CrateInfo, ModuleCodegen, ModuleKind,
 };
 use jobserver::{Acquired, Client};
-use rustc_ast::attr;
-use rustc_data_structures::fx::{FxHashMap, FxIndexMap};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::memmap::Mmap;
-use rustc_data_structures::profiling::{SelfProfilerRef, VerboseTimingGuard};
+use rustc_data_structures::profiling::SelfProfilerRef;
+use rustc_data_structures::profiling::TimingGuard;
+use rustc_data_structures::profiling::VerboseTimingGuard;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::emitter::Emitter;
-use rustc_errors::{translation::Translate, DiagnosticId, FatalError, Handler, Level};
-use rustc_errors::{DiagnosticMessage, Style};
+use rustc_errors::{
+    translation::{to_fluent_args, Translate},
+    DiagnosticId, FatalError, Handler, Level,
+};
 use rustc_fs_util::link_or_copy;
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_incremental::{
     copy_cgu_workproduct_to_incr_comp_cache_dir, in_incr_comp_dir, in_incr_comp_dir_sess,
 };
-use rustc_metadata::fs::copy_to_stdout;
 use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
 use rustc_middle::middle::exported_symbols::SymbolExportInfo;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::cgu_reuse_tracker::CguReuseTracker;
-use rustc_session::config::{self, CrateType, Lto, OutFileName, OutputFilenames, OutputType};
+use rustc_session::config::{self, CrateType, Lto, OutputFilenames, OutputType};
 use rustc_session::config::{Passes, SwitchWithOptPath};
 use rustc_session::Session;
 use rustc_span::source_map::SourceMap;
@@ -35,9 +37,7 @@ use rustc_span::symbol::sym;
 use rustc_span::{BytePos, FileName, InnerSpan, Pos, Span};
 use rustc_target::spec::{MergeFunctions, SanitizerSet};
 
-use crate::errors::ErrorCreatingRemarkDir;
 use std::any::Any;
-use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::marker::PhantomData;
@@ -106,7 +106,7 @@ pub struct ModuleConfig {
     pub emit_thin_lto: bool,
     pub bc_cmdline: String,
 
-    // Miscellaneous flags. These are mostly copied from command-line
+    // Miscellaneous flags.  These are mostly copied from command-line
     // options.
     pub verify_llvm_ir: bool,
     pub no_prepopulate_passes: bool,
@@ -306,12 +306,8 @@ impl TargetMachineFactoryConfig {
 }
 
 pub type TargetMachineFactoryFn<B> = Arc<
-    dyn Fn(
-            TargetMachineFactoryConfig,
-        ) -> Result<
-            <B as WriteBackendMethods>::TargetMachine,
-            <B as WriteBackendMethods>::TargetMachineError,
-        > + Send
+    dyn Fn(TargetMachineFactoryConfig) -> Result<<B as WriteBackendMethods>::TargetMachine, String>
+        + Send
         + Sync,
 >;
 
@@ -321,6 +317,7 @@ pub type ExportedSymbols = FxHashMap<CrateNum, Arc<Vec<(String, SymbolExportInfo
 #[derive(Clone)]
 pub struct CodegenContext<B: WriteBackendMethods> {
     // Resources needed when running LTO
+    pub backend: B,
     pub prof: SelfProfilerRef,
     pub lto: Lto,
     pub save_temps: bool,
@@ -338,25 +335,26 @@ pub struct CodegenContext<B: WriteBackendMethods> {
     pub msvc_imps_needed: bool,
     pub is_pe_coff: bool,
     pub target_can_use_split_dwarf: bool,
+    pub target_pointer_width: u32,
     pub target_arch: String,
+    pub debuginfo: config::DebugInfo,
     pub split_debuginfo: rustc_target::spec::SplitDebuginfo,
     pub split_dwarf_kind: rustc_session::config::SplitDwarfKind,
 
-    /// Handler to use for diagnostics produced during codegen.
+    // Number of cgus excluding the allocator/metadata modules
+    pub total_cgus: usize,
+    // Handler to use for diagnostics produced during codegen.
     pub diag_emitter: SharedEmitter,
-    /// LLVM optimizations for which we want to print remarks.
+    // LLVM optimizations for which we want to print remarks.
     pub remark: Passes,
-    /// Directory into which should the LLVM optimization remarks be written.
-    /// If `None`, they will be written to stderr.
-    pub remark_dir: Option<PathBuf>,
-    /// Worker thread number
+    // Worker thread number
     pub worker: usize,
-    /// The incremental compilation session directory, or None if we are not
-    /// compiling incrementally
+    // The incremental compilation session directory, or None if we are not
+    // compiling incrementally
     pub incr_comp_session_dir: Option<PathBuf>,
-    /// Used to update CGU re-use information during the thinlto phase.
+    // Used to update CGU re-use information during the thinlto phase.
     pub cgu_reuse_tracker: CguReuseTracker,
-    /// Channel back to the main control thread to send messages to
+    // Channel back to the main control thread to send messages to
     pub coordinator_send: Sender<Box<dyn Any + Send>>,
 }
 
@@ -440,13 +438,14 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
     target_cpu: String,
     metadata: EncodedMetadata,
     metadata_module: Option<CompiledModule>,
+    total_cgus: usize,
 ) -> OngoingCodegen<B> {
     let (coordinator_send, coordinator_receive) = channel();
     let sess = tcx.sess;
 
     let crate_attrs = tcx.hir().attrs(rustc_hir::CRATE_HIR_ID);
-    let no_builtins = attr::contains_name(crate_attrs, sym::no_builtins);
-    let is_compiler_builtins = attr::contains_name(crate_attrs, sym::compiler_builtins);
+    let no_builtins = tcx.sess.contains_name(crate_attrs, sym::no_builtins);
+    let is_compiler_builtins = tcx.sess.contains_name(crate_attrs, sym::compiler_builtins);
 
     let crate_info = CrateInfo::new(tcx, target_cpu);
 
@@ -467,6 +466,7 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
         shared_emitter,
         codegen_worker_send,
         coordinator_receive,
+        total_cgus,
         sess.jobserver.clone(),
         Arc::new(regular_config),
         Arc::new(metadata_config),
@@ -494,8 +494,8 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
 fn copy_all_cgu_workproducts_to_incr_comp_cache_dir(
     sess: &Session,
     compiled_modules: &CompiledModules,
-) -> FxIndexMap<WorkProductId, WorkProduct> {
-    let mut work_products = FxIndexMap::default();
+) -> FxHashMap<WorkProductId, WorkProduct> {
+    let mut work_products = FxHashMap::default();
 
     if sess.opts.incremental.is_none() {
         return work_products;
@@ -531,31 +531,19 @@ fn produce_final_output_artifacts(
     let mut user_wants_objects = false;
 
     // Produce final compile outputs.
-    let copy_gracefully = |from: &Path, to: &OutFileName| match to {
-        OutFileName::Stdout => {
-            if let Err(e) = copy_to_stdout(from) {
-                sess.emit_err(errors::CopyPath::new(from, to.as_path(), e));
-            }
-        }
-        OutFileName::Real(path) => {
-            if let Err(e) = fs::copy(from, path) {
-                sess.emit_err(errors::CopyPath::new(from, path, e));
-            }
+    let copy_gracefully = |from: &Path, to: &Path| {
+        if let Err(e) = fs::copy(from, to) {
+            sess.emit_err(errors::CopyPath::new(from, to, e));
         }
     };
 
     let copy_if_one_unit = |output_type: OutputType, keep_numbered: bool| {
         if compiled_modules.modules.len() == 1 {
-            // 1) Only one codegen unit. In this case it's no difficulty
+            // 1) Only one codegen unit.  In this case it's no difficulty
             //    to copy `foo.0.x` to `foo.x`.
             let module_name = Some(&compiled_modules.modules[0].name[..]);
             let path = crate_output.temp_path(output_type, module_name);
-            let output = crate_output.path(output_type);
-            if !output_type.is_text_output() && output.is_tty() {
-                sess.emit_err(errors::BinaryOutputToTty { shorthand: output_type.shorthand() });
-            } else {
-                copy_gracefully(&path, &output);
-            }
+            copy_gracefully(&path, &crate_output.path(output_type));
             if !sess.opts.cg.save_temps && !keep_numbered {
                 // The user just wants `foo.x`, not `foo.#module-name#.x`.
                 ensure_removed(sess.diagnostic(), &path);
@@ -570,15 +558,15 @@ fn produce_final_output_artifacts(
                 .to_owned();
 
             if crate_output.outputs.contains_key(&output_type) {
-                // 2) Multiple codegen units, with `--emit foo=some_name`. We have
+                // 2) Multiple codegen units, with `--emit foo=some_name`.  We have
                 //    no good solution for this case, so warn the user.
                 sess.emit_warning(errors::IgnoringEmitPath { extension });
             } else if crate_output.single_output_file.is_some() {
-                // 3) Multiple codegen units, with `-o some_name`. We have
+                // 3) Multiple codegen units, with `-o some_name`.  We have
                 //    no good solution for this case, so warn the user.
                 sess.emit_warning(errors::IgnoringOutput { extension });
             } else {
-                // 4) Multiple codegen units, but no explicit name. We
+                // 4) Multiple codegen units, but no explicit name.  We
                 //    just leave the `foo.0.x` files in place.
                 // (We don't have to do any work in this case.)
             }
@@ -592,7 +580,7 @@ fn produce_final_output_artifacts(
         match *output_type {
             OutputType::Bitcode => {
                 user_wants_bitcode = true;
-                // Copy to .bc, but always keep the .0.bc. There is a later
+                // Copy to .bc, but always keep the .0.bc.  There is a later
                 // check to figure out if we should delete .0.bc files, or keep
                 // them for making an rlib.
                 copy_if_one_unit(OutputType::Bitcode, true);
@@ -624,7 +612,7 @@ fn produce_final_output_artifacts(
     // `-C save-temps` or `--emit=` flags).
 
     if !sess.opts.cg.save_temps {
-        // Remove the temporary .#module-name#.o objects. If the user didn't
+        // Remove the temporary .#module-name#.o objects.  If the user didn't
         // explicitly request bitcode (with --emit=bc), and the bitcode is not
         // needed for building an rlib, then we must remove .#module-name#.bc as
         // well.
@@ -641,10 +629,10 @@ fn produce_final_output_artifacts(
         // rlib.
         let needs_crate_object = crate_output.outputs.contains_key(&OutputType::Exe);
 
-        let keep_numbered_bitcode = user_wants_bitcode && sess.codegen_units().as_usize() > 1;
+        let keep_numbered_bitcode = user_wants_bitcode && sess.codegen_units() > 1;
 
         let keep_numbered_objects =
-            needs_crate_object || (user_wants_objects && sess.codegen_units().as_usize() > 1);
+            needs_crate_object || (user_wants_objects && sess.codegen_units() > 1);
 
         for module in compiled_modules.modules.iter() {
             if let Some(ref path) = module.object {
@@ -682,7 +670,7 @@ fn produce_final_output_artifacts(
     // These are used in linking steps and will be cleaned up afterward.
 }
 
-pub(crate) enum WorkItem<B: WriteBackendMethods> {
+pub enum WorkItem<B: WriteBackendMethods> {
     /// Optimize a newly codegened, totally unoptimized module.
     Optimize(ModuleCodegen<B::Module>),
     /// Copy the post-LTO artifacts from the incremental cache to the output
@@ -700,57 +688,49 @@ impl<B: WriteBackendMethods> WorkItem<B> {
         }
     }
 
+    fn start_profiling<'a>(&self, cgcx: &'a CodegenContext<B>) -> TimingGuard<'a> {
+        match *self {
+            WorkItem::Optimize(ref m) => {
+                cgcx.prof.generic_activity_with_arg("codegen_module_optimize", &*m.name)
+            }
+            WorkItem::CopyPostLtoArtifacts(ref m) => cgcx
+                .prof
+                .generic_activity_with_arg("codegen_copy_artifacts_from_incr_cache", &*m.name),
+            WorkItem::LTO(ref m) => {
+                cgcx.prof.generic_activity_with_arg("codegen_module_perform_lto", m.name())
+            }
+        }
+    }
+
     /// Generate a short description of this work item suitable for use as a thread name.
     fn short_description(&self) -> String {
-        // `pthread_setname()` on *nix ignores anything beyond the first 15
-        // bytes. Use short descriptions to maximize the space available for
-        // the module name.
-        #[cfg(not(windows))]
-        fn desc(short: &str, _long: &str, name: &str) -> String {
-            // The short label is three bytes, and is followed by a space. That
-            // leaves 11 bytes for the CGU name. How we obtain those 11 bytes
-            // depends on the the CGU name form.
-            //
-            // - Non-incremental, e.g. `regex.f10ba03eb5ec7975-cgu.0`: the part
-            //   before the `-cgu.0` is the same for every CGU, so use the
-            //   `cgu.0` part. The number suffix will be different for each
-            //   CGU.
-            //
-            // - Incremental (normal), e.g. `2i52vvl2hco29us0`: use the whole
-            //   name because each CGU will have a unique ASCII hash, and the
-            //   first 11 bytes will be enough to identify it.
-            //
-            // - Incremental (with `-Zhuman-readable-cgu-names`), e.g.
-            //   `regex.f10ba03eb5ec7975-re_builder.volatile`: use the whole
-            //   name. The first 11 bytes won't be enough to uniquely identify
-            //   it, but no obvious substring will, and this is a rarely used
-            //   option so it doesn't matter much.
-            //
-            assert_eq!(short.len(), 3);
-            let name = if let Some(index) = name.find("-cgu.") {
-                &name[index + 1..] // +1 skips the leading '-'.
-            } else {
-                name
-            };
-            format!("{short} {name}")
-        }
-
-        // Windows has no thread name length limit, so use more descriptive names.
-        #[cfg(windows)]
-        fn desc(_short: &str, long: &str, name: &str) -> String {
-            format!("{long} {name}")
-        }
-
+        // `pthread_setname()` on *nix is limited to 15 characters and longer names are ignored.
+        // Use very short descriptions in this case to maximize the space available for the module name.
+        // Windows does not have that limitation so use slightly more descriptive names there.
         match self {
-            WorkItem::Optimize(m) => desc("opt", "optimize module {}", &m.name),
-            WorkItem::CopyPostLtoArtifacts(m) => desc("cpy", "copy LTO artifacts for {}", &m.name),
-            WorkItem::LTO(m) => desc("lto", "LTO module {}", m.name()),
+            WorkItem::Optimize(m) => {
+                #[cfg(windows)]
+                return format!("optimize module {}", m.name);
+                #[cfg(not(windows))]
+                return format!("opt {}", m.name);
+            }
+            WorkItem::CopyPostLtoArtifacts(m) => {
+                #[cfg(windows)]
+                return format!("copy LTO artifacts for {}", m.name);
+                #[cfg(not(windows))]
+                return format!("copy {}", m.name);
+            }
+            WorkItem::LTO(m) => {
+                #[cfg(windows)]
+                return format!("LTO module {}", m.name());
+                #[cfg(not(windows))]
+                return format!("LTO {}", m.name());
+            }
         }
     }
 }
 
-/// A result produced by the backend.
-pub(crate) enum WorkItemResult<B: WriteBackendMethods> {
+enum WorkItemResult<B: WriteBackendMethods> {
     Compiled(CompiledModule),
     NeedsLink(ModuleCodegen<B::Module>),
     NeedsFatLTO(FatLTOInput<B>),
@@ -762,7 +742,22 @@ pub enum FatLTOInput<B: WriteBackendMethods> {
     InMemory(ModuleCodegen<B::Module>),
 }
 
-/// Actual LTO type we end up choosing based on multiple factors.
+fn execute_work_item<B: ExtraBackendMethods>(
+    cgcx: &CodegenContext<B>,
+    work_item: WorkItem<B>,
+) -> Result<WorkItemResult<B>, FatalError> {
+    let module_config = cgcx.config(work_item.module_kind());
+
+    match work_item {
+        WorkItem::Optimize(module) => execute_optimize_work_item(cgcx, module, module_config),
+        WorkItem::CopyPostLtoArtifacts(module) => {
+            Ok(execute_copy_from_cache_work_item(cgcx, module, module_config))
+        }
+        WorkItem::LTO(module) => execute_lto_work_item(cgcx, module, module_config),
+    }
+}
+
+// Actual LTO type we end up choosing based on multiple factors.
 pub enum ComputedLtoType {
     No,
     Thin,
@@ -873,7 +868,7 @@ fn execute_copy_from_cache_work_item<B: ExtraBackendMethods>(
     let load_from_incr_comp_dir = |output_path: PathBuf, saved_path: &str| {
         let source_file = in_incr_comp_dir(&incr_comp_session_dir, saved_path);
         debug!(
-            "copying preexisting module `{}` from {:?} to {}",
+            "copying pre-existing module `{}` from {:?} to {}",
             module.name,
             source_file,
             output_path.display()
@@ -942,46 +937,40 @@ fn finish_intra_module_work<B: ExtraBackendMethods>(
     }
 }
 
-/// Messages sent to the coordinator.
-pub(crate) enum Message<B: WriteBackendMethods> {
-    /// A jobserver token has become available. Sent from the jobserver helper
-    /// thread.
+pub enum Message<B: WriteBackendMethods> {
     Token(io::Result<Acquired>),
-
-    /// The backend has finished processing a work item for a codegen unit.
-    /// Sent from a backend worker thread.
-    WorkItem { result: Result<WorkItemResult<B>, Option<WorkerFatalError>>, worker_id: usize },
-
-    /// The frontend has finished generating something (backend IR or a
-    /// post-LTO artifact) for a codegen unit, and it should be passed to the
-    /// backend. Sent from the main thread.
-    CodegenDone { llvm_work_item: WorkItem<B>, cost: u64 },
-
-    /// Similar to `CodegenDone`, but for reusing a pre-LTO artifact
-    /// Sent from the main thread.
+    NeedsFatLTO {
+        result: FatLTOInput<B>,
+        worker_id: usize,
+    },
+    NeedsThinLTO {
+        name: String,
+        thin_buffer: B::ThinBuffer,
+        worker_id: usize,
+    },
+    NeedsLink {
+        module: ModuleCodegen<B::Module>,
+        worker_id: usize,
+    },
+    Done {
+        result: Result<CompiledModule, Option<WorkerFatalError>>,
+        worker_id: usize,
+    },
+    CodegenDone {
+        llvm_work_item: WorkItem<B>,
+        cost: u64,
+    },
     AddImportOnlyModule {
         module_data: SerializedModule<B::ModuleBuffer>,
         work_product: WorkProduct,
     },
-
-    /// The frontend has finished generating everything for all codegen units.
-    /// Sent from the main thread.
     CodegenComplete,
-
-    /// Some normal-ish compiler error occurred, and codegen should be wound
-    /// down. Sent from the main thread.
+    CodegenItem,
     CodegenAborted,
 }
 
-/// A message sent from the coordinator thread to the main thread telling it to
-/// process another codegen unit.
-pub struct CguMessage;
-
-type DiagnosticArgName<'source> = Cow<'source, str>;
-
 struct Diagnostic {
-    msg: Vec<(DiagnosticMessage, Style)>,
-    args: FxHashMap<DiagnosticArgName<'static>, rustc_errors::DiagnosticArgValue<'static>>,
+    msg: String,
     code: Option<DiagnosticId>,
     lvl: Level,
 }
@@ -998,8 +987,9 @@ fn start_executing_work<B: ExtraBackendMethods>(
     tcx: TyCtxt<'_>,
     crate_info: &CrateInfo,
     shared_emitter: SharedEmitter,
-    codegen_worker_send: Sender<CguMessage>,
+    codegen_worker_send: Sender<Message<B>>,
     coordinator_receive: Receiver<Box<dyn Any + Send>>,
+    total_cgus: usize,
     jobserver: Client,
     regular_config: Arc<ModuleConfig>,
     metadata_config: Arc<ModuleConfig>,
@@ -1010,7 +1000,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
     let sess = tcx.sess;
 
     let mut each_linked_rlib_for_lto = Vec::new();
-    drop(link::each_linked_rlib(crate_info, None, &mut |cnum, path| {
+    drop(link::each_linked_rlib(sess, crate_info, &mut |cnum, path| {
         if link::ignored_for_lto(sess, crate_info, cnum) {
             return;
         }
@@ -1066,18 +1056,8 @@ fn start_executing_work<B: ExtraBackendMethods>(
             tcx.backend_optimization_level(())
         };
     let backend_features = tcx.global_backend_features(());
-
-    let remark_dir = if let Some(ref dir) = sess.opts.unstable_opts.remark_dir {
-        let result = fs::create_dir_all(dir).and_then(|_| dir.canonicalize());
-        match result {
-            Ok(dir) => Some(dir),
-            Err(error) => sess.emit_fatal(ErrorCreatingRemarkDir { error }),
-        }
-    } else {
-        None
-    };
-
     let cgcx = CodegenContext::<B> {
+        backend: backend.clone(),
         crate_types: sess.crate_types().to_vec(),
         each_linked_rlib_for_lto,
         lto: sess.lto(),
@@ -1088,7 +1068,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
         prof: sess.prof.clone(),
         exported_symbols,
         remark: sess.opts.cg.remark.clone(),
-        remark_dir,
         worker: 0,
         incr_comp_session_dir: sess.incr_comp_session_dir_opt().map(|r| r.clone()),
         cgu_reuse_tracker: sess.cgu_reuse_tracker.clone(),
@@ -1099,10 +1078,13 @@ fn start_executing_work<B: ExtraBackendMethods>(
         metadata_module_config: metadata_config,
         allocator_module_config: allocator_config,
         tm_factory: backend.target_machine_factory(tcx.sess, ol, backend_features),
+        total_cgus,
         msvc_imps_needed: msvc_imps_needed(tcx),
         is_pe_coff: tcx.sess.target.is_like_windows,
         target_can_use_split_dwarf: tcx.sess.target_can_use_split_dwarf(),
+        target_pointer_width: tcx.sess.target.pointer_width,
         target_arch: tcx.sess.target.arch.to_string(),
+        debuginfo: tcx.sess.opts.debuginfo,
         split_debuginfo: tcx.sess.split_debuginfo(),
         split_dwarf_kind: tcx.sess.opts.unstable_opts.split_dwarf_kind,
     };
@@ -1114,7 +1096,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
     // There are a few environmental pre-conditions that shape how the system
     // is set up:
     //
-    // - Error reporting can only happen on the main thread because that's the
+    // - Error reporting only can happen on the main thread because that's the
     //   only place where we have access to the compiler `Session`.
     // - LLVM work can be done on any thread.
     // - Codegen can only happen on the main thread.
@@ -1126,16 +1108,16 @@ fn start_executing_work<B: ExtraBackendMethods>(
     // Error Reporting
     // ===============
     // The error reporting restriction is handled separately from the rest: We
-    // set up a `SharedEmitter` that holds an open channel to the main thread.
+    // set up a `SharedEmitter` the holds an open channel to the main thread.
     // When an error occurs on any thread, the shared emitter will send the
     // error message to the receiver main thread (`SharedEmitterMain`). The
     // main thread will periodically query this error message queue and emit
     // any error messages it has received. It might even abort compilation if
-    // it has received a fatal error. In this case we rely on all other threads
+    // has received a fatal error. In this case we rely on all other threads
     // being torn down automatically with the main thread.
     // Since the main thread will often be busy doing codegen work, error
     // reporting will be somewhat delayed, since the message queue can only be
-    // checked in between two work packages.
+    // checked in between to work packages.
     //
     // Work Processing Infrastructure
     // ==============================
@@ -1149,7 +1131,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
     // thread about what work to do when, and it will spawn off LLVM worker
     // threads as open LLVM WorkItems become available.
     //
-    // The job of the main thread is to codegen CGUs into LLVM work packages
+    // The job of the main thread is to codegen CGUs into LLVM work package
     // (since the main thread is the only thread that can do this). The main
     // thread will block until it receives a message from the coordinator, upon
     // which it will codegen one CGU, send it to the coordinator and block
@@ -1158,10 +1140,10 @@ fn start_executing_work<B: ExtraBackendMethods>(
     //
     // The coordinator keeps a queue of LLVM WorkItems, and when a `Token` is
     // available, it will spawn off a new LLVM worker thread and let it process
-    // a WorkItem. When a LLVM worker thread is done with its WorkItem,
+    // that a WorkItem. When a LLVM worker thread is done with its WorkItem,
     // it will just shut down, which also frees all resources associated with
     // the given LLVM module, and sends a message to the coordinator that the
-    // WorkItem has been completed.
+    // has been completed.
     //
     // Work Scheduling
     // ===============
@@ -1181,7 +1163,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
     //
     // Doing LLVM Work on the Main Thread
     // ----------------------------------
-    // Since the main thread owns the compiler process's implicit `Token`, it is
+    // Since the main thread owns the compiler processes implicit `Token`, it is
     // wasteful to keep it blocked without doing any work. Therefore, what we do
     // in this case is: We spawn off an additional LLVM worker thread that helps
     // reduce the queue. The work it is doing corresponds to the implicit
@@ -1232,7 +1214,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
     // ------------------------------
     //
     // The final job the coordinator thread is responsible for is managing LTO
-    // and how that works. When LTO is requested what we'll do is collect all
+    // and how that works. When LTO is requested what we'll to is collect all
     // optimized LLVM modules into a local vector on the coordinator. Once all
     // modules have been codegened and optimized we hand this to the `lto`
     // module for further optimization. The `lto` module will return back a list
@@ -1264,19 +1246,10 @@ fn start_executing_work<B: ExtraBackendMethods>(
         let mut needs_thin_lto = Vec::new();
         let mut lto_import_only_modules = Vec::new();
         let mut started_lto = false;
+        let mut codegen_aborted = false;
 
-        /// Possible state transitions:
-        /// - Ongoing -> Completed
-        /// - Ongoing -> Aborted
-        /// - Completed -> Aborted
-        #[derive(Debug, PartialEq)]
-        enum CodegenState {
-            Ongoing,
-            Completed,
-            Aborted,
-        }
-        use CodegenState::*;
-        let mut codegen_state = Ongoing;
+        // This flag tracks whether all items have gone through codegens
+        let mut codegen_done = false;
 
         // This is the queue of LLVM work items that still need processing.
         let mut work_items = Vec::<(WorkItem<B>, u64)>::new();
@@ -1296,10 +1269,10 @@ fn start_executing_work<B: ExtraBackendMethods>(
         // wait for all existing work to finish, so many of the conditions here
         // only apply if codegen hasn't been aborted as they represent pending
         // work to be done.
-        while codegen_state == Ongoing
+        while !codegen_done
             || running > 0
             || main_thread_worker_state == MainThreadWorkerState::LLVMing
-            || (codegen_state == Completed
+            || (!codegen_aborted
                 && !(work_items.is_empty()
                     && needs_fat_lto.is_empty()
                     && needs_thin_lto.is_empty()
@@ -1309,7 +1282,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
             // While there are still CGUs to be codegened, the coordinator has
             // to decide how to utilize the compiler processes implicit Token:
             // For codegenning more CGU or for running them through LLVM.
-            if codegen_state == Ongoing {
+            if !codegen_done {
                 if main_thread_worker_state == MainThreadWorkerState::Idle {
                     // Compute the number of workers that will be running once we've taken as many
                     // items from the work queue as we can, plus one for the main thread. It's not
@@ -1322,9 +1295,9 @@ fn start_executing_work<B: ExtraBackendMethods>(
                     let anticipated_running = running + additional_running + 1;
 
                     if !queue_full_enough(work_items.len(), anticipated_running) {
-                        // The queue is not full enough, process more codegen units:
-                        if codegen_worker_send.send(CguMessage).is_err() {
-                            panic!("Could not send CguMessage to main thread")
+                        // The queue is not full enough, codegen more items:
+                        if codegen_worker_send.send(Message::CodegenItem).is_err() {
+                            panic!("Could not send Message::CodegenItem to main thread")
                         }
                         main_thread_worker_state = MainThreadWorkerState::Codegenning;
                     } else {
@@ -1346,7 +1319,10 @@ fn start_executing_work<B: ExtraBackendMethods>(
                         spawn_work(cgcx, item);
                     }
                 }
-            } else if codegen_state == Completed {
+            } else if codegen_aborted {
+                // don't queue up any more work if codegen was aborted, we're
+                // just waiting for our existing children to finish
+            } else {
                 // If we've finished everything related to normal codegen
                 // then it must be the case that we've got some LTO work to do.
                 // Perform the serial work here of figuring out what we're
@@ -1413,15 +1389,11 @@ fn start_executing_work<B: ExtraBackendMethods>(
                         // Already making good use of that token
                     }
                 }
-            } else {
-                // Don't queue up any more work if codegen was aborted, we're
-                // just waiting for our existing children to finish.
-                assert!(codegen_state == Aborted);
             }
 
             // Spin up what work we can, only doing this while we've got available
             // parallelism slots and work left to spawn.
-            while codegen_state != Aborted && !work_items.is_empty() && running < tokens.len() {
+            while !codegen_aborted && !work_items.is_empty() && running < tokens.len() {
                 let (item, _) = work_items.pop().unwrap();
 
                 maybe_start_llvm_timer(prof, cgcx.config(item.module_kind()), &mut llvm_start_time);
@@ -1473,7 +1445,8 @@ fn start_executing_work<B: ExtraBackendMethods>(
                         Err(e) => {
                             let msg = &format!("failed to acquire jobserver token: {}", e);
                             shared_emitter.fatal(msg);
-                            codegen_state = Aborted;
+                            // Exit the coordinator thread
+                            panic!("{}", msg)
                         }
                     }
                 }
@@ -1501,9 +1474,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
                 }
 
                 Message::CodegenComplete => {
-                    if codegen_state != Aborted {
-                        codegen_state = Completed;
-                    }
+                    codegen_done = true;
                     assert_eq!(main_thread_worker_state, MainThreadWorkerState::Codegenning);
                     main_thread_worker_state = MainThreadWorkerState::Idle;
                 }
@@ -1515,59 +1486,58 @@ fn start_executing_work<B: ExtraBackendMethods>(
                 // then conditions above will ensure no more work is spawned but
                 // we'll keep executing this loop until `running` hits 0.
                 Message::CodegenAborted => {
-                    codegen_state = Aborted;
+                    codegen_done = true;
+                    codegen_aborted = true;
                 }
-
-                Message::WorkItem { result, worker_id } => {
+                Message::Done { result: Ok(compiled_module), worker_id } => {
                     free_worker(worker_id);
-
-                    match result {
-                        Ok(WorkItemResult::Compiled(compiled_module)) => {
-                            match compiled_module.kind {
-                                ModuleKind::Regular => {
-                                    compiled_modules.push(compiled_module);
-                                }
-                                ModuleKind::Allocator => {
-                                    assert!(compiled_allocator_module.is_none());
-                                    compiled_allocator_module = Some(compiled_module);
-                                }
-                                ModuleKind::Metadata => bug!("Should be handled separately"),
-                            }
+                    match compiled_module.kind {
+                        ModuleKind::Regular => {
+                            compiled_modules.push(compiled_module);
                         }
-                        Ok(WorkItemResult::NeedsLink(module)) => {
-                            needs_link.push(module);
+                        ModuleKind::Allocator => {
+                            assert!(compiled_allocator_module.is_none());
+                            compiled_allocator_module = Some(compiled_module);
                         }
-                        Ok(WorkItemResult::NeedsFatLTO(fat_lto_input)) => {
-                            assert!(!started_lto);
-                            needs_fat_lto.push(fat_lto_input);
-                        }
-                        Ok(WorkItemResult::NeedsThinLTO(name, thin_buffer)) => {
-                            assert!(!started_lto);
-                            needs_thin_lto.push((name, thin_buffer));
-                        }
-                        Err(Some(WorkerFatalError)) => {
-                            // Like `CodegenAborted`, wait for remaining work to finish.
-                            codegen_state = Aborted;
-                        }
-                        Err(None) => {
-                            // If the thread failed that means it panicked, so
-                            // we abort immediately.
-                            bug!("worker thread panicked");
-                        }
+                        ModuleKind::Metadata => bug!("Should be handled separately"),
                     }
                 }
-
+                Message::NeedsLink { module, worker_id } => {
+                    free_worker(worker_id);
+                    needs_link.push(module);
+                }
+                Message::NeedsFatLTO { result, worker_id } => {
+                    assert!(!started_lto);
+                    free_worker(worker_id);
+                    needs_fat_lto.push(result);
+                }
+                Message::NeedsThinLTO { name, thin_buffer, worker_id } => {
+                    assert!(!started_lto);
+                    free_worker(worker_id);
+                    needs_thin_lto.push((name, thin_buffer));
+                }
                 Message::AddImportOnlyModule { module_data, work_product } => {
                     assert!(!started_lto);
-                    assert_eq!(codegen_state, Ongoing);
+                    assert!(!codegen_done);
                     assert_eq!(main_thread_worker_state, MainThreadWorkerState::Codegenning);
                     lto_import_only_modules.push((module_data, work_product));
                     main_thread_worker_state = MainThreadWorkerState::Idle;
                 }
+                // If the thread failed that means it panicked, so we abort immediately.
+                Message::Done { result: Err(None), worker_id: _ } => {
+                    bug!("worker thread panicked");
+                }
+                Message::Done { result: Err(Some(WorkerFatalError)), worker_id } => {
+                    // Similar to CodegenAborted, wait for remaining work to finish.
+                    free_worker(worker_id);
+                    codegen_done = true;
+                    codegen_aborted = true;
+                }
+                Message::CodegenItem => bug!("the coordinator should not receive codegen requests"),
             }
         }
 
-        if codegen_state == Aborted {
+        if codegen_aborted {
             return Err(());
         }
 
@@ -1682,11 +1652,22 @@ fn spawn_work<B: ExtraBackendMethods>(cgcx: CodegenContext<B>, work: WorkItem<B>
             fn drop(&mut self) {
                 let worker_id = self.worker_id;
                 let msg = match self.result.take() {
-                    Some(Ok(result)) => Message::WorkItem::<B> { result: Ok(result), worker_id },
-                    Some(Err(FatalError)) => {
-                        Message::WorkItem::<B> { result: Err(Some(WorkerFatalError)), worker_id }
+                    Some(Ok(WorkItemResult::Compiled(m))) => {
+                        Message::Done::<B> { result: Ok(m), worker_id }
                     }
-                    None => Message::WorkItem::<B> { result: Err(None), worker_id },
+                    Some(Ok(WorkItemResult::NeedsLink(m))) => {
+                        Message::NeedsLink::<B> { module: m, worker_id }
+                    }
+                    Some(Ok(WorkItemResult::NeedsFatLTO(m))) => {
+                        Message::NeedsFatLTO::<B> { result: m, worker_id }
+                    }
+                    Some(Ok(WorkItemResult::NeedsThinLTO(name, thin_buffer))) => {
+                        Message::NeedsThinLTO::<B> { name, thin_buffer, worker_id }
+                    }
+                    Some(Err(FatalError)) => {
+                        Message::Done::<B> { result: Err(Some(WorkerFatalError)), worker_id }
+                    }
+                    None => Message::Done::<B> { result: Err(None), worker_id },
                 };
                 drop(self.coordinator_send.send(Box::new(msg)));
             }
@@ -1705,27 +1686,8 @@ fn spawn_work<B: ExtraBackendMethods>(cgcx: CodegenContext<B>, work: WorkItem<B>
         // as a diagnostic was already sent off to the main thread - just
         // surface that there was an error in this worker.
         bomb.result = {
-            let module_config = cgcx.config(work.module_kind());
-
-            Some(match work {
-                WorkItem::Optimize(m) => {
-                    let _timer =
-                        cgcx.prof.generic_activity_with_arg("codegen_module_optimize", &*m.name);
-                    execute_optimize_work_item(&cgcx, m, module_config)
-                }
-                WorkItem::CopyPostLtoArtifacts(m) => {
-                    let _timer = cgcx.prof.generic_activity_with_arg(
-                        "codegen_copy_artifacts_from_incr_cache",
-                        &*m.name,
-                    );
-                    Ok(execute_copy_from_cache_work_item(&cgcx, m, module_config))
-                }
-                WorkItem::LTO(m) => {
-                    let _timer =
-                        cgcx.prof.generic_activity_with_arg("codegen_module_perform_lto", m.name());
-                    execute_lto_work_item(&cgcx, m, module_config)
-                }
-            })
+            let _prof_timer = work.start_profiling(&cgcx);
+            Some(execute_work_item(&cgcx, work))
         };
     })
     .expect("failed to spawn thread");
@@ -1781,18 +1743,15 @@ impl Translate for SharedEmitter {
 
 impl Emitter for SharedEmitter {
     fn emit_diagnostic(&mut self, diag: &rustc_errors::Diagnostic) {
-        let args: FxHashMap<Cow<'_, str>, rustc_errors::DiagnosticArgValue<'_>> =
-            diag.args().map(|(name, arg)| (name.clone(), arg.clone())).collect();
+        let fluent_args = to_fluent_args(diag.args());
         drop(self.sender.send(SharedEmitterMessage::Diagnostic(Diagnostic {
-            msg: diag.message.clone(),
-            args: args.clone(),
+            msg: self.translate_messages(&diag.message, &fluent_args).to_string(),
             code: diag.code.clone(),
             lvl: diag.level(),
         })));
         for child in &diag.children {
             drop(self.sender.send(SharedEmitterMessage::Diagnostic(Diagnostic {
-                msg: child.message.clone(),
-                args: args.clone(),
+                msg: self.translate_messages(&child.message, &fluent_args).to_string(),
                 code: None,
                 lvl: child.level,
             })));
@@ -1823,15 +1782,14 @@ impl SharedEmitterMain {
             match message {
                 Ok(SharedEmitterMessage::Diagnostic(diag)) => {
                     let handler = sess.diagnostic();
-                    let mut d = rustc_errors::Diagnostic::new_with_messages(diag.lvl, diag.msg);
+                    let mut d = rustc_errors::Diagnostic::new(diag.lvl, &diag.msg);
                     if let Some(code) = diag.code {
                         d.code(code);
                     }
-                    d.replace_args(diag.args);
                     handler.emit_diagnostic(&mut d);
                 }
                 Ok(SharedEmitterMessage::InlineAsmError(cookie, msg, level, source)) => {
-                    let msg = msg.strip_prefix("error: ").unwrap_or(&msg).to_string();
+                    let msg = msg.strip_prefix("error: ").unwrap_or(&msg);
 
                     let mut err = match level {
                         Level::Error { lint: false } => sess.struct_err(msg).forget_guarantee(),
@@ -1852,15 +1810,9 @@ impl SharedEmitterMain {
                         let source = sess
                             .source_map()
                             .new_source_file(FileName::inline_asm_source_code(&buffer), buffer);
-                        let spans: Vec<_> = spans
-                            .iter()
-                            .map(|sp| {
-                                Span::with_root_ctxt(
-                                    source.normalized_byte_pos(sp.start as u32),
-                                    source.normalized_byte_pos(sp.end as u32),
-                                )
-                            })
-                            .collect();
+                        let source_span = Span::with_root_ctxt(source.start_pos, source.end_pos);
+                        let spans: Vec<_> =
+                            spans.iter().map(|sp| source_span.from_inner(*sp)).collect();
                         err.span_note(spans, "instantiated into assembly here");
                     }
 
@@ -1870,7 +1822,7 @@ impl SharedEmitterMain {
                     sess.abort_if_errors();
                 }
                 Ok(SharedEmitterMessage::Fatal(msg)) => {
-                    sess.fatal(msg);
+                    sess.fatal(&msg);
                 }
                 Err(_) => {
                     break;
@@ -1909,14 +1861,14 @@ pub struct OngoingCodegen<B: ExtraBackendMethods> {
     pub metadata: EncodedMetadata,
     pub metadata_module: Option<CompiledModule>,
     pub crate_info: CrateInfo,
-    pub codegen_worker_receive: Receiver<CguMessage>,
+    pub codegen_worker_receive: Receiver<Message<B>>,
     pub shared_emitter_main: SharedEmitterMain,
     pub output_filenames: Arc<OutputFilenames>,
     pub coordinator: Coordinator<B>,
 }
 
 impl<B: ExtraBackendMethods> OngoingCodegen<B> {
-    pub fn join(self, sess: &Session) -> (CodegenResults, FxIndexMap<WorkProductId, WorkProduct>) {
+    pub fn join(self, sess: &Session) -> (CodegenResults, FxHashMap<WorkProductId, WorkProduct>) {
         let _timer = sess.timer("finish_ongoing_codegen");
 
         self.shared_emitter_main.check(sess, true);
@@ -1941,7 +1893,7 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
 
         // FIXME: time_llvm_passes support - does this use a global context or
         // something?
-        if sess.codegen_units().as_usize() == 1 && sess.opts.unstable_opts.time_llvm_passes {
+        if sess.codegen_units() == 1 && sess.time_llvm_passes() {
             self.backend.print_pass_timings()
         }
 
@@ -1983,9 +1935,10 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
 
     pub fn wait_for_signal_to_codegen_item(&self) {
         match self.codegen_worker_receive.recv() {
-            Ok(CguMessage) => {
-                // Ok to proceed.
+            Ok(Message::CodegenItem) => {
+                // Nothing to do
             }
+            Ok(_) => panic!("unexpected message"),
             Err(_) => {
                 // One of the LLVM threads must have panicked, fall through so
                 // error handling can be reached.

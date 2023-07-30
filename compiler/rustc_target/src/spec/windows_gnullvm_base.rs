@@ -1,5 +1,4 @@
-use crate::spec::{cvs, Cc, DebuginfoKind, LinkerFlavor, Lld, SplitDebuginfo, TargetOptions};
-use std::borrow::Cow;
+use crate::spec::{cvs, Cc, LinkerFlavor, Lld, TargetOptions};
 
 pub fn opts() -> TargetOptions {
     // We cannot use `-nodefaultlibs` because compiler-rt has to be passed
@@ -23,7 +22,6 @@ pub fn opts() -> TargetOptions {
         abi: "llvm".into(),
         linker: Some("clang".into()),
         dynamic_linking: true,
-        dll_tls_export: false,
         dll_prefix: "".into(),
         dll_suffix: ".dll".into(),
         exe_suffix: ".exe".into(),
@@ -38,10 +36,7 @@ pub fn opts() -> TargetOptions {
         eh_frame_header: false,
         no_default_libraries: false,
         has_thread_local: true,
-        // FIXME(davidtwco): Support Split DWARF on Windows GNU - may require LLVM changes to
-        // output DWO, despite using DWARF, doesn't use ELF..
-        debuginfo_kind: DebuginfoKind::Pdb,
-        supported_split_debuginfo: Cow::Borrowed(&[SplitDebuginfo::Off]),
+
         ..Default::default()
     }
 }

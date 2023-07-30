@@ -4,9 +4,9 @@ Rust MIR: a lowered representation of Rust.
 
 */
 
-#![deny(rustc::untranslatable_diagnostic)]
 #![feature(assert_matches)]
 #![feature(box_patterns)]
+#![feature(control_flow_enum)]
 #![feature(decl_macro)]
 #![feature(exact_size_is_empty)]
 #![feature(let_chains)]
@@ -20,7 +20,7 @@ Rust MIR: a lowered representation of Rust.
 #![feature(trusted_step)]
 #![feature(try_blocks)]
 #![feature(yeet_expr)]
-#![feature(if_let_guard)]
+#![feature(is_some_and)]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -34,14 +34,9 @@ pub mod interpret;
 pub mod transform;
 pub mod util;
 
-pub use errors::ReportErrorExt;
-
-use rustc_errors::{DiagnosticMessage, SubdiagnosticMessage};
-use rustc_fluent_macro::fluent_messages;
-use rustc_middle::query::Providers;
 use rustc_middle::ty;
-
-fluent_messages! { "../messages.ftl" }
+use rustc_middle::ty::query::Providers;
+use rustc_target::abi::InitKind;
 
 pub fn provide(providers: &mut Providers) {
     const_eval::provide(providers);
@@ -52,12 +47,18 @@ pub fn provide(providers: &mut Providers) {
         let (param_env, raw) = param_env_and_value.into_parts();
         const_eval::eval_to_valtree(tcx, param_env, raw)
     };
-    providers.try_destructure_mir_constant_for_diagnostics =
-        |tcx, (cv, ty)| const_eval::try_destructure_mir_constant_for_diagnostics(tcx, cv, ty);
+    providers.try_destructure_mir_constant = |tcx, param_env_and_value| {
+        let (param_env, value) = param_env_and_value.into_parts();
+        const_eval::try_destructure_mir_constant(tcx, param_env, value).ok()
+    };
     providers.valtree_to_const_val = |tcx, (ty, valtree)| {
         const_eval::valtree_to_const_value(tcx, ty::ParamEnv::empty().and(ty), valtree)
     };
-    providers.check_validity_requirement = |tcx, (init_kind, param_env_and_ty)| {
-        util::check_validity_requirement(tcx, init_kind, param_env_and_ty)
+    providers.deref_mir_constant = |tcx, param_env_and_value| {
+        let (param_env, value) = param_env_and_value.into_parts();
+        const_eval::deref_mir_constant(tcx, param_env, value)
     };
+    providers.permits_uninit_init =
+        |tcx, ty| util::might_permit_raw_init(tcx, ty, InitKind::UninitMitigated0x01Fill);
+    providers.permits_zero_init = |tcx, ty| util::might_permit_raw_init(tcx, ty, InitKind::Zero);
 }

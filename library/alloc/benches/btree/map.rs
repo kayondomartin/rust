@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::iter::Iterator;
 use std::ops::RangeBounds;
 use std::vec::Vec;
 
@@ -385,7 +386,7 @@ pub fn clone_slim_100_and_clear(b: &mut Bencher) {
 #[bench]
 pub fn clone_slim_100_and_drain_all(b: &mut Bencher) {
     let src = slim_map(100);
-    b.iter(|| src.clone().extract_if(|_, _| true).count())
+    b.iter(|| src.clone().drain_filter(|_, _| true).count())
 }
 
 #[bench]
@@ -393,7 +394,7 @@ pub fn clone_slim_100_and_drain_half(b: &mut Bencher) {
     let src = slim_map(100);
     b.iter(|| {
         let mut map = src.clone();
-        assert_eq!(map.extract_if(|i, _| i % 2 == 0).count(), 100 / 2);
+        assert_eq!(map.drain_filter(|i, _| i % 2 == 0).count(), 100 / 2);
         assert_eq!(map.len(), 100 / 2);
     })
 }
@@ -456,7 +457,7 @@ pub fn clone_slim_10k_and_clear(b: &mut Bencher) {
 #[bench]
 pub fn clone_slim_10k_and_drain_all(b: &mut Bencher) {
     let src = slim_map(10_000);
-    b.iter(|| src.clone().extract_if(|_, _| true).count())
+    b.iter(|| src.clone().drain_filter(|_, _| true).count())
 }
 
 #[bench]
@@ -464,7 +465,7 @@ pub fn clone_slim_10k_and_drain_half(b: &mut Bencher) {
     let src = slim_map(10_000);
     b.iter(|| {
         let mut map = src.clone();
-        assert_eq!(map.extract_if(|i, _| i % 2 == 0).count(), 10_000 / 2);
+        assert_eq!(map.drain_filter(|i, _| i % 2 == 0).count(), 10_000 / 2);
         assert_eq!(map.len(), 10_000 / 2);
     })
 }
@@ -527,7 +528,7 @@ pub fn clone_fat_val_100_and_clear(b: &mut Bencher) {
 #[bench]
 pub fn clone_fat_val_100_and_drain_all(b: &mut Bencher) {
     let src = fat_val_map(100);
-    b.iter(|| src.clone().extract_if(|_, _| true).count())
+    b.iter(|| src.clone().drain_filter(|_, _| true).count())
 }
 
 #[bench]
@@ -535,7 +536,7 @@ pub fn clone_fat_val_100_and_drain_half(b: &mut Bencher) {
     let src = fat_val_map(100);
     b.iter(|| {
         let mut map = src.clone();
-        assert_eq!(map.extract_if(|i, _| i % 2 == 0).count(), 100 / 2);
+        assert_eq!(map.drain_filter(|i, _| i % 2 == 0).count(), 100 / 2);
         assert_eq!(map.len(), 100 / 2);
     })
 }

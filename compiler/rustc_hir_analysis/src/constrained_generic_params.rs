@@ -43,7 +43,7 @@ pub fn parameters_for_impl<'tcx>(
 /// of parameters whose values are needed in order to constrain `ty` - these
 /// differ, with the latter being a superset, in the presence of projections.
 pub fn parameters_for<'tcx>(
-    t: &impl TypeVisitable<TyCtxt<'tcx>>,
+    t: &impl TypeVisitable<'tcx>,
     include_nonconstraining: bool,
 ) -> Vec<Parameter> {
     let mut collector = ParameterCollector { parameters: vec![], include_nonconstraining };
@@ -56,12 +56,12 @@ struct ParameterCollector {
     include_nonconstraining: bool,
 }
 
-impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ParameterCollector {
+impl<'tcx> TypeVisitor<'tcx> for ParameterCollector {
     fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
         match *t.kind() {
-            ty::Alias(ty::Projection | ty::Inherent, ..) if !self.include_nonconstraining => {
+            ty::Projection(..) if !self.include_nonconstraining => {
                 // projections are not injective
-                return ControlFlow::Continue(());
+                return ControlFlow::CONTINUE;
             }
             ty::Param(data) => {
                 self.parameters.push(Parameter::from(data));
@@ -76,7 +76,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ParameterCollector {
         if let ty::ReEarlyBound(data) = *r {
             self.parameters.push(Parameter::from(data));
         }
-        ControlFlow::Continue(())
+        ControlFlow::CONTINUE
     }
 
     fn visit_const(&mut self, c: ty::Const<'tcx>) -> ControlFlow<Self::BreakTy> {
@@ -151,7 +151,7 @@ pub fn identify_constrained_generic_params<'tcx>(
 /// think of any.
 pub fn setup_constraining_predicates<'tcx>(
     tcx: TyCtxt<'tcx>,
-    predicates: &mut [(ty::Clause<'tcx>, Span)],
+    predicates: &mut [(ty::Predicate<'tcx>, Span)],
     impl_trait_ref: Option<ty::TraitRef<'tcx>>,
     input_parameters: &mut FxHashSet<Parameter>,
 ) {
@@ -187,7 +187,8 @@ pub fn setup_constraining_predicates<'tcx>(
         for j in i..predicates.len() {
             // Note that we don't have to care about binders here,
             // as the impl trait ref never contains any late-bound regions.
-            if let ty::ClauseKind::Projection(projection) = predicates[j].0.kind().skip_binder() {
+            if let ty::PredicateKind::Projection(projection) = predicates[j].0.kind().skip_binder()
+            {
                 // Special case: watch out for some kind of sneaky attempt
                 // to project out an associated type defined by this very
                 // trait.
