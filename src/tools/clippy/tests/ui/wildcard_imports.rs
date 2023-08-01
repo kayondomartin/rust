@@ -1,10 +1,11 @@
-//@edition:2015
-//@run-rustfix
-//@aux-build:wildcard_imports_helper.rs
+// edition:2015
+// run-rustfix
+// aux-build:wildcard_imports_helper.rs
 
 // the 2015 edition here is needed because edition 2018 changed the module system
 // (see https://doc.rust-lang.org/edition-guide/rust-2018/path-changes.html) which means the lint
 // no longer detects some of the cases starting with Rust 2018.
+// FIXME: We should likely add another edition 2021 test case for this lint
 
 #![warn(clippy::wildcard_imports)]
 #![allow(unused, clippy::unnecessary_wraps, clippy::let_unit_value)]
@@ -24,7 +25,6 @@ use wildcard_imports_helper::inner::inner_for_self_import::*;
 use wildcard_imports_helper::*;
 
 use std::io::prelude::*;
-use wildcard_imports_helper::extern_prelude::v1::*;
 use wildcard_imports_helper::prelude::v1::*;
 
 struct ReadFoo;
@@ -82,7 +82,6 @@ fn main() {
     let _ = inner_struct_mod::C;
     let _ = ExternA;
     let _ = PreludeModAnywhere;
-    let _ = ExternPreludeModAnywhere;
 
     double_struct_import_test!();
     double_struct_import_test!();
@@ -212,7 +211,7 @@ mod super_imports {
     }
 
     mod use_explicit_should_be_replaced {
-        use crate::super_imports::*;
+        use super_imports::*;
 
         fn with_explicit() {
             let _ = foofoo();

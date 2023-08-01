@@ -1,17 +1,16 @@
 use clippy_utils::diagnostics::{span_lint_hir, span_lint_hir_and_then};
 use clippy_utils::mir::{visit_local_usage, LocalUsage, PossibleBorrowerMap};
 use clippy_utils::source::snippet_opt;
-use clippy_utils::ty::{has_drop, is_copy, is_type_diagnostic_item, is_type_lang_item, walk_ptrs_ty_depth};
+use clippy_utils::ty::{has_drop, is_copy, is_type_diagnostic_item, walk_ptrs_ty_depth};
 use clippy_utils::{fn_has_unsatisfiable_preds, match_def_path, paths};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::intravisit::FnKind;
-use rustc_hir::{def_id, Body, FnDecl, LangItem};
+use rustc_hir::{def_id, Body, FnDecl, HirId};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::mir;
 use rustc_middle::ty::{self, Ty};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
-use rustc_span::def_id::LocalDefId;
 use rustc_span::source_map::{BytePos, Span};
 use rustc_span::sym;
 
@@ -57,7 +56,7 @@ declare_clippy_lint! {
     /// ```
     #[clippy::version = "1.32.0"]
     pub REDUNDANT_CLONE,
-    nursery,
+    perf,
     "`clone()` of an owned value that is going to be dropped immediately"
 }
 
@@ -70,10 +69,12 @@ impl<'tcx> LateLintPass<'tcx> for RedundantClone {
         cx: &LateContext<'tcx>,
         _: FnKind<'tcx>,
         _: &'tcx FnDecl<'_>,
-        _: &'tcx Body<'_>,
+        body: &'tcx Body<'_>,
         _: Span,
-        def_id: LocalDefId,
+        _: HirId,
     ) {
+        let def_id = cx.tcx.hir().body_owner_def_id(body.id());
+
         // Building MIR for `fn`s with unsatisfiable preds results in ICE.
         if fn_has_unsatisfiable_preds(cx, def_id.to_def_id()) {
             return;
@@ -101,7 +102,7 @@ impl<'tcx> LateLintPass<'tcx> for RedundantClone {
             let from_borrow = match_def_path(cx, fn_def_id, &paths::CLONE_TRAIT_METHOD)
                 || match_def_path(cx, fn_def_id, &paths::TO_OWNED_METHOD)
                 || (match_def_path(cx, fn_def_id, &paths::TO_STRING_METHOD)
-                    && is_type_lang_item(cx, arg_ty, LangItem::String));
+                    && is_type_diagnostic_item(cx, arg_ty, sym::String));
 
             let from_deref = !from_borrow
                 && (match_def_path(cx, fn_def_id, &paths::PATH_TO_PATH_BUF)
@@ -320,6 +321,8 @@ fn base_local_and_movability<'tcx>(
     mir: &mir::Body<'tcx>,
     place: mir::Place<'tcx>,
 ) -> (mir::Local, CannotMoveOut) {
+    use rustc_middle::mir::PlaceRef;
+
     // Dereference. You cannot move things out from a borrowed value.
     let mut deref = false;
     // Accessing a field of an ADT that has `Drop`. Moving the field out will cause E0509.
@@ -328,14 +331,17 @@ fn base_local_and_movability<'tcx>(
     // underlying type implements Copy
     let mut slice = false;
 
-    for (base, elem) in place.as_ref().iter_projections() {
-        let base_ty = base.ty(&mir.local_decls, cx.tcx).ty;
+    let PlaceRef { local, mut projection } = place.as_ref();
+    while let [base @ .., elem] = projection {
+        projection = base;
         deref |= matches!(elem, mir::ProjectionElem::Deref);
-        field |= matches!(elem, mir::ProjectionElem::Field(..)) && has_drop(cx, base_ty);
-        slice |= matches!(elem, mir::ProjectionElem::Index(..)) && !is_copy(cx, base_ty);
+        field |= matches!(elem, mir::ProjectionElem::Field(..))
+            && has_drop(cx, mir::Place::ty_from(local, projection, &mir.local_decls, cx.tcx).ty);
+        slice |= matches!(elem, mir::ProjectionElem::Index(..))
+            && !is_copy(cx, mir::Place::ty_from(local, projection, &mir.local_decls, cx.tcx).ty);
     }
 
-    (place.local, deref || field || slice)
+    (local, deref || field || slice)
 }
 
 #[derive(Default)]

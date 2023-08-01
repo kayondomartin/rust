@@ -1,14 +1,13 @@
 use clippy_utils::diagnostics::{span_lint, span_lint_and_sugg, span_lint_and_then};
-use clippy_utils::source::snippet_with_context;
-use clippy_utils::{get_item_name, get_parent_as_impl, is_lint_allowed, peel_ref_operators, sugg::Sugg};
+use clippy_utils::source::snippet_with_applicability;
+use clippy_utils::{get_item_name, get_parent_as_impl, is_lint_allowed};
 use if_chain::if_chain;
 use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
 use rustc_hir::def_id::DefIdSet;
 use rustc_hir::{
-    def::Res, def_id::DefId, lang_items::LangItem, AssocItemKind, BinOpKind, Expr, ExprKind, FnRetTy, GenericArg,
-    GenericBound, ImplItem, ImplItemKind, ImplicitSelfKind, Item, ItemKind, Mutability, Node, PathSegment, PrimTy,
-    QPath, TraitItemRef, TyKind, TypeBindingKind,
+    def_id::DefId, AssocItemKind, BinOpKind, Expr, ExprKind, FnRetTy, ImplItem, ImplItemKind, ImplicitSelfKind, Item,
+    ItemKind, Mutability, Node, TraitItemRef, TyKind,
 };
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty::{self, AssocKind, FnSig, Ty};
@@ -135,7 +134,6 @@ impl<'tcx> LateLintPass<'tcx> for LenZero {
             if item.ident.name == sym::len;
             if let ImplItemKind::Fn(sig, _) = &item.kind;
             if sig.decl.implicit_self.has_implicit_self();
-            if sig.decl.inputs.len() == 1;
             if cx.effective_visibilities.is_exported(item.owner_id.def_id);
             if matches!(sig.decl.output, FnRetTy::Return(_));
             if let Some(imp) = get_parent_as_impl(cx.tcx, item.hir_id());
@@ -145,7 +143,7 @@ impl<'tcx> LateLintPass<'tcx> for LenZero {
             if let Some(local_id) = ty_id.as_local();
             let ty_hir_id = cx.tcx.hir().local_def_id_to_hir_id(local_id);
             if !is_lint_allowed(cx, LEN_WITHOUT_IS_EMPTY, ty_hir_id);
-            if let Some(output) = parse_len_output(cx, cx.tcx.fn_sig(item.owner_id).subst_identity().skip_binder());
+            if let Some(output) = parse_len_output(cx, cx.tcx.fn_sig(item.owner_id).skip_binder());
             then {
                 let (name, kind) = match cx.tcx.hir().find(ty_hir_id) {
                     Some(Node::ForeignItem(x)) => (x.ident.name, "extern type"),
@@ -168,27 +166,25 @@ impl<'tcx> LateLintPass<'tcx> for LenZero {
         }
 
         if let ExprKind::Binary(Spanned { node: cmp, .. }, left, right) = expr.kind {
-            // expr.span might contains parenthesis, see issue #10529
-            let actual_span = left.span.with_hi(right.span.hi());
             match cmp {
                 BinOpKind::Eq => {
-                    check_cmp(cx, actual_span, left, right, "", 0); // len == 0
-                    check_cmp(cx, actual_span, right, left, "", 0); // 0 == len
+                    check_cmp(cx, expr.span, left, right, "", 0); // len == 0
+                    check_cmp(cx, expr.span, right, left, "", 0); // 0 == len
                 },
                 BinOpKind::Ne => {
-                    check_cmp(cx, actual_span, left, right, "!", 0); // len != 0
-                    check_cmp(cx, actual_span, right, left, "!", 0); // 0 != len
+                    check_cmp(cx, expr.span, left, right, "!", 0); // len != 0
+                    check_cmp(cx, expr.span, right, left, "!", 0); // 0 != len
                 },
                 BinOpKind::Gt => {
-                    check_cmp(cx, actual_span, left, right, "!", 0); // len > 0
-                    check_cmp(cx, actual_span, right, left, "", 1); // 1 > len
+                    check_cmp(cx, expr.span, left, right, "!", 0); // len > 0
+                    check_cmp(cx, expr.span, right, left, "", 1); // 1 > len
                 },
                 BinOpKind::Lt => {
-                    check_cmp(cx, actual_span, left, right, "", 1); // len < 1
-                    check_cmp(cx, actual_span, right, left, "!", 0); // 0 < len
+                    check_cmp(cx, expr.span, left, right, "", 1); // len < 1
+                    check_cmp(cx, expr.span, right, left, "!", 0); // 0 < len
                 },
-                BinOpKind::Ge => check_cmp(cx, actual_span, left, right, "!", 1), // len >= 1
-                BinOpKind::Le => check_cmp(cx, actual_span, right, left, "!", 1), // 1 <= len
+                BinOpKind::Ge => check_cmp(cx, expr.span, left, right, "!", 1), // len >= 1
+                BinOpKind::Le => check_cmp(cx, expr.span, right, left, "!", 1), // 1 <= len
                 _ => (),
             }
         }
@@ -199,15 +195,7 @@ fn check_trait_items(cx: &LateContext<'_>, visited_trait: &Item<'_>, trait_items
     fn is_named_self(cx: &LateContext<'_>, item: &TraitItemRef, name: Symbol) -> bool {
         item.ident.name == name
             && if let AssocItemKind::Fn { has_self } = item.kind {
-                has_self && {
-                    cx.tcx
-                        .fn_sig(item.id.owner_id)
-                        .skip_binder()
-                        .inputs()
-                        .skip_binder()
-                        .len()
-                        == 1
-                }
+                has_self && { cx.tcx.fn_sig(item.id.owner_id).inputs().skip_binder().len() == 1 }
             } else {
                 false
             }
@@ -230,12 +218,12 @@ fn check_trait_items(cx: &LateContext<'_>, visited_trait: &Item<'_>, trait_items
         let is_empty = sym!(is_empty);
 
         let is_empty_method_found = current_and_super_traits
-            .items()
+            .iter()
             .flat_map(|&i| cx.tcx.associated_items(i).filter_by_name_unhygienic(is_empty))
             .any(|i| {
                 i.kind == ty::AssocKind::Fn
                     && i.fn_has_self_parameter
-                    && cx.tcx.fn_sig(i.def_id).skip_binder().inputs().skip_binder().len() == 1
+                    && cx.tcx.fn_sig(i.def_id).inputs().skip_binder().len() == 1
             });
 
         if !is_empty_method_found {
@@ -253,98 +241,33 @@ fn check_trait_items(cx: &LateContext<'_>, visited_trait: &Item<'_>, trait_items
 }
 
 #[derive(Debug, Clone, Copy)]
-enum LenOutput {
+enum LenOutput<'tcx> {
     Integral,
     Option(DefId),
-    Result(DefId),
+    Result(DefId, Ty<'tcx>),
 }
-
-fn extract_future_output<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> Option<&'tcx PathSegment<'tcx>> {
-    if let ty::Alias(_, alias_ty) = ty.kind() &&
-        let Some(Node::Item(item)) = cx.tcx.hir().get_if_local(alias_ty.def_id) &&
-        let Item { kind: ItemKind::OpaqueTy(opaque), .. } = item &&
-        opaque.bounds.len() == 1 &&
-        let GenericBound::LangItemTrait(LangItem::Future, _, _, generic_args) = &opaque.bounds[0] &&
-        generic_args.bindings.len() == 1 &&
-        let TypeBindingKind::Equality {
-            term: rustc_hir::Term::Ty(rustc_hir::Ty {kind: TyKind::Path(QPath::Resolved(_, path)), .. }),
-        } = &generic_args.bindings[0].kind &&
-        path.segments.len() == 1 {
-            return Some(&path.segments[0]);
-        }
-
-    None
-}
-
-fn is_first_generic_integral<'tcx>(segment: &'tcx PathSegment<'tcx>) -> bool {
-    if let Some(generic_args) = segment.args {
-        if generic_args.args.is_empty() {
-            return false;
-        }
-        let arg = &generic_args.args[0];
-        if let GenericArg::Type(rustc_hir::Ty {
-            kind: TyKind::Path(QPath::Resolved(_, path)),
-            ..
-        }) = arg
-        {
-            let segments = &path.segments;
-            let segment = &segments[0];
-            let res = &segment.res;
-            if matches!(res, Res::PrimTy(PrimTy::Uint(_))) || matches!(res, Res::PrimTy(PrimTy::Int(_))) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-fn parse_len_output<'tcx>(cx: &LateContext<'tcx>, sig: FnSig<'tcx>) -> Option<LenOutput> {
-    if let Some(segment) = extract_future_output(cx, sig.output()) {
-        let res = segment.res;
-
-        if matches!(res, Res::PrimTy(PrimTy::Uint(_))) || matches!(res, Res::PrimTy(PrimTy::Int(_))) {
-            return Some(LenOutput::Integral);
-        }
-
-        if let Res::Def(_, def_id) = res {
-            if cx.tcx.is_diagnostic_item(sym::Option, def_id) && is_first_generic_integral(segment) {
-                return Some(LenOutput::Option(def_id));
-            } else if cx.tcx.is_diagnostic_item(sym::Result, def_id) && is_first_generic_integral(segment) {
-                return Some(LenOutput::Result(def_id));
-            }
-        }
-
-        return None;
-    }
-
+fn parse_len_output<'tcx>(cx: &LateContext<'_>, sig: FnSig<'tcx>) -> Option<LenOutput<'tcx>> {
     match *sig.output().kind() {
         ty::Int(_) | ty::Uint(_) => Some(LenOutput::Integral),
         ty::Adt(adt, subs) if cx.tcx.is_diagnostic_item(sym::Option, adt.did()) => {
             subs.type_at(0).is_integral().then(|| LenOutput::Option(adt.did()))
         },
-        ty::Adt(adt, subs) if cx.tcx.is_diagnostic_item(sym::Result, adt.did()) => {
-            subs.type_at(0).is_integral().then(|| LenOutput::Result(adt.did()))
-        },
+        ty::Adt(adt, subs) if cx.tcx.is_diagnostic_item(sym::Result, adt.did()) => subs
+            .type_at(0)
+            .is_integral()
+            .then(|| LenOutput::Result(adt.did(), subs.type_at(1))),
         _ => None,
     }
 }
 
-impl LenOutput {
-    fn matches_is_empty_output<'tcx>(self, cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
-        if let Some(segment) = extract_future_output(cx, ty) {
-            return match (self, segment.res) {
-                (_, Res::PrimTy(PrimTy::Bool)) => true,
-                (Self::Option(_), Res::Def(_, def_id)) if cx.tcx.is_diagnostic_item(sym::Option, def_id) => true,
-                (Self::Result(_), Res::Def(_, def_id)) if cx.tcx.is_diagnostic_item(sym::Result, def_id) => true,
-                _ => false,
-            };
-        }
-
+impl<'tcx> LenOutput<'tcx> {
+    fn matches_is_empty_output(self, ty: Ty<'tcx>) -> bool {
         match (self, ty.kind()) {
             (_, &ty::Bool) => true,
             (Self::Option(id), &ty::Adt(adt, subs)) if id == adt.did() => subs.type_at(0).is_bool(),
-            (Self::Result(id), &ty::Adt(adt, subs)) if id == adt.did() => subs.type_at(0).is_bool(),
+            (Self::Result(id, err_ty), &ty::Adt(adt, subs)) if id == adt.did() => {
+                subs.type_at(0).is_bool() && subs.type_at(1) == err_ty
+            },
             _ => false,
         }
     }
@@ -368,14 +291,9 @@ impl LenOutput {
 }
 
 /// Checks if the given signature matches the expectations for `is_empty`
-fn check_is_empty_sig<'tcx>(
-    cx: &LateContext<'tcx>,
-    sig: FnSig<'tcx>,
-    self_kind: ImplicitSelfKind,
-    len_output: LenOutput,
-) -> bool {
+fn check_is_empty_sig<'tcx>(sig: FnSig<'tcx>, self_kind: ImplicitSelfKind, len_output: LenOutput<'tcx>) -> bool {
     match &**sig.inputs_and_output {
-        [arg, res] if len_output.matches_is_empty_output(cx, *res) => {
+        [arg, res] if len_output.matches_is_empty_output(*res) => {
             matches!(
                 (arg.kind(), self_kind),
                 (ty::Ref(_, _, Mutability::Not), ImplicitSelfKind::ImmRef)
@@ -387,11 +305,11 @@ fn check_is_empty_sig<'tcx>(
 }
 
 /// Checks if the given type has an `is_empty` method with the appropriate signature.
-fn check_for_is_empty(
-    cx: &LateContext<'_>,
+fn check_for_is_empty<'tcx>(
+    cx: &LateContext<'tcx>,
     span: Span,
     self_kind: ImplicitSelfKind,
-    output: LenOutput,
+    output: LenOutput<'tcx>,
     impl_ty: DefId,
     item_name: Symbol,
     item_kind: &str,
@@ -423,12 +341,7 @@ fn check_for_is_empty(
         ),
         Some(is_empty)
             if !(is_empty.fn_has_self_parameter
-                && check_is_empty_sig(
-                    cx,
-                    cx.tcx.fn_sig(is_empty.def_id).subst_identity().skip_binder(),
-                    self_kind,
-                    output,
-                )) =>
+                && check_is_empty_sig(cx.tcx.fn_sig(is_empty.def_id).skip_binder(), self_kind, output)) =>
         {
             (
                 format!(
@@ -447,13 +360,14 @@ fn check_for_is_empty(
             db.span_note(span, "`is_empty` defined here");
         }
         if let Some(self_kind) = self_kind {
-            db.note(output.expected_sig(self_kind));
+            db.note(&output.expected_sig(self_kind));
         }
     });
 }
 
 fn check_cmp(cx: &LateContext<'_>, span: Span, method: &Expr<'_>, lit: &Expr<'_>, op: &str, compare_to: u32) {
-    if let (&ExprKind::MethodCall(method_path, receiver, args, _), ExprKind::Lit(lit)) = (&method.kind, &lit.kind) {
+    if let (&ExprKind::MethodCall(method_path, receiver, args, _), &ExprKind::Lit(ref lit)) = (&method.kind, &lit.kind)
+    {
         // check if we are in an is_empty() method
         if let Some(name) = get_item_name(cx, method) {
             if name.as_str() == "is_empty" {
@@ -504,7 +418,7 @@ fn check_len(
                 &format!("using `{op}is_empty` is clearer and more explicit"),
                 format!(
                     "{op}{}.is_empty()",
-                    snippet_with_context(cx, receiver.span, span.ctxt(), "_", &mut applicability).0,
+                    snippet_with_applicability(cx, receiver.span, "_", &mut applicability)
                 ),
                 applicability,
             );
@@ -515,24 +429,23 @@ fn check_len(
 fn check_empty_expr(cx: &LateContext<'_>, span: Span, lit1: &Expr<'_>, lit2: &Expr<'_>, op: &str) {
     if (is_empty_array(lit2) || is_empty_string(lit2)) && has_is_empty(cx, lit1) {
         let mut applicability = Applicability::MachineApplicable;
-
-        let lit1 = peel_ref_operators(cx, lit1);
-        let lit_str = Sugg::hir_with_context(cx, lit1, span.ctxt(), "_", &mut applicability).maybe_par();
-
         span_lint_and_sugg(
             cx,
             COMPARISON_TO_EMPTY,
             span,
             "comparison to empty slice",
             &format!("using `{op}is_empty` is clearer and more explicit"),
-            format!("{op}{lit_str}.is_empty()"),
+            format!(
+                "{op}{}.is_empty()",
+                snippet_with_applicability(cx, lit1.span, "_", &mut applicability)
+            ),
             applicability,
         );
     }
 }
 
 fn is_empty_string(expr: &Expr<'_>) -> bool {
-    if let ExprKind::Lit(lit) = expr.kind {
+    if let ExprKind::Lit(ref lit) = expr.kind {
         if let LitKind::Str(lit, _) = lit.node {
             let lit = lit.as_str();
             return lit.is_empty();
@@ -553,7 +466,7 @@ fn has_is_empty(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     /// Gets an `AssocItem` and return true if it matches `is_empty(self)`.
     fn is_is_empty(cx: &LateContext<'_>, item: &ty::AssocItem) -> bool {
         if item.kind == ty::AssocKind::Fn {
-            let sig = cx.tcx.fn_sig(item.def_id).skip_binder();
+            let sig = cx.tcx.fn_sig(item.def_id);
             let ty = sig.skip_binder();
             ty.inputs().len() == 1
         } else {
@@ -581,7 +494,7 @@ fn has_is_empty(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
                 .filter_by_name_unhygienic(is_empty)
                 .any(|item| is_is_empty(cx, item))
         }),
-        ty::Alias(ty::Projection, ref proj) => has_is_empty_impl(cx, proj.def_id),
+        ty::Projection(ref proj) => has_is_empty_impl(cx, proj.item_def_id),
         ty::Adt(id, _) => has_is_empty_impl(cx, id.did()),
         ty::Array(..) | ty::Slice(..) | ty::Str => true,
         _ => false,

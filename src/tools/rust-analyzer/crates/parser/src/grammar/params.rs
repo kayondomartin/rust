@@ -1,5 +1,3 @@
-use crate::grammar::attributes::ATTRIBUTE_FIRST;
-
 use super::*;
 
 // test param_list
@@ -68,20 +66,14 @@ fn list_(p: &mut Parser<'_>, flavor: Flavor) {
             }
         };
 
-        if !p.at_ts(PARAM_FIRST.union(ATTRIBUTE_FIRST)) {
+        if !p.at_ts(PARAM_FIRST) {
             p.error("expected value parameter");
             m.abandon(p);
             break;
         }
         param(p, m, flavor);
-        if !p.at(T![,]) {
-            if p.at_ts(PARAM_FIRST.union(ATTRIBUTE_FIRST)) {
-                p.error("expected `,`");
-            } else {
-                break;
-            }
-        } else {
-            p.bump(T![,]);
+        if !p.at(ket) {
+            p.expect(T![,]);
         }
     }
 

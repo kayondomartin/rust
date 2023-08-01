@@ -3,7 +3,7 @@
 
 fn foo<u32>(a: u32) -> u32 {
     42
-    //~^ ERROR: mismatched types
+    // ^ rustc's type error
 }
 
 fn main() {}

@@ -7,20 +7,17 @@
 use std::{env, fs, iter, ops, path::PathBuf, process::Command};
 
 use anyhow::{format_err, Result};
-use base_db::CrateName;
 use la_arena::{Arena, Idx};
 use paths::{AbsPath, AbsPathBuf};
 use rustc_hash::FxHashMap;
 
-use crate::{utf8_stdout, CargoConfig, CargoWorkspace, ManifestPath};
+use crate::{utf8_stdout, ManifestPath};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Sysroot {
     root: AbsPathBuf,
     src_root: AbsPathBuf,
     crates: Arena<SysrootCrateData>,
-    /// Stores the result of `cargo metadata` of the `RA_UNSTABLE_SYSROOT_HACK` workspace.
-    pub hack_cargo_workspace: Option<CargoWorkspace>,
 }
 
 pub(crate) type SysrootCrate = Idx<SysrootCrateData>;
@@ -53,16 +50,14 @@ impl Sysroot {
         &self.src_root
     }
 
-    pub fn public_deps(&self) -> impl Iterator<Item = (CrateName, SysrootCrate, bool)> + '_ {
+    pub fn public_deps(&self) -> impl Iterator<Item = (&'static str, SysrootCrate, bool)> + '_ {
         // core is added as a dependency before std in order to
         // mimic rustcs dependency order
         ["core", "alloc", "std"]
             .into_iter()
             .zip(iter::repeat(true))
             .chain(iter::once(("test", false)))
-            .filter_map(move |(name, prelude)| {
-                Some((CrateName::new(name).unwrap(), self.by_name(name)?, prelude))
-            })
+            .filter_map(move |(name, prelude)| Some((name, self.by_name(name)?, prelude)))
     }
 
     pub fn proc_macro(&self) -> Option<SysrootCrate> {
@@ -72,30 +67,8 @@ impl Sysroot {
     pub fn crates(&self) -> impl Iterator<Item = SysrootCrate> + ExactSizeIterator + '_ {
         self.crates.iter().map(|(id, _data)| id)
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.crates.is_empty()
-    }
-
-    pub fn loading_warning(&self) -> Option<String> {
-        if self.by_name("core").is_none() {
-            let var_note = if env::var_os("RUST_SRC_PATH").is_some() {
-                " (`RUST_SRC_PATH` might be incorrect, try unsetting it)"
-            } else {
-                " try running `rustup component add rust-src` to possible fix this"
-            };
-            Some(format!(
-                "could not find libcore in loaded sysroot at `{}`{}",
-                self.src_root.as_path().display(),
-                var_note,
-            ))
-        } else {
-            None
-        }
-    }
 }
 
-// FIXME: Expose a builder api as loading the sysroot got way too modular and complicated.
 impl Sysroot {
     /// Attempts to discover the toolchain's sysroot from the given `dir`.
     pub fn discover(dir: &AbsPath, extra_env: &FxHashMap<String, String>) -> Result<Sysroot> {
@@ -103,59 +76,35 @@ impl Sysroot {
         let sysroot_dir = discover_sysroot_dir(dir, extra_env)?;
         let sysroot_src_dir =
             discover_sysroot_src_dir_or_add_component(&sysroot_dir, dir, extra_env)?;
-        Ok(Sysroot::load(sysroot_dir, sysroot_src_dir))
+        let res = Sysroot::load(sysroot_dir, sysroot_src_dir)?;
+        Ok(res)
     }
 
-    pub fn discover_with_src_override(
-        current_dir: &AbsPath,
+    pub fn discover_rustc(
+        cargo_toml: &ManifestPath,
         extra_env: &FxHashMap<String, String>,
-        src: AbsPathBuf,
-    ) -> Result<Sysroot> {
-        tracing::debug!("discovering sysroot for {}", current_dir.display());
-        let sysroot_dir = discover_sysroot_dir(current_dir, extra_env)?;
-        Ok(Sysroot::load(sysroot_dir, src))
-    }
-
-    pub fn discover_rustc(&self) -> Option<ManifestPath> {
-        get_rustc_src(&self.root)
+    ) -> Option<ManifestPath> {
+        tracing::debug!("discovering rustc source for {}", cargo_toml.display());
+        let current_dir = cargo_toml.parent();
+        let sysroot_dir = discover_sysroot_dir(current_dir, extra_env).ok()?;
+        get_rustc_src(&sysroot_dir)
     }
 
     pub fn with_sysroot_dir(sysroot_dir: AbsPathBuf) -> Result<Sysroot> {
         let sysroot_src_dir = discover_sysroot_src_dir(&sysroot_dir).ok_or_else(|| {
-            format_err!("can't load standard library from sysroot path {}", sysroot_dir.display())
+            format_err!("can't load standard library from sysroot {}", sysroot_dir.display())
         })?;
-        Ok(Sysroot::load(sysroot_dir, sysroot_src_dir))
+        let res = Sysroot::load(sysroot_dir, sysroot_src_dir)?;
+        Ok(res)
     }
 
-    pub fn load(sysroot_dir: AbsPathBuf, mut sysroot_src_dir: AbsPathBuf) -> Sysroot {
-        // FIXME: Remove this `hack_cargo_workspace` field completely once we support sysroot dependencies
-        let hack_cargo_workspace = if let Ok(path) = std::env::var("RA_UNSTABLE_SYSROOT_HACK") {
-            let cargo_toml = ManifestPath::try_from(
-                AbsPathBuf::try_from(&*format!("{path}/Cargo.toml")).unwrap(),
-            )
-            .unwrap();
-            sysroot_src_dir = AbsPathBuf::try_from(&*path).unwrap().join("library");
-            CargoWorkspace::fetch_metadata(
-                &cargo_toml,
-                &AbsPathBuf::try_from("/").unwrap(),
-                &CargoConfig::default(),
-                &|_| (),
-            )
-            .map(CargoWorkspace::new)
-            .ok()
-        } else {
-            None
-        };
-        let mut sysroot = Sysroot {
-            root: sysroot_dir,
-            src_root: sysroot_src_dir,
-            crates: Arena::default(),
-            hack_cargo_workspace,
-        };
+    pub fn load(sysroot_dir: AbsPathBuf, sysroot_src_dir: AbsPathBuf) -> Result<Sysroot> {
+        let mut sysroot =
+            Sysroot { root: sysroot_dir, src_root: sysroot_src_dir, crates: Arena::default() };
 
         for path in SYSROOT_CRATES.trim().lines() {
             let name = path.split('/').last().unwrap();
-            let root = [format!("{path}/src/lib.rs"), format!("lib{path}/lib.rs")]
+            let root = [format!("{}/src/lib.rs", path), format!("lib{}/lib.rs", path)]
                 .into_iter()
                 .map(|it| sysroot.src_root.join(it))
                 .filter_map(|it| ManifestPath::try_from(it).ok())
@@ -179,22 +128,31 @@ impl Sysroot {
         }
 
         if let Some(alloc) = sysroot.by_name("alloc") {
-            for dep in ALLOC_DEPS.trim().lines() {
-                if let Some(dep) = sysroot.by_name(dep) {
-                    sysroot.crates[alloc].deps.push(dep)
-                }
+            if let Some(core) = sysroot.by_name("core") {
+                sysroot.crates[alloc].deps.push(core);
             }
         }
 
         if let Some(proc_macro) = sysroot.by_name("proc_macro") {
-            for dep in PROC_MACRO_DEPS.trim().lines() {
-                if let Some(dep) = sysroot.by_name(dep) {
-                    sysroot.crates[proc_macro].deps.push(dep)
-                }
+            if let Some(std) = sysroot.by_name("std") {
+                sysroot.crates[proc_macro].deps.push(std);
             }
         }
 
-        sysroot
+        if sysroot.by_name("core").is_none() {
+            let var_note = if env::var_os("RUST_SRC_PATH").is_some() {
+                " (`RUST_SRC_PATH` might be incorrect, try unsetting it)"
+            } else {
+                ""
+            };
+            anyhow::bail!(
+                "could not find libcore in sysroot path `{}`{}",
+                sysroot.src_root.as_path().display(),
+                var_note,
+            );
+        }
+
+        Ok(sysroot)
     }
 
     fn by_name(&self, name: &str) -> Option<SysrootCrate> {
@@ -209,7 +167,7 @@ fn discover_sysroot_dir(
 ) -> Result<AbsPathBuf> {
     let mut rustc = Command::new(toolchain::rustc());
     rustc.envs(extra_env);
-    rustc.current_dir(current_dir).args(["--print", "sysroot"]);
+    rustc.current_dir(current_dir).args(&["--print", "sysroot"]);
     tracing::debug!("Discovering sysroot by {:?}", rustc);
     let stdout = utf8_stdout(rustc)?;
     Ok(AbsPathBuf::assert(PathBuf::from(stdout)))
@@ -241,7 +199,7 @@ fn discover_sysroot_src_dir_or_add_component(
         .or_else(|| {
             let mut rustup = Command::new(toolchain::rustup());
             rustup.envs(extra_env);
-            rustup.current_dir(current_dir).args(["component", "add", "rust-src"]);
+            rustup.current_dir(current_dir).args(&["component", "add", "rust-src"]);
             tracing::info!("adding rust-src component by {:?}", rustup);
             utf8_stdout(rustup).ok()?;
             get_rust_src(sysroot_path)
@@ -281,7 +239,6 @@ fn get_rust_src(sysroot_path: &AbsPath) -> Option<AbsPathBuf> {
 
 const SYSROOT_CRATES: &str = "
 alloc
-backtrace
 core
 panic_abort
 panic_unwind
@@ -289,22 +246,17 @@ proc_macro
 profiler_builtins
 std
 stdarch/crates/std_detect
+term
 test
 unwind";
 
-const ALLOC_DEPS: &str = "core";
-
 const STD_DEPS: &str = "
 alloc
-panic_unwind
-panic_abort
 core
+panic_abort
+panic_unwind
 profiler_builtins
-unwind
 std_detect
-test";
-
-// core is required for our builtin derives to work in the proc_macro lib currently
-const PROC_MACRO_DEPS: &str = "
-std
-core";
+term
+test
+unwind";

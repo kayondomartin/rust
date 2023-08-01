@@ -1,5 +1,5 @@
-//@run-rustfix
-#![allow(unused, clippy::diverging_sub_expression, clippy::needless_if)]
+// run-rustfix
+#![allow(unused, clippy::diverging_sub_expression)]
 #![warn(clippy::nonminimal_bool)]
 
 fn methods_with_negation() {

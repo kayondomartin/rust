@@ -2,11 +2,9 @@
 name = "paths"
 version = "0.0.0"
 description = "TBD"
-
-authors.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+edition = "2021"
+rust-version = "1.57"
 
 [lib]
 doctest = false
@@ -15,4 +13,4 @@ doctest = false
 # Adding this dep sadly puts a lot of rust-analyzer crates after the
 # serde-derive crate. Even though we don't activate the derive feature here,
 # someone else in the crate graph certainly does!
-# serde.workspace = true
+# serde = "1"

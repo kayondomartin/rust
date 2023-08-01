@@ -22,7 +22,6 @@ apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install
   patch \
   pkg-config \
   python3 \
-  rsync \
   sudo \
   texinfo \
   unzip \

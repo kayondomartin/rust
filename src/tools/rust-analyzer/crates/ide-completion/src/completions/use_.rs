@@ -52,9 +52,6 @@ pub(crate) fn complete_use_path(
                         )
                     };
                     for (name, def) in module_scope {
-                        if !ctx.check_stability(def.attrs(ctx.db).as_deref()) {
-                            continue;
-                        }
                         let is_name_already_imported = name
                             .as_text()
                             .map_or(false, |text| already_imported_names.contains(text.as_str()));
@@ -75,7 +72,7 @@ pub(crate) fn complete_use_path(
                                 is_name_already_imported,
                                 ..Default::default()
                             });
-                            acc.add(builder.build(ctx.db));
+                            acc.add(builder.build());
                         }
                     }
                 }
@@ -94,10 +91,10 @@ pub(crate) fn complete_use_path(
         // only show modules and non-std enum in a fresh UseTree
         Qualified::No => {
             cov_mark::hit!(unqualified_path_selected_only);
-            ctx.process_all_names(&mut |name, res, doc_aliases| {
+            ctx.process_all_names(&mut |name, res| {
                 match res {
                     ScopeDef::ModuleDef(hir::ModuleDef::Module(module)) => {
-                        acc.add_module(ctx, path_ctx, module, name, doc_aliases);
+                        acc.add_module(ctx, path_ctx, module, name);
                     }
                     ScopeDef::ModuleDef(hir::ModuleDef::Adt(hir::Adt::Enum(e))) => {
                         // exclude prelude enum
@@ -108,9 +105,9 @@ pub(crate) fn complete_use_path(
                             let item = CompletionItem::new(
                                 CompletionItemKind::SymbolKind(SymbolKind::Enum),
                                 ctx.source_range(),
-                                format!("{}::", e.name(ctx.db).display(ctx.db)),
+                                format!("{}::", e.name(ctx.db)),
                             );
-                            acc.add(item.build(ctx.db));
+                            acc.add(item.build());
                         }
                     }
                     _ => {}

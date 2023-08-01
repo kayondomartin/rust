@@ -4,7 +4,6 @@ use std::{fmt, panic, thread};
 use ide::Cancelled;
 use lsp_server::ExtractError;
 use serde::{de::DeserializeOwned, Serialize};
-use stdx::thread::ThreadIntent;
 
 use crate::{
     global_state::{GlobalState, GlobalStateSnapshot},
@@ -88,9 +87,8 @@ impl<'a> RequestDispatcher<'a> {
         self
     }
 
-    /// Dispatches a non-latency-sensitive request onto the thread pool
-    /// without retrying it if it panics.
-    pub(crate) fn on_no_retry<R>(
+    /// Dispatches the request onto thread pool
+    pub(crate) fn on<R>(
         &mut self,
         f: fn(GlobalStateSnapshot, R::Params) -> Result<R::Result>,
     ) -> &mut Self
@@ -104,7 +102,7 @@ impl<'a> RequestDispatcher<'a> {
             None => return self,
         };
 
-        self.global_state.task_pool.handle.spawn(ThreadIntent::Worker, {
+        self.global_state.task_pool.handle.spawn({
             let world = self.global_state.snapshot();
             move || {
                 let result = panic::catch_unwind(move || {
@@ -113,57 +111,12 @@ impl<'a> RequestDispatcher<'a> {
                 });
                 match thread_result_to_response::<R>(req.id.clone(), result) {
                     Ok(response) => Task::Response(response),
-                    Err(_) => Task::Response(lsp_server::Response::new_err(
-                        req.id,
-                        lsp_server::ErrorCode::ContentModified as i32,
-                        "content modified".to_string(),
-                    )),
+                    Err(_) => Task::Retry(req),
                 }
             }
         });
 
         self
-    }
-
-    /// Dispatches a non-latency-sensitive request onto the thread pool.
-    pub(crate) fn on<R>(
-        &mut self,
-        f: fn(GlobalStateSnapshot, R::Params) -> Result<R::Result>,
-    ) -> &mut Self
-    where
-        R: lsp_types::request::Request + 'static,
-        R::Params: DeserializeOwned + panic::UnwindSafe + Send + fmt::Debug,
-        R::Result: Serialize,
-    {
-        self.on_with_thread_intent::<true, R>(ThreadIntent::Worker, f)
-    }
-
-    /// Dispatches a latency-sensitive request onto the thread pool.
-    pub(crate) fn on_latency_sensitive<R>(
-        &mut self,
-        f: fn(GlobalStateSnapshot, R::Params) -> Result<R::Result>,
-    ) -> &mut Self
-    where
-        R: lsp_types::request::Request + 'static,
-        R::Params: DeserializeOwned + panic::UnwindSafe + Send + fmt::Debug,
-        R::Result: Serialize,
-    {
-        self.on_with_thread_intent::<true, R>(ThreadIntent::LatencySensitive, f)
-    }
-
-    /// Formatting requests should never block on waiting a for task thread to open up, editors will wait
-    /// on the response and a late formatting update might mess with the document and user.
-    /// We can't run this on the main thread though as we invoke rustfmt which may take arbitrary time to complete!
-    pub(crate) fn on_fmt_thread<R>(
-        &mut self,
-        f: fn(GlobalStateSnapshot, R::Params) -> Result<R::Result>,
-    ) -> &mut Self
-    where
-        R: lsp_types::request::Request + 'static,
-        R::Params: DeserializeOwned + panic::UnwindSafe + Send + fmt::Debug,
-        R::Result: Serialize,
-    {
-        self.on_with_thread_intent::<false, R>(ThreadIntent::LatencySensitive, f)
     }
 
     pub(crate) fn finish(&mut self) {
@@ -176,41 +129,6 @@ impl<'a> RequestDispatcher<'a> {
             );
             self.global_state.respond(response);
         }
-    }
-
-    fn on_with_thread_intent<const MAIN_POOL: bool, R>(
-        &mut self,
-        intent: ThreadIntent,
-        f: fn(GlobalStateSnapshot, R::Params) -> Result<R::Result>,
-    ) -> &mut Self
-    where
-        R: lsp_types::request::Request + 'static,
-        R::Params: DeserializeOwned + panic::UnwindSafe + Send + fmt::Debug,
-        R::Result: Serialize,
-    {
-        let (req, params, panic_context) = match self.parse::<R>() {
-            Some(it) => it,
-            None => return self,
-        };
-
-        let world = self.global_state.snapshot();
-        if MAIN_POOL {
-            &mut self.global_state.task_pool.handle
-        } else {
-            &mut self.global_state.fmt_pool.handle
-        }
-        .spawn(intent, move || {
-            let result = panic::catch_unwind(move || {
-                let _pctx = stdx::panic_context::enter(panic_context);
-                f(world, params)
-            });
-            match thread_result_to_response::<R>(req.id.clone(), result) {
-                Ok(response) => Task::Response(response),
-                Err(_) => Task::Retry(req),
-            }
-        });
-
-        self
     }
 
     fn parse<R>(&mut self) -> Option<(lsp_server::Request, R::Params, String)>
@@ -227,7 +145,7 @@ impl<'a> RequestDispatcher<'a> {
         match res {
             Ok(params) => {
                 let panic_context =
-                    format!("\nversion: {}\nrequest: {} {params:#?}", version(), R::METHOD);
+                    format!("\nversion: {}\nrequest: {} {:#?}", version(), R::METHOD, params);
                 Some((req, params, panic_context))
             }
             Err(err) => {
@@ -307,7 +225,7 @@ pub(crate) struct NotificationDispatcher<'a> {
 }
 
 impl<'a> NotificationDispatcher<'a> {
-    pub(crate) fn on_sync_mut<N>(
+    pub(crate) fn on<N>(
         &mut self,
         f: fn(&mut GlobalState, N::Params) -> Result<()>,
     ) -> Result<&mut Self>

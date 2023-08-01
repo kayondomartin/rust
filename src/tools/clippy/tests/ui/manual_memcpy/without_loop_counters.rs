@@ -1,5 +1,4 @@
 #![warn(clippy::needless_range_loop, clippy::manual_memcpy)]
-#![allow(clippy::useless_vec)]
 
 const LOOP_OFFSET: usize = 5000;
 

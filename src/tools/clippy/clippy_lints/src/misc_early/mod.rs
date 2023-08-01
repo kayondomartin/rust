@@ -2,7 +2,6 @@ mod builtin_type_shadow;
 mod double_neg;
 mod literal_suffix;
 mod mixed_case_hex_literals;
-mod redundant_at_rest_pattern;
 mod redundant_pattern;
 mod unneeded_field_pattern;
 mod unneeded_wildcard_pattern;
@@ -10,8 +9,7 @@ mod zero_prefixed_literal;
 
 use clippy_utils::diagnostics::span_lint;
 use clippy_utils::source::snippet_opt;
-use rustc_ast::ast::{Expr, ExprKind, Generics, LitFloatType, LitIntType, LitKind, NodeId, Pat, PatKind};
-use rustc_ast::token;
+use rustc_ast::ast::{Expr, ExprKind, Generics, Lit, LitFloatType, LitIntType, LitKind, NodeId, Pat, PatKind};
 use rustc_ast::visit::FnKind;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
@@ -319,36 +317,6 @@ declare_clippy_lint! {
     "tuple patterns with a wildcard pattern (`_`) is next to a rest pattern (`..`)"
 }
 
-declare_clippy_lint! {
-    /// ### What it does
-    /// Checks for `[all @ ..]` patterns.
-    ///
-    /// ### Why is this bad?
-    /// In all cases, `all` works fine and can often make code simpler, as you possibly won't need
-    /// to convert from say a `Vec` to a slice by dereferencing.
-    ///
-    /// ### Example
-    /// ```rust,ignore
-    /// if let [all @ ..] = &*v {
-    ///     // NOTE: Type is a slice here
-    ///     println!("all elements: {all:#?}");
-    /// }
-    /// ```
-    /// Use instead:
-    /// ```rust,ignore
-    /// if let all = v {
-    ///     // NOTE: Type is a `Vec` here
-    ///     println!("all elements: {all:#?}");
-    /// }
-    /// // or
-    /// println!("all elements: {v:#?}");
-    /// ```
-    #[clippy::version = "1.72.0"]
-    pub REDUNDANT_AT_REST_PATTERN,
-    complexity,
-    "checks for `[all @ ..]` where `all` would suffice"
-}
-
 declare_lint_pass!(MiscEarlyLints => [
     UNNEEDED_FIELD_PATTERN,
     DUPLICATE_UNDERSCORE_ARGUMENT,
@@ -360,7 +328,6 @@ declare_lint_pass!(MiscEarlyLints => [
     BUILTIN_TYPE_SHADOW,
     REDUNDANT_PATTERN,
     UNNEEDED_WILDCARD_PATTERN,
-    REDUNDANT_AT_REST_PATTERN,
 ]);
 
 impl EarlyLintPass for MiscEarlyLints {
@@ -371,13 +338,8 @@ impl EarlyLintPass for MiscEarlyLints {
     }
 
     fn check_pat(&mut self, cx: &EarlyContext<'_>, pat: &Pat) {
-        if in_external_macro(cx.sess(), pat.span) {
-            return;
-        }
-
         unneeded_field_pattern::check(cx, pat);
         redundant_pattern::check(cx, pat);
-        redundant_at_rest_pattern::check(cx, pat);
         unneeded_wildcard_pattern::check(cx, pat);
     }
 
@@ -412,43 +374,42 @@ impl EarlyLintPass for MiscEarlyLints {
             return;
         }
 
-        if let ExprKind::Lit(lit) = expr.kind {
-            MiscEarlyLints::check_lit(cx, lit, expr.span);
+        if let ExprKind::Lit(ref lit) = expr.kind {
+            MiscEarlyLints::check_lit(cx, lit);
         }
         double_neg::check(cx, expr);
     }
 }
 
 impl MiscEarlyLints {
-    fn check_lit(cx: &EarlyContext<'_>, lit: token::Lit, span: Span) {
+    fn check_lit(cx: &EarlyContext<'_>, lit: &Lit) {
         // We test if first character in snippet is a number, because the snippet could be an expansion
         // from a built-in macro like `line!()` or a proc-macro like `#[wasm_bindgen]`.
         // Note that this check also covers special case that `line!()` is eagerly expanded by compiler.
         // See <https://github.com/rust-lang/rust-clippy/issues/4507> for a regression.
         // FIXME: Find a better way to detect those cases.
-        let lit_snip = match snippet_opt(cx, span) {
+        let lit_snip = match snippet_opt(cx, lit.span) {
             Some(snip) if snip.chars().next().map_or(false, |c| c.is_ascii_digit()) => snip,
             _ => return,
         };
 
-        let lit_kind = LitKind::from_token_lit(lit);
-        if let Ok(LitKind::Int(value, lit_int_type)) = lit_kind {
+        if let LitKind::Int(value, lit_int_type) = lit.kind {
             let suffix = match lit_int_type {
                 LitIntType::Signed(ty) => ty.name_str(),
                 LitIntType::Unsigned(ty) => ty.name_str(),
                 LitIntType::Unsuffixed => "",
             };
-            literal_suffix::check(cx, span, &lit_snip, suffix, "integer");
+            literal_suffix::check(cx, lit, &lit_snip, suffix, "integer");
             if lit_snip.starts_with("0x") {
-                mixed_case_hex_literals::check(cx, span, suffix, &lit_snip);
+                mixed_case_hex_literals::check(cx, lit, suffix, &lit_snip);
             } else if lit_snip.starts_with("0b") || lit_snip.starts_with("0o") {
                 // nothing to do
             } else if value != 0 && lit_snip.starts_with('0') {
-                zero_prefixed_literal::check(cx, span, &lit_snip);
+                zero_prefixed_literal::check(cx, lit, &lit_snip);
             }
-        } else if let Ok(LitKind::Float(_, LitFloatType::Suffixed(float_ty))) = lit_kind {
+        } else if let LitKind::Float(_, LitFloatType::Suffixed(float_ty)) = lit.kind {
             let suffix = float_ty.name_str();
-            literal_suffix::check(cx, span, &lit_snip, suffix, "float");
+            literal_suffix::check(cx, lit, &lit_snip, suffix, "float");
         }
     }
 }

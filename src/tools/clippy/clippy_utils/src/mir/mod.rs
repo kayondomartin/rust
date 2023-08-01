@@ -5,6 +5,8 @@ use rustc_middle::mir::{
 };
 use rustc_middle::ty::TyCtxt;
 
+mod maybe_storage_live;
+
 mod possible_borrower;
 pub use possible_borrower::PossibleBorrowerMap;
 

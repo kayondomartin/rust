@@ -1,18 +1,20 @@
-FROM ubuntu:22.04
+FROM ubuntu:20.04
 
 COPY scripts/cross-apt-packages.sh /scripts/
 RUN sh /scripts/cross-apt-packages.sh
 
-COPY scripts/crosstool-ng.sh /scripts/
-RUN sh /scripts/crosstool-ng.sh
+COPY scripts/crosstool-ng-1.24.sh /scripts/
+RUN sh /scripts/crosstool-ng-1.24.sh
 
 COPY scripts/rustbuild-setup.sh /scripts/
 RUN sh /scripts/rustbuild-setup.sh
+USER rustbuild
 WORKDIR /tmp
 
-COPY scripts/crosstool-ng-build.sh /scripts/
-COPY host-x86_64/dist-armv7-linux/armv7-linux-gnueabihf.defconfig /tmp/crosstool.defconfig
-RUN /scripts/crosstool-ng-build.sh
+COPY host-x86_64/dist-armv7-linux/build-toolchains.sh host-x86_64/dist-armv7-linux/armv7-linux-gnueabihf.config /tmp/
+RUN ./build-toolchains.sh
+
+USER root
 
 COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh

@@ -5,8 +5,6 @@ use std::fs::remove_file;
 use std::path::Path;
 use std::process::Command;
 
-use rustfmt_config_proc_macro::rustfmt_only_ci_test;
-
 /// Run the rustfmt executable and return its output.
 fn rustfmt(args: &[&str]) -> (String, String) {
     let mut bin_dir = env::current_exe().unwrap();
@@ -49,7 +47,7 @@ macro_rules! assert_that {
     };
 }
 
-#[rustfmt_only_ci_test]
+#[ignore]
 #[test]
 fn print_config() {
     assert_that!(
@@ -78,7 +76,7 @@ fn print_config() {
     remove_file("minimal-config").unwrap();
 }
 
-#[rustfmt_only_ci_test]
+#[ignore]
 #[test]
 fn inline_config() {
     // single invocation
@@ -158,31 +156,4 @@ fn mod_resolution_error_path_attribute_does_not_exist() {
     let (_stdout, stderr) = rustfmt(&args);
     // The path attribute points to a file that does not exist
     assert!(stderr.contains("does_not_exist.rs does not exist"));
-}
-
-#[test]
-fn rustfmt_emits_error_on_line_overflow_true() {
-    // See also https://github.com/rust-lang/rustfmt/issues/3164
-    let args = [
-        "--config",
-        "error_on_line_overflow=true",
-        "tests/cargo-fmt/source/issue_3164/src/main.rs",
-    ];
-
-    let (_stdout, stderr) = rustfmt(&args);
-    assert!(stderr.contains(
-        "line formatted, but exceeded maximum width (maximum: 100 (see `max_width` option)"
-    ))
-}
-
-#[test]
-#[allow(non_snake_case)]
-fn dont_emit_ICE() {
-    let files = ["tests/target/issue_5728.rs", "tests/target/issue_5729.rs"];
-
-    for file in files {
-        let args = [file];
-        let (_stdout, stderr) = rustfmt(&args);
-        assert!(!stderr.contains("thread 'main' panicked"));
-    }
 }

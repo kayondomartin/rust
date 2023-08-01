@@ -1,12 +1,12 @@
-//@run-rustfix
-//@aux-build: proc_macros.rs:proc-macro
+// run-rustfix
+// aux-build: proc_macro_with_span.rs
 #![deny(clippy::default_trait_access)]
 #![allow(dead_code, unused_imports)]
 #![allow(clippy::uninlined_format_args)]
 
-extern crate proc_macros;
+extern crate proc_macro_with_span;
 
-use proc_macros::with_span;
+use proc_macro_with_span::with_span;
 use std::default;
 use std::default::Default as D2;
 use std::string;

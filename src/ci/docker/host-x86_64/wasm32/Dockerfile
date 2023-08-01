@@ -13,8 +13,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
   sudo \
   gdb \
   xz-utils \
-  bzip2 \
-  && rm -rf /var/lib/apt/lists/*
+  bzip2
 
 COPY scripts/emscripten.sh /scripts/
 RUN bash /scripts/emscripten.sh

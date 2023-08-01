@@ -1,5 +1,6 @@
-//@run-rustfix
+// run-rustfix
 
+#![feature(custom_inner_attributes)]
 #![warn(clippy::cast_abs_to_unsigned)]
 #![allow(clippy::uninlined_format_args, unused)]
 
@@ -32,14 +33,16 @@ fn main() {
     let _ = (x as i64 - y as i64).abs() as u32;
 }
 
-#[clippy::msrv = "1.50"]
 fn msrv_1_50() {
+    #![clippy::msrv = "1.50"]
+
     let x: i32 = 10;
     assert_eq!(10u32, x.abs() as u32);
 }
 
-#[clippy::msrv = "1.51"]
 fn msrv_1_51() {
+    #![clippy::msrv = "1.51"]
+
     let x: i32 = 10;
     assert_eq!(10u32, x.abs() as u32);
 }

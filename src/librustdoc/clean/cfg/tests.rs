@@ -1,10 +1,10 @@
 use super::*;
 
-use rustc_ast::{LitKind, MetaItemLit, Path, StrStyle};
+use rustc_ast::attr;
+use rustc_ast::Path;
 use rustc_span::create_default_session_globals_then;
-use rustc_span::symbol::{kw, Ident, Symbol};
+use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::DUMMY_SP;
-use thin_vec::thin_vec;
 
 fn word_cfg(s: &str) -> Cfg {
     Cfg::Cfg(Symbol::intern(s), None)
@@ -22,20 +22,11 @@ fn dummy_meta_item_word(name: &str) -> MetaItem {
     }
 }
 
-fn dummy_meta_item_name_value(name: &str, symbol: Symbol, kind: LitKind) -> MetaItem {
-    let lit = MetaItemLit { symbol, suffix: None, kind, span: DUMMY_SP };
-    MetaItem {
-        path: Path::from_ident(Ident::from_str(name)),
-        kind: MetaItemKind::NameValue(lit),
-        span: DUMMY_SP,
-    }
-}
-
 macro_rules! dummy_meta_item_list {
     ($name:ident, [$($list:ident),* $(,)?]) => {
         MetaItem {
             path: Path::from_ident(Ident::from_str(stringify!($name))),
-            kind: MetaItemKind::List(thin_vec![
+            kind: MetaItemKind::List(vec![
                 $(
                     NestedMetaItem::MetaItem(
                         dummy_meta_item_word(stringify!($list)),
@@ -49,7 +40,7 @@ macro_rules! dummy_meta_item_list {
     ($name:ident, [$($list:expr),* $(,)?]) => {
         MetaItem {
             path: Path::from_ident(Ident::from_str(stringify!($name))),
-            kind: MetaItemKind::List(thin_vec![
+            kind: MetaItemKind::List(vec![
                 $(
                     NestedMetaItem::MetaItem($list),
                 )*
@@ -251,8 +242,8 @@ fn test_parse_ok() {
         let mi = dummy_meta_item_word("all");
         assert_eq!(Cfg::parse(&mi), Ok(word_cfg("all")));
 
-        let done = Symbol::intern("done");
-        let mi = dummy_meta_item_name_value("all", done, LitKind::Str(done, StrStyle::Cooked));
+        let mi =
+            attr::mk_name_value_item_str(Ident::from_str("all"), Symbol::intern("done"), DUMMY_SP);
         assert_eq!(Cfg::parse(&mi), Ok(name_value_cfg("all", "done")));
 
         let mi = dummy_meta_item_list!(all, [a, b]);
@@ -281,7 +272,7 @@ fn test_parse_ok() {
 #[test]
 fn test_parse_err() {
     create_default_session_globals_then(|| {
-        let mi = dummy_meta_item_name_value("foo", kw::False, LitKind::Bool(false));
+        let mi = attr::mk_name_value_item(Ident::from_str("foo"), LitKind::Bool(false), DUMMY_SP);
         assert!(Cfg::parse(&mi).is_err());
 
         let mi = dummy_meta_item_list!(not, [a, b]);

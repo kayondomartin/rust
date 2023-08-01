@@ -1,4 +1,13 @@
 #!/bin/bash
+# Copyright 2014 The Rust Project Developers. See the COPYRIGHT
+# file at the top-level directory of this distribution and at
+# http://rust-lang.org/COPYRIGHT.
+#
+# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+# option. This file may not be copied, modified, or distributed
+# except according to those terms.
 
 set -ue
 
@@ -11,9 +20,5 @@ abs_path() {
     (unset CDPATH && cd "$path" > /dev/null && pwd)
 }
 
-# Running cargo will read the libstd Cargo.toml
-# which uses the unstable `public-dependency` feature.
-export RUSTC_BOOTSTRAP=1
-
 src_dir="$(abs_path $(dirname "$0"))"
-$CARGO run --manifest-path="$src_dir/Cargo.toml" -- generate "$@"
+cargo run --manifest-path="$src_dir/Cargo.toml" -- generate "$@"

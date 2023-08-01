@@ -16,21 +16,9 @@ Rust code has similar formatting, less mental effort is required to comprehend a
 new project, lowering the barrier to entry for new developers.
 
 Thus, there are productivity benefits to using a formatting tool (such as
-`rustfmt`), and even larger benefits by using a community-consistent
-formatting, typically by using a formatting tool's default settings.
+rustfmt), and even larger benefits by using a community-consistent formatting,
+typically by using a formatting tool's default settings.
 
-## The default Rust style
-
-The Rust Style Guide defines the default Rust style, and *recommends* that
-developers and tools follow the default Rust style. Tools such as `rustfmt` use
-the style guide as a reference for the default style. Everything in this style
-guide, whether or not it uses language such as "must" or the imperative mood
-such as "insert a space ..." or "break the line after ...", refers to the
-default style.
-
-This should not be interpreted as forbidding developers from following a
-non-default style, or forbidding tools from adding any particular configuration
-options.
 
 ## Formatting conventions
 
@@ -40,47 +28,8 @@ options.
 * Each level of indentation must be four spaces (that is, all indentation
   outside of string literals and comments must be a multiple of four).
 * The maximum width for a line is 100 characters.
-* A tool may choose to make some of these configurable.
+* A tool should be configurable for all three of these variables.
 
-#### Block indent
-
-Prefer block indent over visual indent:
-
-```rust
-// Block indent
-a_function_call(
-    foo,
-    bar,
-);
-
-// Visual indent
-a_function_call(foo,
-                bar);
-```
-
-This makes for smaller diffs (e.g., if `a_function_call` is renamed in the above
-example) and less rightward drift.
-
-### Trailing commas
-
-Lists should have a trailing comma when followed by a newline:
-
-```rust
-function_call(
-    argument,
-    another_argument,
-);
-
-let array = [
-    element,
-    another_element,
-    yet_another_element,
-];
-```
-
-This makes moving code (e.g., by copy and paste) easier, and makes diffs
-smaller, as appending or removing items does not require modifying another line
-to add or remove a comma.
 
 ### Blank lines
 
@@ -99,7 +48,11 @@ fn bar() {}
 fn baz() {}
 ```
 
-Formatting tools may wish to make the bounds on blank lines configurable.
+Formatting tools should make the bounds on blank lines configurable: there
+should be separate minimum and maximum numbers of newlines between both
+statements and (top-level) items (i.e., four options). As described above, the
+defaults for both statements and items should be minimum: 1, maximum: 2.
+
 
 ### [Module-level items](items.md)
 ### [Statements](statements.md)
@@ -186,11 +139,6 @@ For attributes with argument lists, format like functions.
 ```rust
 #[repr(C)]
 #[foo(foo, bar)]
-#[long_multi_line_attribute(
-    split,
-    across,
-    lines,
-)]
 struct CRepr {
     #![repr(C)]
     x: f32,

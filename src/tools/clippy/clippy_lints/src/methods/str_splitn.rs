@@ -1,10 +1,9 @@
 use clippy_utils::consts::{constant, Constant};
 use clippy_utils::diagnostics::{span_lint_and_sugg, span_lint_and_then};
-use clippy_utils::msrvs::{self, Msrv};
 use clippy_utils::source::snippet_with_context;
 use clippy_utils::usage::local_used_after_expr;
 use clippy_utils::visitors::{for_each_expr_with_closures, Descend};
-use clippy_utils::{is_diag_item_method, match_def_path, path_to_local_id, paths};
+use clippy_utils::{is_diag_item_method, match_def_path, meets_msrv, msrvs, path_to_local_id, paths};
 use core::ops::ControlFlow;
 use if_chain::if_chain;
 use rustc_errors::Applicability;
@@ -13,6 +12,7 @@ use rustc_hir::{
 };
 use rustc_lint::LateContext;
 use rustc_middle::ty;
+use rustc_semver::RustcVersion;
 use rustc_span::{sym, Span, Symbol, SyntaxContext};
 
 use super::{MANUAL_SPLIT_ONCE, NEEDLESS_SPLITN};
@@ -24,7 +24,7 @@ pub(super) fn check(
     self_arg: &Expr<'_>,
     pat_arg: &Expr<'_>,
     count: u128,
-    msrv: &Msrv,
+    msrv: Option<RustcVersion>,
 ) {
     if count < 2 || !cx.typeck_results().expr_ty_adjusted(self_arg).peel_refs().is_str() {
         return;
@@ -34,7 +34,7 @@ pub(super) fn check(
         IterUsageKind::Nth(n) => count > n + 1,
         IterUsageKind::NextTuple => count > 2,
     };
-    let manual = count == 2 && msrv.meets(msrvs::STR_SPLIT_ONCE);
+    let manual = count == 2 && meets_msrv(msrv, msrvs::STR_SPLIT_ONCE);
 
     match parse_iter_usage(cx, expr.span.ctxt(), cx.tcx.hir().parent_iter(expr.hir_id)) {
         Some(usage) if needless(usage.kind) => lint_needless(cx, method_name, expr, self_arg, pat_arg),
@@ -167,7 +167,7 @@ fn check_manual_split_once_indirect(
             };
             diag.span_suggestion_verbose(
                 local.span,
-                format!("try `{r}split_once`"),
+                &format!("try `{r}split_once`"),
                 format!("let ({lhs}, {rhs}) = {self_snip}.{r}split_once({pat_snip}){unwrap};"),
                 app,
             );
@@ -175,13 +175,13 @@ fn check_manual_split_once_indirect(
             let remove_msg = format!("remove the `{iter_ident}` usages");
             diag.span_suggestion(
                 first.span,
-                remove_msg.clone(),
+                &remove_msg,
                 "",
                 app,
             );
             diag.span_suggestion(
                 second.span,
-                remove_msg,
+                &remove_msg,
                 "",
                 app,
             );
@@ -289,7 +289,7 @@ fn parse_iter_usage<'tcx>(
 ) -> Option<IterUsage> {
     let (kind, span) = match iter.next() {
         Some((_, Node::Expr(e))) if e.span.ctxt() == ctxt => {
-            let ExprKind::MethodCall(name, _, args, _) = e.kind else {
+            let ExprKind::MethodCall(name, _, [args @ ..], _) = e.kind else {
                 return None;
             };
             let did = cx.typeck_results().type_dependent_def_id(e.hir_id)?;
@@ -316,7 +316,7 @@ fn parse_iter_usage<'tcx>(
                     };
                 },
                 ("nth" | "skip", [idx_expr]) if cx.tcx.trait_of_item(did) == Some(iter_id) => {
-                    if let Some(Constant::Int(idx)) = constant(cx, cx.typeck_results(), idx_expr) {
+                    if let Some((Constant::Int(idx), _)) = constant(cx, cx.typeck_results(), idx_expr) {
                         let span = if name.ident.as_str() == "nth" {
                             e.span
                         } else {

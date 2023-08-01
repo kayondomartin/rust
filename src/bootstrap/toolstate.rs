@@ -1,6 +1,6 @@
 use crate::builder::{Builder, RunConfig, ShouldRun, Step};
 use crate::util::t;
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
@@ -91,7 +91,7 @@ fn print_error(tool: &str, submodule: &str) {
     eprintln!("If you do NOT intend to update '{}', please ensure you did not accidentally", tool);
     eprintln!("change the submodule at '{}'. You may ask your reviewer for the", submodule);
     eprintln!("proper steps.");
-    crate::detail_exit_macro!(3);
+    crate::detail_exit(3);
 }
 
 fn check_changed_files(toolstates: &HashMap<Box<str>, ToolState>) {
@@ -106,7 +106,7 @@ fn check_changed_files(toolstates: &HashMap<Box<str>, ToolState>) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("Failed to get changed files: {:?}", e);
-            crate::detail_exit_macro!(1);
+            crate::detail_exit(1);
         }
     };
 
@@ -158,7 +158,7 @@ impl Step for ToolStateCheck {
     ///   stable tool. That is, the status is not allowed to get worse
     ///   (test-pass to test-fail or build-fail).
     fn run(self, builder: &Builder<'_>) {
-        if builder.config.dry_run() {
+        if builder.config.dry_run {
             return;
         }
 
@@ -177,7 +177,7 @@ impl Step for ToolStateCheck {
         }
 
         if did_error {
-            crate::detail_exit_macro!(1);
+            crate::detail_exit(1);
         }
 
         check_changed_files(&toolstates);
@@ -223,7 +223,7 @@ impl Step for ToolStateCheck {
         }
 
         if did_error {
-            crate::detail_exit_macro!(1);
+            crate::detail_exit(1);
         }
 
         if builder.config.channel == "nightly" && env::var_os("TOOLSTATE_PUBLISH").is_some() {
@@ -265,7 +265,7 @@ impl Builder<'_> {
         // If we're in a dry run setting we don't want to save toolstates as
         // that means if we e.g. panic down the line it'll look like we tested
         // everything (but we actually haven't).
-        if self.config.dry_run() {
+        if self.config.dry_run {
             return;
         }
         // Toolstate isn't tracked for clippy or rustfmt, but since most tools do, we avoid checking

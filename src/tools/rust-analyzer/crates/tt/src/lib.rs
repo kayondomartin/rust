@@ -16,106 +16,45 @@ pub use smol_str::SmolStr;
 /// which source tokens. We do it by assigning an distinct identity to each
 /// source token and making sure that identities are preserved during macro
 /// expansion.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TokenId(pub u32);
 
-impl fmt::Debug for TokenId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 impl TokenId {
-    pub const UNSPECIFIED: TokenId = TokenId(!0);
     pub const fn unspecified() -> TokenId {
-        Self::UNSPECIFIED
+        TokenId(!0)
     }
 }
-
-pub mod token_id {
-    pub use crate::{DelimiterKind, Spacing, TokenId};
-    pub type Span = crate::TokenId;
-    pub type Subtree = crate::Subtree<Span>;
-    pub type Punct = crate::Punct<Span>;
-    pub type Delimiter = crate::Delimiter<Span>;
-    pub type Leaf = crate::Leaf<Span>;
-    pub type Ident = crate::Ident<Span>;
-    pub type Literal = crate::Literal<Span>;
-    pub type TokenTree = crate::TokenTree<Span>;
-    pub mod buffer {
-        pub type TokenBuffer<'a> = crate::buffer::TokenBuffer<'a, super::Span>;
-        pub type Cursor<'a> = crate::buffer::Cursor<'a, super::Span>;
-        pub type TokenTreeRef<'a> = crate::buffer::TokenTreeRef<'a, super::Span>;
-    }
-
-    impl Delimiter {
-        pub const UNSPECIFIED: Self = Self {
-            open: TokenId::UNSPECIFIED,
-            close: TokenId::UNSPECIFIED,
-            kind: DelimiterKind::Invisible,
-        };
-        pub const fn unspecified() -> Self {
-            Self::UNSPECIFIED
-        }
-    }
-    impl Subtree {
-        pub const fn empty() -> Self {
-            Subtree { delimiter: Delimiter::unspecified(), token_trees: vec![] }
-        }
-    }
-    impl TokenTree {
-        pub const fn empty() -> Self {
-            Self::Subtree(Subtree { delimiter: Delimiter::unspecified(), token_trees: vec![] })
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SyntaxContext(pub u32);
-
-// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-// pub struct Span {
-//     pub id: TokenId,
-//     pub ctx: SyntaxContext,
-// }
-// pub type Span = (TokenId, SyntaxContext);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TokenTree<Span> {
-    Leaf(Leaf<Span>),
-    Subtree(Subtree<Span>),
+pub enum TokenTree {
+    Leaf(Leaf),
+    Subtree(Subtree),
 }
-impl_from!(Leaf<Span>, Subtree<Span> for TokenTree);
+impl_from!(Leaf, Subtree for TokenTree);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Leaf<Span> {
-    Literal(Literal<Span>),
-    Punct(Punct<Span>),
-    Ident(Ident<Span>),
-}
-
-impl<Span> Leaf<Span> {
-    pub fn span(&self) -> &Span {
-        match self {
-            Leaf::Literal(it) => &it.span,
-            Leaf::Punct(it) => &it.span,
-            Leaf::Ident(it) => &it.span,
-        }
+impl TokenTree {
+    pub fn empty() -> Self {
+        TokenTree::Subtree(Subtree::default())
     }
 }
-impl_from!(Literal<Span>, Punct<Span>, Ident<Span> for Leaf);
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Subtree<Span> {
-    // FIXME, this should not be Option
-    pub delimiter: Delimiter<Span>,
-    pub token_trees: Vec<TokenTree<Span>>,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Leaf {
+    Literal(Literal),
+    Punct(Punct),
+    Ident(Ident),
+}
+impl_from!(Literal, Punct, Ident for Leaf);
+
+#[derive(Clone, PartialEq, Eq, Hash, Default)]
+pub struct Subtree {
+    pub delimiter: Option<Delimiter>,
+    pub token_trees: Vec<TokenTree>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Delimiter<Span> {
-    pub open: Span,
-    pub close: Span,
+pub struct Delimiter {
+    pub id: TokenId,
     pub kind: DelimiterKind,
 }
 
@@ -124,20 +63,19 @@ pub enum DelimiterKind {
     Parenthesis,
     Brace,
     Bracket,
-    Invisible,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Literal<Span> {
+pub struct Literal {
     pub text: SmolStr,
-    pub span: Span,
+    pub id: TokenId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Punct<Span> {
+pub struct Punct {
     pub char: char,
     pub spacing: Spacing,
-    pub span: Span,
+    pub id: TokenId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -147,37 +85,35 @@ pub enum Spacing {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Identifier or keyword. Unlike rustc, we keep "r#" prefix when it represents a raw identifier.
-pub struct Ident<Span> {
+pub struct Ident {
     pub text: SmolStr,
-    pub span: Span,
+    pub id: TokenId,
 }
 
-impl<S> Ident<S> {
-    pub fn new(text: impl Into<SmolStr>, span: S) -> Self {
-        Ident { text: text.into(), span }
+impl Leaf {
+    pub fn id(&self) -> TokenId {
+        match self {
+            Leaf::Literal(l) => l.id,
+            Leaf::Punct(p) => p.id,
+            Leaf::Ident(i) => i.id,
+        }
     }
 }
 
-fn print_debug_subtree<Span: fmt::Debug>(
-    f: &mut fmt::Formatter<'_>,
-    subtree: &Subtree<Span>,
-    level: usize,
-) -> fmt::Result {
+fn print_debug_subtree(f: &mut fmt::Formatter<'_>, subtree: &Subtree, level: usize) -> fmt::Result {
     let align = "  ".repeat(level);
 
-    let Delimiter { kind, open, close } = &subtree.delimiter;
-    let aux = match kind {
-        DelimiterKind::Invisible => format!("$$ {:?} {:?}", open, close),
-        DelimiterKind::Parenthesis => format!("() {:?} {:?}", open, close),
-        DelimiterKind::Brace => format!("{{}} {:?} {:?}", open, close),
-        DelimiterKind::Bracket => format!("[] {:?} {:?}", open, close),
+    let aux = match subtree.delimiter.map(|it| (it.kind, it.id.0)) {
+        None => "$".to_string(),
+        Some((DelimiterKind::Parenthesis, id)) => format!("() {}", id),
+        Some((DelimiterKind::Brace, id)) => format!("{{}} {}", id),
+        Some((DelimiterKind::Bracket, id)) => format!("[] {}", id),
     };
 
     if subtree.token_trees.is_empty() {
-        write!(f, "{align}SUBTREE {aux}")?;
+        write!(f, "{}SUBTREE {}", align, aux)?;
     } else {
-        writeln!(f, "{align}SUBTREE {aux}")?;
+        writeln!(f, "{}SUBTREE {}", align, aux)?;
         for (idx, child) in subtree.token_trees.iter().enumerate() {
             print_debug_token(f, child, level + 1)?;
             if idx != subtree.token_trees.len() - 1 {
@@ -189,25 +125,21 @@ fn print_debug_subtree<Span: fmt::Debug>(
     Ok(())
 }
 
-fn print_debug_token<Span: fmt::Debug>(
-    f: &mut fmt::Formatter<'_>,
-    tkn: &TokenTree<Span>,
-    level: usize,
-) -> fmt::Result {
+fn print_debug_token(f: &mut fmt::Formatter<'_>, tkn: &TokenTree, level: usize) -> fmt::Result {
     let align = "  ".repeat(level);
 
     match tkn {
         TokenTree::Leaf(leaf) => match leaf {
-            Leaf::Literal(lit) => write!(f, "{}LITERAL {} {:?}", align, lit.text, lit.span)?,
+            Leaf::Literal(lit) => write!(f, "{}LITERAL {} {}", align, lit.text, lit.id.0)?,
             Leaf::Punct(punct) => write!(
                 f,
-                "{}PUNCH   {} [{}] {:?}",
+                "{}PUNCH   {} [{}] {}",
                 align,
                 punct.char,
                 if punct.spacing == Spacing::Alone { "alone" } else { "joint" },
-                punct.span
+                punct.id.0
             )?,
-            Leaf::Ident(ident) => write!(f, "{}IDENT   {} {:?}", align, ident.text, ident.span)?,
+            Leaf::Ident(ident) => write!(f, "{}IDENT   {} {}", align, ident.text, ident.id.0)?,
         },
         TokenTree::Subtree(subtree) => {
             print_debug_subtree(f, subtree, level)?;
@@ -217,13 +149,13 @@ fn print_debug_token<Span: fmt::Debug>(
     Ok(())
 }
 
-impl<Span: fmt::Debug> fmt::Debug for Subtree<Span> {
+impl fmt::Debug for Subtree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         print_debug_subtree(f, self, 0)
     }
 }
 
-impl<Span> fmt::Display for TokenTree<Span> {
+impl fmt::Display for TokenTree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TokenTree::Leaf(it) => fmt::Display::fmt(it, f),
@@ -232,13 +164,13 @@ impl<Span> fmt::Display for TokenTree<Span> {
     }
 }
 
-impl<Span> fmt::Display for Subtree<Span> {
+impl fmt::Display for Subtree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (l, r) = match self.delimiter.kind {
-            DelimiterKind::Parenthesis => ("(", ")"),
-            DelimiterKind::Brace => ("{", "}"),
-            DelimiterKind::Bracket => ("[", "]"),
-            DelimiterKind::Invisible => ("", ""),
+        let (l, r) = match self.delimiter_kind() {
+            Some(DelimiterKind::Parenthesis) => ("(", ")"),
+            Some(DelimiterKind::Brace) => ("{", "}"),
+            Some(DelimiterKind::Bracket) => ("[", "]"),
+            None => ("", ""),
         };
         f.write_str(l)?;
         let mut needs_space = false;
@@ -260,7 +192,7 @@ impl<Span> fmt::Display for Subtree<Span> {
     }
 }
 
-impl<Span> fmt::Display for Leaf<Span> {
+impl fmt::Display for Leaf {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Leaf::Ident(it) => fmt::Display::fmt(it, f),
@@ -270,25 +202,25 @@ impl<Span> fmt::Display for Leaf<Span> {
     }
 }
 
-impl<Span> fmt::Display for Ident<Span> {
+impl fmt::Display for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.text, f)
     }
 }
 
-impl<Span> fmt::Display for Literal<Span> {
+impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.text, f)
     }
 }
 
-impl<Span> fmt::Display for Punct<Span> {
+impl fmt::Display for Punct {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.char, f)
     }
 }
 
-impl<Span> Subtree<Span> {
+impl Subtree {
     /// Count the number of tokens recursively
     pub fn count(&self) -> usize {
         let children_count = self
@@ -302,16 +234,20 @@ impl<Span> Subtree<Span> {
 
         self.token_trees.len() + children_count
     }
+
+    pub fn delimiter_kind(&self) -> Option<DelimiterKind> {
+        self.delimiter.map(|it| it.kind)
+    }
 }
 
-impl<Span> Subtree<Span> {
+impl Subtree {
     /// A simple line string used for debugging
     pub fn as_debug_string(&self) -> String {
-        let delim = match self.delimiter.kind {
-            DelimiterKind::Brace => ("{", "}"),
-            DelimiterKind::Bracket => ("[", "]"),
-            DelimiterKind::Parenthesis => ("(", ")"),
-            DelimiterKind::Invisible => ("$", "$"),
+        let delim = match self.delimiter_kind() {
+            Some(DelimiterKind::Brace) => ("{", "}"),
+            Some(DelimiterKind::Bracket) => ("[", "]"),
+            Some(DelimiterKind::Parenthesis) => ("(", ")"),
+            None => (" ", " "),
         };
 
         let mut res = String::new();
@@ -329,7 +265,7 @@ impl<Span> Subtree<Span> {
                         (Leaf::Ident(_), Some(&TokenTree::Leaf(Leaf::Ident(_)))) => {
                             " ".to_string() + &s
                         }
-                        (Leaf::Punct(_), Some(TokenTree::Leaf(Leaf::Punct(punct)))) => {
+                        (Leaf::Punct(_), Some(&TokenTree::Leaf(Leaf::Punct(punct)))) => {
                             if punct.spacing == Spacing::Alone {
                                 " ".to_string() + &s
                             } else {
@@ -352,21 +288,21 @@ impl<Span> Subtree<Span> {
 
 pub mod buffer;
 
-pub fn pretty<Span>(tkns: &[TokenTree<Span>]) -> String {
-    fn tokentree_to_text<Span>(tkn: &TokenTree<Span>) -> String {
+pub fn pretty(tkns: &[TokenTree]) -> String {
+    fn tokentree_to_text(tkn: &TokenTree) -> String {
         match tkn {
             TokenTree::Leaf(Leaf::Ident(ident)) => ident.text.clone().into(),
             TokenTree::Leaf(Leaf::Literal(literal)) => literal.text.clone().into(),
             TokenTree::Leaf(Leaf::Punct(punct)) => format!("{}", punct.char),
             TokenTree::Subtree(subtree) => {
                 let content = pretty(&subtree.token_trees);
-                let (open, close) = match subtree.delimiter.kind {
-                    DelimiterKind::Brace => ("{", "}"),
-                    DelimiterKind::Bracket => ("[", "]"),
-                    DelimiterKind::Parenthesis => ("(", ")"),
-                    DelimiterKind::Invisible => ("", ""),
+                let (open, close) = match subtree.delimiter.map(|it| it.kind) {
+                    None => ("", ""),
+                    Some(DelimiterKind::Brace) => ("{", "}"),
+                    Some(DelimiterKind::Parenthesis) => ("(", ")"),
+                    Some(DelimiterKind::Bracket) => ("[", "]"),
                 };
-                format!("{open}{content}{close}")
+                format!("{}{}{}", open, content, close)
             }
         }
     }

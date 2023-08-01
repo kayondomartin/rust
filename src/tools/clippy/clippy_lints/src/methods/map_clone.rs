@@ -1,8 +1,7 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::msrvs::{self, Msrv};
 use clippy_utils::source::snippet_with_applicability;
 use clippy_utils::ty::{is_copy, is_type_diagnostic_item};
-use clippy_utils::{is_diag_trait_item, peel_blocks};
+use clippy_utils::{is_diag_trait_item, meets_msrv, msrvs, peel_blocks};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
@@ -10,16 +9,23 @@ use rustc_lint::LateContext;
 use rustc_middle::mir::Mutability;
 use rustc_middle::ty;
 use rustc_middle::ty::adjustment::Adjust;
+use rustc_semver::RustcVersion;
 use rustc_span::symbol::Ident;
 use rustc_span::{sym, Span};
 
 use super::MAP_CLONE;
 
-pub(super) fn check(cx: &LateContext<'_>, e: &hir::Expr<'_>, recv: &hir::Expr<'_>, arg: &hir::Expr<'_>, msrv: &Msrv) {
+pub(super) fn check<'tcx>(
+    cx: &LateContext<'_>,
+    e: &hir::Expr<'_>,
+    recv: &hir::Expr<'_>,
+    arg: &'tcx hir::Expr<'_>,
+    msrv: Option<RustcVersion>,
+) {
     if_chain! {
         if let Some(method_id) = cx.typeck_results().type_dependent_def_id(e.hir_id);
         if cx.tcx.impl_of_method(method_id)
-            .map_or(false, |id| is_type_diagnostic_item(cx, cx.tcx.type_of(id).subst_identity(), sym::Option))
+            .map_or(false, |id| is_type_diagnostic_item(cx, cx.tcx.type_of(id), sym::Option))
             || is_diag_trait_item(cx, method_id, sym::Iterator);
         if let hir::ExprKind::Closure(&hir::Closure{ body, .. }) = arg.kind;
         then {
@@ -91,10 +97,10 @@ fn lint_needless_cloning(cx: &LateContext<'_>, root: Span, receiver: Span) {
     );
 }
 
-fn lint_explicit_closure(cx: &LateContext<'_>, replace: Span, root: Span, is_copy: bool, msrv: &Msrv) {
+fn lint_explicit_closure(cx: &LateContext<'_>, replace: Span, root: Span, is_copy: bool, msrv: Option<RustcVersion>) {
     let mut applicability = Applicability::MachineApplicable;
 
-    let (message, sugg_method) = if is_copy && msrv.meets(msrvs::ITERATOR_COPIED) {
+    let (message, sugg_method) = if is_copy && meets_msrv(msrv, msrvs::ITERATOR_COPIED) {
         ("you are using an explicit closure for copying elements", "copied")
     } else {
         ("you are using an explicit closure for cloning elements", "cloned")

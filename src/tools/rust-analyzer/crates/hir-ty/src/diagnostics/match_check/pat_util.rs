@@ -1,4 +1,4 @@
-//! Pattern utilities.
+//! Pattern untilities.
 //!
 //! Originates from `rustc_hir::pat_util`
 

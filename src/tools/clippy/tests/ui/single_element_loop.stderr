@@ -1,5 +1,5 @@
 error: for loop over a single element
-  --> $DIR/single_element_loop.rs:9:5
+  --> $DIR/single_element_loop.rs:7:5
    |
 LL | /     for item in &[item1] {
 LL | |         dbg!(item);
@@ -16,7 +16,7 @@ LL +     }
    |
 
 error: for loop over a single element
-  --> $DIR/single_element_loop.rs:13:5
+  --> $DIR/single_element_loop.rs:11:5
    |
 LL | /     for item in [item1].iter() {
 LL | |         dbg!(item);
@@ -32,7 +32,7 @@ LL +     }
    |
 
 error: for loop over a single element
-  --> $DIR/single_element_loop.rs:17:5
+  --> $DIR/single_element_loop.rs:15:5
    |
 LL | /     for item in &[0..5] {
 LL | |         dbg!(item);
@@ -48,7 +48,7 @@ LL +     }
    |
 
 error: for loop over a single element
-  --> $DIR/single_element_loop.rs:21:5
+  --> $DIR/single_element_loop.rs:19:5
    |
 LL | /     for item in [0..5].iter_mut() {
 LL | |         dbg!(item);
@@ -64,7 +64,7 @@ LL +     }
    |
 
 error: for loop over a single element
-  --> $DIR/single_element_loop.rs:25:5
+  --> $DIR/single_element_loop.rs:23:5
    |
 LL | /     for item in [0..5] {
 LL | |         dbg!(item);
@@ -80,7 +80,7 @@ LL +     }
    |
 
 error: for loop over a single element
-  --> $DIR/single_element_loop.rs:29:5
+  --> $DIR/single_element_loop.rs:27:5
    |
 LL | /     for item in [0..5].into_iter() {
 LL | |         dbg!(item);
@@ -95,32 +95,5 @@ LL +         dbg!(item);
 LL +     }
    |
 
-error: for loop over a single element
-  --> $DIR/single_element_loop.rs:48:5
-   |
-LL | /     for _ in [42] {
-LL | |         let _f = |n: u32| {
-LL | |             for i in 0..n {
-LL | |                 if i > 10 {
-...  |
-LL | |         };
-LL | |     }
-   | |_____^
-   |
-help: try
-   |
-LL ~     {
-LL +         let _ = 42;
-LL +         let _f = |n: u32| {
-LL +             for i in 0..n {
-LL +                 if i > 10 {
-LL +                     dbg!(i);
-LL +                     break;
-LL +                 }
-LL +             }
-LL +         };
-LL +     }
-   |
-
-error: aborting due to 7 previous errors
+error: aborting due to 6 previous errors
 

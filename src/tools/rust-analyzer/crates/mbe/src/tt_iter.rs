@@ -1,10 +1,10 @@
 //! A "Parser" structure for token trees. We use this when parsing a declarative
 //! macro definition into a list of patterns and templates.
 
-use smallvec::{smallvec, SmallVec};
 use syntax::SyntaxKind;
+use tt::buffer::TokenBuffer;
 
-use crate::{to_parser_input::to_parser_input, tt, ExpandError, ExpandResult};
+use crate::{to_parser_input::to_parser_input, ExpandError, ExpandResult};
 
 #[derive(Debug, Clone)]
 pub(crate) struct TtIter<'a> {
@@ -73,53 +73,17 @@ impl<'a> TtIter<'a> {
         }
     }
 
-    pub(crate) fn expect_single_punct(&mut self) -> Result<&'a tt::Punct, ()> {
-        match self.expect_leaf()? {
-            tt::Leaf::Punct(it) => Ok(it),
+    pub(crate) fn expect_u32_literal(&mut self) -> Result<u32, ()> {
+        match self.expect_literal()? {
+            tt::Leaf::Literal(lit) => lit.text.parse().map_err(drop),
             _ => Err(()),
         }
     }
 
-    /// Returns consecutive `Punct`s that can be glued together.
-    ///
-    /// This method currently may return a single quotation, which is part of lifetime ident and
-    /// conceptually not a punct in the context of mbe. Callers should handle this.
-    pub(crate) fn expect_glued_punct(&mut self) -> Result<SmallVec<[tt::Punct; 3]>, ()> {
-        let tt::TokenTree::Leaf(tt::Leaf::Punct(first)) = self.next().ok_or(())?.clone() else {
-            return Err(());
-        };
-
-        if first.spacing == tt::Spacing::Alone {
-            return Ok(smallvec![first]);
-        }
-
-        let (second, third) = match (self.peek_n(0), self.peek_n(1)) {
-            (
-                Some(tt::TokenTree::Leaf(tt::Leaf::Punct(p2))),
-                Some(tt::TokenTree::Leaf(tt::Leaf::Punct(p3))),
-            ) if p2.spacing == tt::Spacing::Joint => (p2, Some(p3)),
-            (Some(tt::TokenTree::Leaf(tt::Leaf::Punct(p2))), _) => (p2, None),
-            _ => return Ok(smallvec![first]),
-        };
-
-        match (first.char, second.char, third.map(|it| it.char)) {
-            ('.', '.', Some('.' | '=')) | ('<', '<', Some('=')) | ('>', '>', Some('=')) => {
-                let _ = self.next().unwrap();
-                let _ = self.next().unwrap();
-                Ok(smallvec![first, *second, *third.unwrap()])
-            }
-            ('-' | '!' | '*' | '/' | '&' | '%' | '^' | '+' | '<' | '=' | '>' | '|', '=', _)
-            | ('-' | '=' | '>', '>', _)
-            | ('<', '-', _)
-            | (':', ':', _)
-            | ('.', '.', _)
-            | ('&', '&', _)
-            | ('<', '<', _)
-            | ('|', '|', _) => {
-                let _ = self.next().unwrap();
-                Ok(smallvec![first, *second])
-            }
-            _ => Ok(smallvec![first]),
+    pub(crate) fn expect_punct(&mut self) -> Result<&'a tt::Punct, ()> {
+        match self.expect_leaf()? {
+            tt::Leaf::Punct(it) => Ok(it),
+            _ => Err(()),
         }
     }
 
@@ -127,7 +91,7 @@ impl<'a> TtIter<'a> {
         &mut self,
         entry_point: parser::PrefixEntryPoint,
     ) -> ExpandResult<Option<tt::TokenTree>> {
-        let buffer = tt::buffer::TokenBuffer::from_tokens(self.inner.as_slice());
+        let buffer = TokenBuffer::from_tokens(self.inner.as_slice());
         let parser_input = to_parser_input(&buffer);
         let tree_traversal = entry_point.parse(&parser_input);
 
@@ -142,11 +106,6 @@ impl<'a> TtIter<'a> {
                     for _ in 0..n_input_tokens {
                         cursor = cursor.bump_subtree();
                     }
-                }
-                parser::Step::FloatSplit { .. } => {
-                    // FIXME: We need to split the tree properly here, but mutating the token trees
-                    // in the buffer is somewhat tricky to pull off.
-                    cursor = cursor.bump_subtree();
                 }
                 parser::Step::Enter { .. } | parser::Step::Exit => (),
                 parser::Step::Error { .. } => error = true,
@@ -164,24 +123,25 @@ impl<'a> TtIter<'a> {
 
         if cursor.is_root() {
             while curr != cursor {
-                let Some(token) = curr.token_tree() else { break };
-                res.push(token.cloned());
+                if let Some(token) = curr.token_tree() {
+                    res.push(token);
+                }
                 curr = curr.bump();
             }
         }
-
         self.inner = self.inner.as_slice()[res.len()..].iter();
         let res = match res.len() {
-            0 | 1 => res.pop(),
+            1 => Some(res[0].cloned()),
+            0 => None,
             _ => Some(tt::TokenTree::Subtree(tt::Subtree {
-                delimiter: tt::Delimiter::unspecified(),
-                token_trees: res,
+                delimiter: None,
+                token_trees: res.into_iter().map(|it| it.cloned()).collect(),
             })),
         };
         ExpandResult { value: res, err }
     }
 
-    pub(crate) fn peek_n(&self, n: usize) -> Option<&'a tt::TokenTree> {
+    pub(crate) fn peek_n(&self, n: usize) -> Option<&tt::TokenTree> {
         self.inner.as_slice().get(n)
     }
 }

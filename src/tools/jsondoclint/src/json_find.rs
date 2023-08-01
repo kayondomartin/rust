@@ -1,9 +1,8 @@
 use std::fmt::Write;
 
-use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone)]
 pub enum SelectorPart {
     Field(String),
     Index(usize),
@@ -73,6 +72,3 @@ fn find_selector_recursive(
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

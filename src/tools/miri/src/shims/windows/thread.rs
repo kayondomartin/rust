@@ -21,7 +21,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
 
         let security = this.read_pointer(security_op)?;
         // stacksize is ignored, but still needs to be a valid usize
-        this.read_target_usize(stacksize_op)?;
+        this.read_scalar(stacksize_op)?.to_machine_usize(this)?;
         let start_routine = this.read_pointer(start_op)?;
         let func_arg = this.read_immediate(arg_op)?;
         let flags = this.read_scalar(flags_op)?.to_u32()?;
@@ -34,7 +34,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         };
 
         let stack_size_param_is_a_reservation =
-            this.eval_windows_u32("c", "STACK_SIZE_PARAM_IS_A_RESERVATION");
+            this.eval_windows("c", "STACK_SIZE_PARAM_IS_A_RESERVATION")?.to_u32()?;
 
         // We ignore the stack size, so we also ignore the
         // `STACK_SIZE_PARAM_IS_A_RESERVATION` flag.
@@ -46,7 +46,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             throw_unsup_format!("non-null `lpThreadAttributes` in `CreateThread`")
         }
 
-        this.start_regular_thread(
+        this.start_thread(
             thread,
             start_routine,
             Abi::System { unwind: false },
@@ -73,7 +73,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             _ => this.invalid_handle("WaitForSingleObject")?,
         };
 
-        if timeout != this.eval_windows_u32("c", "INFINITE") {
+        if timeout != this.eval_windows("c", "INFINITE")?.to_u32()? {
             throw_unsup_format!("`WaitForSingleObject` with non-infinite timeout");
         }
 

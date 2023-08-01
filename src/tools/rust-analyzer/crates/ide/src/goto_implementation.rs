@@ -110,7 +110,7 @@ fn impls_for_trait_item(
         .filter_map(|imp| {
             let item = imp.items(sema.db).iter().find_map(|itm| {
                 let itm_name = itm.name(sema.db)?;
-                (itm_name == fun_name).then_some(*itm)
+                (itm_name == fun_name).then(|| *itm)
             })?;
             item.try_to_nav(sema.db)
         })
@@ -297,7 +297,6 @@ impl Foo<str> {}
 //- /lib.rs crate:main deps:core
 fn foo(_: bool$0) {{}}
 //- /libcore.rs crate:core
-#![rustc_coherence_is_core]
 #[lang = "bool"]
 impl bool {}
    //^^^^

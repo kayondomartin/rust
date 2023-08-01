@@ -1,5 +1,5 @@
 #![warn(clippy::needless_update)]
-#![allow(clippy::no_effect, clippy::unnecessary_struct_initialization)]
+#![allow(clippy::no_effect)]
 
 struct S {
     pub a: i32,

@@ -36,7 +36,7 @@ pub struct CatchUnwindData<'tcx> {
 }
 
 impl VisitTags for CatchUnwindData<'_> {
-    fn visit_tags(&self, visit: &mut dyn FnMut(BorTag)) {
+    fn visit_tags(&self, visit: &mut dyn FnMut(SbTag)) {
         let CatchUnwindData { catch_fn, data, dest, ret: _ } = self;
         catch_fn.visit_tags(visit);
         data.visit_tags(visit);
@@ -53,7 +53,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         abi: Abi,
         link_name: Symbol,
         args: &[OpTy<'tcx, Provenance>],
-        unwind: mir::UnwindAction,
+        unwind: StackPopUnwind,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
@@ -63,7 +63,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         let [payload] = this.check_shim(abi, Abi::Rust, link_name, args)?;
         let payload = this.read_scalar(payload)?;
         let thread = this.active_thread_mut();
-        thread.panic_payloads.push(payload);
+        assert!(thread.panic_payload.is_none(), "the panic runtime should avoid double-panics");
+        thread.panic_payload = Some(payload);
 
         // Jump to the unwind block to begin unwinding.
         this.unwind_to_block(unwind)?;
@@ -105,7 +106,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             &[data.into()],
             None,
             // Directly return to caller.
-            StackPopCleanup::Goto { ret: Some(ret), unwind: mir::UnwindAction::Continue },
+            StackPopCleanup::Goto { ret: Some(ret), unwind: StackPopUnwind::Skip },
         )?;
 
         // We ourselves will return `0`, eventually (will be overwritten if we catch a panic).
@@ -124,7 +125,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
 
     fn handle_stack_pop_unwind(
         &mut self,
-        mut extra: FrameExtra<'tcx>,
+        mut extra: FrameData<'tcx>,
         unwinding: bool,
     ) -> InterpResult<'tcx, StackPopJump> {
         let this = self.eval_context_mut();
@@ -145,7 +146,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
 
             // The Thread's `panic_payload` holds what was passed to `miri_start_panic`.
             // This is exactly the second argument we need to pass to `catch_fn`.
-            let payload = this.active_thread_mut().panic_payloads.pop().unwrap();
+            let payload = this.active_thread_mut().panic_payload.take().unwrap();
 
             // Push the `catch_fn` stackframe.
             let f_instance = this.get_ptr_fn(catch_unwind.catch_fn)?.as_instance()?;
@@ -156,10 +157,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 &[catch_unwind.data.into(), payload.into()],
                 None,
                 // Directly return to caller of `try`.
-                StackPopCleanup::Goto {
-                    ret: Some(catch_unwind.ret),
-                    unwind: mir::UnwindAction::Continue,
-                },
+                StackPopCleanup::Goto { ret: Some(catch_unwind.ret), unwind: StackPopUnwind::Skip },
             )?;
 
             // We pushed a new stack frame, the engine should not do any jumping now!
@@ -170,11 +168,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
     }
 
     /// Start a panic in the interpreter with the given message as payload.
-    fn start_panic(&mut self, msg: &str, unwind: mir::UnwindAction) -> InterpResult<'tcx> {
+    fn start_panic(&mut self, msg: &str, unwind: StackPopUnwind) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
         // First arg: message.
-        let msg = this.allocate_str(msg, MiriMemoryKind::Machine.into(), Mutability::Not)?;
+        let msg = this.allocate_str(msg, MiriMemoryKind::Machine.into(), Mutability::Not);
 
         // Call the lang item.
         let panic = this.tcx.lang_items().panic_fn().unwrap();
@@ -191,7 +189,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
     fn assert_panic(
         &mut self,
         msg: &mir::AssertMessage<'tcx>,
-        unwind: mir::UnwindAction,
+        unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         use rustc_middle::mir::AssertKind::*;
         let this = self.eval_context_mut();
@@ -213,34 +211,24 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                     Abi::Rust,
                     &[index.into(), len.into()],
                     None,
-                    StackPopCleanup::Goto { ret: None, unwind },
+                    StackPopCleanup::Goto {
+                        ret: None,
+                        unwind: match unwind {
+                            Some(cleanup) => StackPopUnwind::Cleanup(cleanup),
+                            None => StackPopUnwind::Skip,
+                        },
+                    },
                 )?;
             }
-            MisalignedPointerDereference { required, found } => {
-                // Forward to `panic_misaligned_pointer_dereference` lang item.
-
-                // First arg: required.
-                let required = this.read_scalar(&this.eval_operand(required, None)?)?;
-                // Second arg: found.
-                let found = this.read_scalar(&this.eval_operand(found, None)?)?;
-
-                // Call the lang item.
-                let panic_misaligned_pointer_dereference =
-                    this.tcx.lang_items().panic_misaligned_pointer_dereference_fn().unwrap();
-                let panic_misaligned_pointer_dereference =
-                    ty::Instance::mono(this.tcx.tcx, panic_misaligned_pointer_dereference);
-                this.call_function(
-                    panic_misaligned_pointer_dereference,
-                    Abi::Rust,
-                    &[required.into(), found.into()],
-                    None,
-                    StackPopCleanup::Goto { ret: None, unwind },
-                )?;
-            }
-
             _ => {
                 // Forward everything else to `panic` lang item.
-                this.start_panic(msg.description(), unwind)?;
+                this.start_panic(
+                    msg.description(),
+                    match unwind {
+                        Some(cleanup) => StackPopUnwind::Cleanup(cleanup),
+                        None => StackPopUnwind::Skip,
+                    },
+                )?;
             }
         }
         Ok(())

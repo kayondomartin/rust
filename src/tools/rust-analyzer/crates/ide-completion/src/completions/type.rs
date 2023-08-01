@@ -33,9 +33,7 @@ pub(crate) fn complete_type_path(
             // Don't suggest attribute macros and derives.
             ScopeDef::ModuleDef(Macro(mac)) => mac.is_fn_like(ctx.db),
             // Type things are fine
-            ScopeDef::ModuleDef(
-                BuiltinType(_) | Adt(_) | Module(_) | Trait(_) | TraitAlias(_) | TypeAlias(_),
-            )
+            ScopeDef::ModuleDef(BuiltinType(_) | Adt(_) | Module(_) | Trait(_) | TypeAlias(_))
             | ScopeDef::AdtSelfType(_)
             | ScopeDef::Unknown
             | ScopeDef::GenericParam(TypeParam(_)) => true,
@@ -60,7 +58,7 @@ pub(crate) fn complete_type_path(
             trait_.items(ctx.sema.db).into_iter().for_each(|item| add_assoc_item(acc, item))
         }
         Qualified::TypeAnchor { ty: Some(ty), trait_: None } => {
-            ctx.iterate_path_candidates(ty, |item| {
+            ctx.iterate_path_candidates(&ty, |item| {
                 add_assoc_item(acc, item);
             });
 
@@ -85,7 +83,7 @@ pub(crate) fn complete_type_path(
                     let module_scope = module.scope(ctx.db, Some(ctx.module));
                     for (name, def) in module_scope {
                         if scope_def_applicable(def) {
-                            acc.add_path_resolution(ctx, path_ctx, name, def, vec![]);
+                            acc.add_path_resolution(ctx, path_ctx, name, def);
                         }
                     }
                 }
@@ -141,7 +139,7 @@ pub(crate) fn complete_type_path(
             match location {
                 TypeLocation::TypeBound => {
                     acc.add_nameref_keywords_with_colon(ctx);
-                    ctx.process_all_names(&mut |name, res, doc_aliases| {
+                    ctx.process_all_names(&mut |name, res| {
                         let add_resolution = match res {
                             ScopeDef::ModuleDef(hir::ModuleDef::Macro(mac)) => {
                                 mac.is_fn_like(ctx.db)
@@ -152,7 +150,7 @@ pub(crate) fn complete_type_path(
                             _ => false,
                         };
                         if add_resolution {
-                            acc.add_path_resolution(ctx, path_ctx, name, res, doc_aliases);
+                            acc.add_path_resolution(ctx, path_ctx, name, res);
                         }
                     });
                     return;
@@ -215,9 +213,9 @@ pub(crate) fn complete_type_path(
             };
 
             acc.add_nameref_keywords_with_colon(ctx);
-            ctx.process_all_names(&mut |name, def, doc_aliases| {
+            ctx.process_all_names(&mut |name, def| {
                 if scope_def_applicable(def) {
-                    acc.add_path_resolution(ctx, path_ctx, name, def, doc_aliases);
+                    acc.add_path_resolution(ctx, path_ctx, name, def);
                 }
             });
         }
@@ -242,7 +240,7 @@ pub(crate) fn complete_ascribed_type(
         }
     }?
     .adjusted();
-    let ty_string = x.display_source_code(ctx.db, ctx.module.into(), true).ok()?;
+    let ty_string = x.display_source_code(ctx.db, ctx.module.into()).ok()?;
     acc.add(render_type_inference(ty_string, ctx));
     None
 }

@@ -1,5 +1,4 @@
 //! Advertises the capabilities of the LSP Server.
-use ide_db::line_index::WideEncoding;
 use lsp_types::{
     CallHierarchyServerCapability, ClientCapabilities, CodeActionKind, CodeActionOptions,
     CodeActionProviderCapability, CodeLensOptions, CompletionOptions,
@@ -11,25 +10,20 @@ use lsp_types::{
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, ServerCapabilities,
     SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TypeDefinitionProviderCapability, WorkDoneProgressOptions,
-    WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities,
-    WorkspaceServerCapabilities,
+    WorkspaceFileOperationsServerCapabilities, WorkspaceServerCapabilities,
 };
 use serde_json::json;
 
 use crate::config::{Config, RustfmtConfig};
-use crate::line_index::PositionEncoding;
-use crate::lsp_ext::negotiated_encoding;
+use crate::lsp_ext::supports_utf8;
 use crate::semantic_tokens;
 
 pub fn server_capabilities(config: &Config) -> ServerCapabilities {
     ServerCapabilities {
-        position_encoding: match negotiated_encoding(config.caps()) {
-            PositionEncoding::Utf8 => Some(PositionEncodingKind::UTF8),
-            PositionEncoding::Wide(wide) => match wide {
-                WideEncoding::Utf16 => Some(PositionEncodingKind::UTF16),
-                WideEncoding::Utf32 => Some(PositionEncodingKind::UTF32),
-                _ => None,
-            },
+        position_encoding: if supports_utf8(config.caps()) {
+            Some(PositionEncodingKind::UTF8)
+        } else {
+            None
         },
         text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
             open_close: Some(true),
@@ -48,7 +42,7 @@ pub fn server_capabilities(config: &Config) -> ServerCapabilities {
                 "(".to_string(),
             ]),
             all_commit_characters: None,
-            completion_item: completion_item(config),
+            completion_item: completion_item(&config),
             work_done_progress_options: WorkDoneProgressOptions { work_done_progress: None },
         }),
         signature_help_provider: Some(SignatureHelpOptions {
@@ -73,7 +67,7 @@ pub fn server_capabilities(config: &Config) -> ServerCapabilities {
         },
         document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
             first_trigger_character: "=".to_string(),
-            more_trigger_character: Some(more_trigger_character(config)),
+            more_trigger_character: Some(more_trigger_character(&config)),
         }),
         selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
@@ -86,10 +80,7 @@ pub fn server_capabilities(config: &Config) -> ServerCapabilities {
         color_provider: None,
         execute_command_provider: None,
         workspace: Some(WorkspaceServerCapabilities {
-            workspace_folders: Some(WorkspaceFoldersServerCapabilities {
-                supported: Some(true),
-                change_notifications: Some(OneOf::Left(true)),
-            }),
+            workspace_folders: None,
             file_operations: Some(WorkspaceFileOperationsServerCapabilities {
                 did_create: None,
                 will_create: None,
@@ -139,7 +130,6 @@ pub fn server_capabilities(config: &Config) -> ServerCapabilities {
                 resolve_provider: Some(true),
             },
         ))),
-        inline_value_provider: None,
         experimental: Some(json!({
             "externalDocs": true,
             "hoverRange": true,

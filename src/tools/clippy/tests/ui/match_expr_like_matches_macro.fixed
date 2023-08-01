@@ -1,12 +1,8 @@
-//@run-rustfix
+// run-rustfix
 
+#![feature(custom_inner_attributes)]
 #![warn(clippy::match_like_matches_macro)]
-#![allow(
-    unreachable_patterns,
-    dead_code,
-    clippy::equatable_if_let,
-    clippy::needless_borrowed_reference
-)]
+#![allow(unreachable_patterns, dead_code, clippy::equatable_if_let)]
 
 fn main() {
     let x = Some(5);
@@ -15,7 +11,7 @@ fn main() {
     let _y = matches!(x, Some(0));
 
     // Lint
-    let _w = x.is_some();
+    let _w = matches!(x, Some(_));
 
     // Turn into is_none
     let _z = x.is_none();
@@ -199,15 +195,17 @@ fn main() {
     };
 }
 
-#[clippy::msrv = "1.41"]
 fn msrv_1_41() {
+    #![clippy::msrv = "1.41"]
+
     let _y = match Some(5) {
         Some(0) => true,
         _ => false,
     };
 }
 
-#[clippy::msrv = "1.42"]
 fn msrv_1_42() {
+    #![clippy::msrv = "1.42"]
+
     let _y = matches!(Some(5), Some(0));
 }

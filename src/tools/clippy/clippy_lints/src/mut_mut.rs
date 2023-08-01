@@ -68,15 +68,13 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for MutVisitor<'a, 'tcx> {
                     expr.span,
                     "generally you want to avoid `&mut &mut _` if possible",
                 );
-            } else if let ty::Ref(_, ty, hir::Mutability::Mut) = self.cx.typeck_results().expr_ty(e).kind() {
-                if ty.peel_refs().is_sized(self.cx.tcx, self.cx.param_env) {
-                    span_lint(
-                        self.cx,
-                        MUT_MUT,
-                        expr.span,
-                        "this expression mutably borrows a mutable reference. Consider reborrowing",
-                    );
-                }
+            } else if let ty::Ref(_, _, hir::Mutability::Mut) = self.cx.typeck_results().expr_ty(e).kind() {
+                span_lint(
+                    self.cx,
+                    MUT_MUT,
+                    expr.span,
+                    "this expression mutably borrows a mutable reference. Consider reborrowing",
+                );
             }
         }
     }
@@ -86,7 +84,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for MutVisitor<'a, 'tcx> {
             return;
         }
 
-        if let hir::TyKind::Ref(
+        if let hir::TyKind::Rptr(
             _,
             hir::MutTy {
                 ty: pty,
@@ -94,7 +92,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for MutVisitor<'a, 'tcx> {
             },
         ) = ty.kind
         {
-            if let hir::TyKind::Ref(
+            if let hir::TyKind::Rptr(
                 _,
                 hir::MutTy {
                     mutbl: hir::Mutability::Mut,

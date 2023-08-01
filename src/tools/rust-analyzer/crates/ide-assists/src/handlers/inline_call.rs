@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use ast::make;
 use either::Either;
 use hir::{db::HirDatabase, PathResolution, Semantics, TypeInfo};
@@ -192,10 +190,10 @@ pub(crate) fn inline_call(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
                 PathResolution::Def(hir::ModuleDef::Function(f)) => f,
                 _ => return None,
             };
-            (function, format!("Inline `{path}`"))
+            (function, format!("Inline `{}`", path))
         }
         ast::CallableExpr::MethodCall(call) => {
-            (ctx.sema.resolve_method_call(call)?, format!("Inline `{name_ref}`"))
+            (ctx.sema.resolve_method_call(call)?, format!("Inline `{}`", name_ref))
         }
     };
 
@@ -363,10 +361,10 @@ fn inline(
         .collect();
 
     if function.self_param(sema.db).is_some() {
-        let this = || make::name_ref("this").syntax().clone_for_update().first_token().unwrap();
+        let this = || make::name_ref("this").syntax().clone_for_update();
         if let Some(self_local) = params[0].2.as_local(sema.db) {
             usages_for_locals(self_local)
-                .filter_map(|FileReference { name, range, .. }| match name {
+                .flat_map(|FileReference { name, range, .. }| match name {
                     ast::NameLike::NameRef(_) => Some(body.syntax().covering_element(range)),
                     _ => None,
                 })
@@ -375,44 +373,8 @@ fn inline(
                 })
         }
     }
-
-    let mut func_let_vars: BTreeSet<String> = BTreeSet::new();
-
-    // grab all of the local variable declarations in the function
-    for stmt in fn_body.statements() {
-        if let Some(let_stmt) = ast::LetStmt::cast(stmt.syntax().to_owned()) {
-            for has_token in let_stmt.syntax().children_with_tokens() {
-                if let Some(node) = has_token.as_node() {
-                    if let Some(ident_pat) = ast::IdentPat::cast(node.to_owned()) {
-                        func_let_vars.insert(ident_pat.syntax().text().to_string());
-                    }
-                }
-            }
-        }
-    }
-
     // Inline parameter expressions or generate `let` statements depending on whether inlining works or not.
     for ((pat, param_ty, _), usages, expr) in izip!(params, param_use_nodes, arguments).rev() {
-        // izip confuses RA due to our lack of hygiene info currently losing us type info causing incorrect errors
-        let usages: &[ast::PathExpr] = &usages;
-        let expr: &ast::Expr = expr;
-
-        let insert_let_stmt = || {
-            let ty = sema.type_of_expr(expr).filter(TypeInfo::has_adjustment).and(param_ty.clone());
-            if let Some(stmt_list) = body.stmt_list() {
-                stmt_list.push_front(
-                    make::let_stmt(pat.clone(), ty, Some(expr.clone())).clone_for_update().into(),
-                )
-            }
-        };
-
-        // check if there is a local var in the function that conflicts with parameter
-        // if it does then emit a let statement and continue
-        if func_let_vars.contains(&expr.syntax().text().to_string()) {
-            insert_let_stmt();
-            continue;
-        }
-
         let inline_direct = |usage, replacement: &ast::Expr| {
             if let Some(field) = path_expr_as_record_field(usage) {
                 cov_mark::hit!(inline_call_inline_direct_field);
@@ -421,7 +383,9 @@ fn inline(
                 ted::replace(usage.syntax(), &replacement.syntax().clone_for_update());
             }
         };
-
+        // izip confuses RA due to our lack of hygiene info currently losing us type info causing incorrect errors
+        let usages: &[ast::PathExpr] = &*usages;
+        let expr: &ast::Expr = expr;
         match usages {
             // inline single use closure arguments
             [usage]
@@ -444,11 +408,18 @@ fn inline(
             }
             // can't inline, emit a let statement
             _ => {
-                insert_let_stmt();
+                let ty =
+                    sema.type_of_expr(expr).filter(TypeInfo::has_adjustment).and(param_ty.clone());
+                if let Some(stmt_list) = body.stmt_list() {
+                    stmt_list.push_front(
+                        make::let_stmt(pat.clone(), ty, Some(expr.clone()))
+                            .clone_for_update()
+                            .into(),
+                    )
+                }
             }
         }
     }
-
     if let Some(generic_arg_list) = generic_arg_list.clone() {
         if let Some((target, source)) = &sema.scope(node.syntax()).zip(sema.scope(fn_body.syntax()))
         {
@@ -676,42 +647,6 @@ struct Foo(u32);
 
 impl Foo {
     fn add(&self, a: u32) -> Self {
-        Foo(self.0 + a)
-    }
-}
-
-fn main() {
-    let x = {
-        let ref this = Foo(3);
-        Foo(this.0 + 2)
-    };
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn generic_method_by_ref() {
-        check_assist(
-            inline_call,
-            r#"
-struct Foo(u32);
-
-impl Foo {
-    fn add<T>(&self, a: u32) -> Self {
-        Foo(self.0 + a)
-    }
-}
-
-fn main() {
-    let x = Foo(3).add$0::<usize>(2);
-}
-"#,
-            r#"
-struct Foo(u32);
-
-impl Foo {
-    fn add<T>(&self, a: u32) -> Self {
         Foo(self.0 + a)
     }
 }
@@ -958,6 +893,7 @@ fn main() {
         );
     }
 
+    // FIXME: const generics aren't being substituted, this is blocked on better support for them
     #[test]
     fn inline_substitutes_generics() {
         check_assist(
@@ -981,7 +917,7 @@ fn foo<T, const N: usize>() {
 fn bar<U, const M: usize>() {}
 
 fn main() {
-    bar::<usize, {0}>();
+    bar::<usize, N>();
 }
 "#,
         );
@@ -1319,38 +1255,5 @@ impl A {
 }
 "#,
         )
-    }
-
-    #[test]
-    fn local_variable_shadowing_callers_argument() {
-        check_assist(
-            inline_call,
-            r#"
-fn foo(bar: u32, baz: u32) -> u32 {
-    let a = 1;
-    bar * baz * a * 6
-}
-fn main() {
-    let a = 7;
-    let b = 1;
-    let res = foo$0(a, b);
-}
-"#,
-            r#"
-fn foo(bar: u32, baz: u32) -> u32 {
-    let a = 1;
-    bar * baz * a * 6
-}
-fn main() {
-    let a = 7;
-    let b = 1;
-    let res = {
-        let bar = a;
-        let a = 1;
-        bar * b * a * 6
-    };
-}
-"#,
-        );
     }
 }

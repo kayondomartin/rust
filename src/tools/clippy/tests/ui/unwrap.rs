@@ -1,5 +1,4 @@
 #![warn(clippy::unwrap_used)]
-#![allow(clippy::unnecessary_literal_unwrap)]
 
 fn unwrap_option() {
     let opt = Some(0);

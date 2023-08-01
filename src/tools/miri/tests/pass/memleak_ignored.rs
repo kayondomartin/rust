@@ -1,5 +1,3 @@
-//@revisions: stack tree
-//@[tree]compile-flags: -Zmiri-tree-borrows
 //@compile-flags: -Zmiri-ignore-leaks
 
 fn main() {

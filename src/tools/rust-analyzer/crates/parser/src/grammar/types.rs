@@ -15,12 +15,10 @@ pub(super) const TYPE_FIRST: TokenSet = paths::PATH_FIRST.union(TokenSet::new(&[
     T![impl],
     T![dyn],
     T![Self],
-    LIFETIME_IDENT,
 ]));
 
-pub(super) const TYPE_RECOVERY_SET: TokenSet = TokenSet::new(&[
+const TYPE_RECOVERY_SET: TokenSet = TokenSet::new(&[
     T![')'],
-    T![>],
     T![,],
     // test_err struct_field_recover
     // struct S { f pub g: () }
@@ -50,7 +48,6 @@ fn type_with_bounds_cond(p: &mut Parser<'_>, allow_bounds: bool) {
         // Some path types are not allowed to have bounds (no plus)
         T![<] => path_type_(p, allow_bounds),
         _ if paths::is_path_start(p) => path_or_macro_type_(p, allow_bounds),
-        LIFETIME_IDENT if p.nth_at(1, T![+]) => bare_dyn_trait_type(p),
         _ => {
             p.err_recover("expected type", TYPE_RECOVERY_SET);
         }
@@ -61,7 +58,7 @@ pub(super) fn ascription(p: &mut Parser<'_>) {
     assert!(p.at(T![:]));
     p.bump(T![:]);
     if p.at(T![=]) {
-        // recover from `let x: = expr;`, `const X: = expr;` and similar
+        // recover from `let x: = expr;`, `const X: = expr;` and similars
         // hopefully no type starts with `=`
         p.error("missing type");
         return;
@@ -153,9 +150,7 @@ fn array_or_slice_type(p: &mut Parser<'_>) {
         // type T = [(); 92];
         T![;] => {
             p.bump(T![;]);
-            let m = p.start();
             expressions::expr(p);
-            m.complete(p, CONST_ARG);
             p.expect(T![']']);
             ARRAY_TYPE
         }
@@ -279,15 +274,6 @@ fn dyn_trait_type(p: &mut Parser<'_>) {
     m.complete(p, DYN_TRAIT_TYPE);
 }
 
-// test bare_dyn_types_with_leading_lifetime
-// type A = 'static + Trait;
-// type B = S<'static + Trait>;
-fn bare_dyn_trait_type(p: &mut Parser<'_>) {
-    let m = p.start();
-    generic_params::bounds_without_colon(p);
-    m.complete(p, DYN_TRAIT_TYPE);
-}
-
 // test path_type
 // type A = Foo;
 // type B = ::Foo;
@@ -339,16 +325,13 @@ pub(super) fn path_type_(p: &mut Parser<'_>, allow_bounds: bool) {
 
 /// This turns a parsed PATH_TYPE or FOR_TYPE optionally into a DYN_TRAIT_TYPE
 /// with a TYPE_BOUND_LIST
-pub(super) fn opt_type_bounds_as_dyn_trait_type(
-    p: &mut Parser<'_>,
-    type_marker: CompletedMarker,
-) -> CompletedMarker {
+fn opt_type_bounds_as_dyn_trait_type(p: &mut Parser<'_>, type_marker: CompletedMarker) {
     assert!(matches!(
         type_marker.kind(),
         SyntaxKind::PATH_TYPE | SyntaxKind::FOR_TYPE | SyntaxKind::MACRO_TYPE
     ));
     if !p.at(T![+]) {
-        return type_marker;
+        return;
     }
 
     // First create a TYPE_BOUND from the completed PATH_TYPE
@@ -365,5 +348,5 @@ pub(super) fn opt_type_bounds_as_dyn_trait_type(
     let m = generic_params::bounds_without_colon_m(p, m);
 
     // Finally precede everything with DYN_TRAIT_TYPE
-    m.precede(p).complete(p, DYN_TRAIT_TYPE)
+    m.precede(p).complete(p, DYN_TRAIT_TYPE);
 }

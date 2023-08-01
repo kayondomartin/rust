@@ -19,7 +19,7 @@ unsafe impl GlobalAlloc for Allocator {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if layout.size() == 123 {
-            println!("Deallocated!")
+            println!("Dellocated!")
         }
 
         System.dealloc(ptr, layout)

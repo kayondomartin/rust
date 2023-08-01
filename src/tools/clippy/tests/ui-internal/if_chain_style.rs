@@ -1,10 +1,5 @@
 #![warn(clippy::if_chain_style)]
-#![allow(
-    clippy::needless_if,
-    clippy::no_effect,
-    clippy::nonminimal_bool,
-    clippy::missing_clippy_version_attribute
-)]
+#![allow(clippy::no_effect, clippy::nonminimal_bool, clippy::missing_clippy_version_attribute)]
 
 extern crate if_chain;
 

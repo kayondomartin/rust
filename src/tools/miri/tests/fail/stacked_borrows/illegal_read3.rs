@@ -1,5 +1,5 @@
 // A callee may not read the destination of our `&mut` without us noticing.
-// This code got carefully checked to not introduce any reborrows
+// Thise code got carefully checked to not introduce any reborrows
 // that are not explicit in the source. Let's hope the compiler does not break this later!
 
 use std::mem;

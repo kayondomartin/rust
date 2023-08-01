@@ -52,13 +52,8 @@ fn render(
 
     let (call, escaped_call) = match &func_kind {
         FuncKind::Method(_, Some(receiver)) => (
-            format!(
-                "{}.{}",
-                receiver.unescaped().display(ctx.db()),
-                name.unescaped().display(ctx.db())
-            )
-            .into(),
-            format!("{}.{}", receiver.display(ctx.db()), name.display(ctx.db())).into(),
+            format!("{}.{}", receiver.unescaped(), name.unescaped()).into(),
+            format!("{}.{}", receiver, name).into(),
         ),
         _ => (name.unescaped().to_smol_str(), name.to_smol_str()),
     };
@@ -152,8 +147,6 @@ fn render(
             }
         }
     }
-
-    item.doc_aliases(ctx.doc_aliases);
     item
 }
 
@@ -169,7 +162,7 @@ pub(super) fn add_call_parens<'b>(
     cov_mark::hit!(inserts_parens_for_function_calls);
 
     let (snippet, label_suffix) = if self_param.is_none() && params.is_empty() {
-        (format!("{escaped_name}()$0"), "()")
+        (format!("{}()$0", escaped_name), "()")
     } else {
         builder.trigger_call_info();
         let snippet = if let Some(CallableSnippets::FillArguments) = ctx.config.callable {
@@ -181,7 +174,7 @@ pub(super) fn add_call_parens<'b>(
                             let smol_str = n.to_smol_str();
                             let text = smol_str.as_str().trim_start_matches('_');
                             let ref_ = ref_of_param(ctx, text, param.ty());
-                            f(&format_args!("${{{}:{ref_}{text}}}", index + offset))
+                            f(&format_args!("${{{}:{}{}}}", index + offset, ref_, text))
                         }
                         None => {
                             let name = match param.ty().as_adt() {
@@ -192,7 +185,7 @@ pub(super) fn add_call_parens<'b>(
                                     .map(|s| to_lower_snake_case(s.as_str()))
                                     .unwrap_or_else(|| "_".to_string()),
                             };
-                            f(&format_args!("${{{}:{name}}}", index + offset))
+                            f(&format_args!("${{{}:{}}}", index + offset, name))
                         }
                     }
                 });
@@ -207,12 +200,12 @@ pub(super) fn add_call_parens<'b>(
                     )
                 }
                 None => {
-                    format!("{escaped_name}({function_params_snippet})$0")
+                    format!("{}({})$0", escaped_name, function_params_snippet)
                 }
             }
         } else {
             cov_mark::hit!(suppress_arg_snippets);
-            format!("{escaped_name}($0)")
+            format!("{}($0)", escaped_name)
         };
 
         (snippet, "(…)")

@@ -160,13 +160,11 @@ fn check_collapsible_no_if_let(cx: &EarlyContext<'_>, expr: &ast::Expr, check: &
         if let ast::ExprKind::If(ref check_inner, ref content, None) = inner.kind;
         // Prevent triggering on `if c { if let a = b { .. } }`.
         if !matches!(check_inner.kind, ast::ExprKind::Let(..));
-        let ctxt = expr.span.ctxt();
-        if inner.span.ctxt() == ctxt;
+        if expr.span.ctxt() == inner.span.ctxt();
         then {
             span_lint_and_then(cx, COLLAPSIBLE_IF, expr.span, "this `if` statement can be collapsed", |diag| {
-                let mut app = Applicability::MachineApplicable;
-                let lhs = Sugg::ast(cx, check, "..", ctxt, &mut app);
-                let rhs = Sugg::ast(cx, check_inner, "..", ctxt, &mut app);
+                let lhs = Sugg::ast(cx, check, "..");
+                let rhs = Sugg::ast(cx, check_inner, "..");
                 diag.span_suggestion(
                     expr.span,
                     "collapse nested if block",
@@ -175,7 +173,7 @@ fn check_collapsible_no_if_let(cx: &EarlyContext<'_>, expr: &ast::Expr, check: &
                         lhs.and(&rhs),
                         snippet_block(cx, content.span, "..", Some(expr.span)),
                     ),
-                    app, // snippet
+                    Applicability::MachineApplicable, // snippet
                 );
             });
         }

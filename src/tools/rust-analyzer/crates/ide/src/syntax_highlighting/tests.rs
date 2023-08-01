@@ -34,7 +34,7 @@ fn attributes() {
 // This is another normal comment
 /// This is another doc comment
 // This is another normal comment
-#[derive(Copy, Unresolved)]
+#[derive(Copy)]
 // The reason for these being here is to test AttrIds
 struct Foo;
 "#,
@@ -432,8 +432,6 @@ macro_rules! panic {}
 macro_rules! assert {}
 #[rustc_builtin_macro]
 macro_rules! asm {}
-#[rustc_builtin_macro]
-macro_rules! concat {}
 
 macro_rules! toho {
     () => ($crate::panic!("not yet implemented"));
@@ -441,16 +439,6 @@ macro_rules! toho {
 }
 
 fn main() {
-    let a = '\n';
-    let a = '\t';
-    let a = '\e'; // invalid escape
-    let a = 'e';
-    let a = ' ';
-    let a = '\u{48}';
-    let a = '\u{4823}';
-    let a = '\x65';
-    let a = '\x00';
-
     println!("Hello {{Hello}}");
     // from https://doc.rust-lang.org/std/fmt/index.html
     println!("Hello");                 // => "Hello"
@@ -507,7 +495,6 @@ fn main() {
 
     let _ = "\x28\x28\x00\x63\n";
     let _ = b"\x28\x28\x00\x63\n";
-    let _ = r"\\";
 
     println!("{\x41}", A = 92);
     println!("{ничоси}", ничоси = 92);
@@ -520,7 +507,6 @@ fn main() {
     toho!("{}fmt", 0);
     asm!("mov eax, {0}");
     format_args!(concat!("{}"), "{}");
-    format_args!("{}", format_args!("{}", 0));
 }"#,
         expect_file!["./test_data/highlight_strings.html"],
         false,
@@ -1042,26 +1028,6 @@ macro_rules! test {}
     let _ = analysis.highlight(HL_CONFIG, file_id).unwrap();
 }
 
-#[test]
-fn highlight_callable_no_crash() {
-    // regression test for #13838.
-    let (analysis, file_id) = fixture::file(
-        r#"
-//- minicore: fn, sized
-impl<A, F: ?Sized> FnOnce<A> for &F
-where
-    F: Fn<A>,
-{
-    type Output = F::Output;
-}
-
-trait Trait {}
-fn foo(x: &fn(&dyn Trait)) {}
-"#,
-    );
-    let _ = analysis.highlight(HL_CONFIG, file_id).unwrap();
-}
-
 /// Highlights the code given by the `ra_fixture` argument, renders the
 /// result as HTML, and compares it with the HTML file given as `snapshot`.
 /// Note that the `snapshot` file is overwritten by the rendered HTML.
@@ -1140,5 +1106,5 @@ fn benchmark_syntax_highlighting_parser() {
             .filter(|it| it.highlight.tag == HlTag::Symbol(SymbolKind::Function))
             .count()
     };
-    assert_eq!(hash, 1169);
+    assert_eq!(hash, 1609);
 }

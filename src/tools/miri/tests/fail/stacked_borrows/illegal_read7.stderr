@@ -2,7 +2,7 @@ error: Undefined Behavior: trying to retag from <TAG> for SharedReadWrite permis
   --> $DIR/illegal_read7.rs:LL:CC
    |
 LL |         let _val = *x.get_mut();
-   |                     ^
+   |                     ^^^^^^^^^^^
    |                     |
    |                     trying to retag from <TAG> for SharedReadWrite permission at ALLOC[0x0], but that tag does not exist in the borrow stack for this location
    |                     this error occurs as part of two-phase retag at ALLOC[0x0..0x4]
@@ -19,7 +19,7 @@ help: <TAG> was later invalidated at offsets [0x0..0x4] by a read access
    |
 LL |         let _val = ptr::read(raw);
    |                    ^^^^^^^^^^^^^^
-   = note: BACKTRACE (of the first span):
+   = note: BACKTRACE:
    = note: inside `main` at $DIR/illegal_read7.rs:LL:CC
 
 note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace

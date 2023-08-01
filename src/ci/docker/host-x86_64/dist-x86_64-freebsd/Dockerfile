@@ -15,8 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   xz-utils \
   wget \
   libssl-dev \
-  pkg-config \
-  && rm -rf /var/lib/apt/lists/*
+  pkg-config
 
 COPY scripts/freebsd-toolchain.sh /tmp/
 RUN /tmp/freebsd-toolchain.sh x86_64

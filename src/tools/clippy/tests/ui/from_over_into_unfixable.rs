@@ -3,14 +3,14 @@
 struct InMacro(String);
 
 macro_rules! in_macro {
-    () => {
-        Self::new()
+    ($e:ident) => {
+        $e
     };
 }
 
 impl Into<InMacro> for String {
     fn into(self) -> InMacro {
-        InMacro(in_macro!())
+        InMacro(in_macro!(self))
     }
 }
 
@@ -29,16 +29,6 @@ impl Into<u8> for ContainsVal {
     fn into(self) -> u8 {
         let val = 1;
         val + 1
-    }
-}
-
-pub struct Lval<T>(T);
-
-pub struct Rval<T>(T);
-
-impl<T> Into<Rval<Self>> for Lval<T> {
-    fn into(self) -> Rval<Self> {
-        Rval(self)
     }
 }
 

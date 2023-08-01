@@ -4,37 +4,6 @@ use rayon::prelude::*;
 use std::{convert::TryFrom, fmt, io::Read, io::Write, path::Path, str::FromStr};
 use xz2::{read::XzDecoder, write::XzEncoder};
 
-#[derive(Default, Debug, Copy, Clone)]
-pub enum CompressionProfile {
-    Fast,
-    #[default]
-    Balanced,
-    Best,
-}
-
-impl FromStr for CompressionProfile {
-    type Err = Error;
-
-    fn from_str(input: &str) -> Result<Self, Error> {
-        Ok(match input {
-            "fast" => Self::Fast,
-            "balanced" => Self::Balanced,
-            "best" => Self::Best,
-            other => anyhow::bail!("invalid compression profile: {other}"),
-        })
-    }
-}
-
-impl fmt::Display for CompressionProfile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CompressionProfile::Fast => f.write_str("fast"),
-            CompressionProfile::Balanced => f.write_str("balanced"),
-            CompressionProfile::Best => f.write_str("best"),
-        }
-    }
-}
-
 #[derive(Debug, Copy, Clone)]
 pub enum CompressionFormat {
     Gz,
@@ -57,11 +26,7 @@ impl CompressionFormat {
         }
     }
 
-    pub(crate) fn encode(
-        &self,
-        path: impl AsRef<Path>,
-        profile: CompressionProfile,
-    ) -> Result<Box<dyn Encoder>, Error> {
+    pub(crate) fn encode(&self, path: impl AsRef<Path>) -> Result<Box<dyn Encoder>, Error> {
         let mut os = path.as_ref().as_os_str().to_os_string();
         os.push(format!(".{}", self.extension()));
         let path = Path::new(&os);
@@ -72,33 +37,16 @@ impl CompressionFormat {
         let file = crate::util::create_new_file(path)?;
 
         Ok(match self {
-            CompressionFormat::Gz => Box::new(GzEncoder::new(
-                file,
-                match profile {
-                    CompressionProfile::Fast => flate2::Compression::fast(),
-                    CompressionProfile::Balanced => flate2::Compression::new(6),
-                    CompressionProfile::Best => flate2::Compression::best(),
-                },
-            )),
+            CompressionFormat::Gz => Box::new(GzEncoder::new(file, flate2::Compression::best())),
             CompressionFormat::Xz => {
-                let encoder = match profile {
-                    CompressionProfile::Fast => {
-                        xz2::stream::MtStreamBuilder::new().threads(6).preset(1).encoder().unwrap()
-                    }
-                    CompressionProfile::Balanced => {
-                        xz2::stream::MtStreamBuilder::new().threads(6).preset(6).encoder().unwrap()
-                    }
-                    CompressionProfile::Best => {
-                        // Note that this isn't actually the best compression settings for the
-                        // produced artifacts, the production artifacts on static.rust-lang.org are
-                        // produced by rust-lang/promote-release which hosts recompression logic
-                        // and is tuned for optimal compression.
-                        xz2::stream::MtStreamBuilder::new().threads(6).preset(9).encoder().unwrap()
-                    }
-                };
-
-                let compressor = XzEncoder::new_stream(std::io::BufWriter::new(file), encoder);
-                Box::new(compressor)
+                // Note that preset 6 takes about 173MB of memory per thread, so we limit the number of
+                // threads to not blow out 32-bit hosts.  (We could be more precise with
+                // `MtStreamBuilder::memusage()` if desired.)
+                let stream = xz2::stream::MtStreamBuilder::new()
+                    .threads(Ord::min(num_cpus::get(), 8) as u32)
+                    .preset(6)
+                    .encoder()?;
+                Box::new(XzEncoder::new_stream(file, stream))
             }
         })
     }
@@ -146,13 +94,10 @@ impl fmt::Display for CompressionFormats {
             if i != 0 {
                 write!(f, ",")?;
             }
-            fmt::Display::fmt(
-                match format {
-                    CompressionFormat::Xz => "xz",
-                    CompressionFormat::Gz => "gz",
-                },
-                f,
-            )?;
+            fmt::Display::fmt(match format {
+                CompressionFormat::Xz => "xz",
+                CompressionFormat::Gz => "gz",
+            }, f)?;
         }
         Ok(())
     }
@@ -166,7 +111,7 @@ impl Default for CompressionFormats {
 
 impl CompressionFormats {
     pub(crate) fn iter(&self) -> impl Iterator<Item = CompressionFormat> + '_ {
-        self.0.iter().copied()
+        self.0.iter().map(|i| *i)
     }
 }
 
@@ -213,14 +158,20 @@ impl Write for CombinedEncoder {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.encoders.par_iter_mut().map(|w| w.flush()).collect::<std::io::Result<Vec<()>>>()?;
+        self.encoders
+            .par_iter_mut()
+            .map(|w| w.flush())
+            .collect::<std::io::Result<Vec<()>>>()?;
         Ok(())
     }
 }
 
 impl Encoder for CombinedEncoder {
     fn finish(self: Box<Self>) -> Result<(), Error> {
-        self.encoders.into_par_iter().map(|e| e.finish()).collect::<Result<Vec<()>, Error>>()?;
+        self.encoders
+            .into_par_iter()
+            .map(|e| e.finish())
+            .collect::<Result<Vec<()>, Error>>()?;
         Ok(())
     }
 }

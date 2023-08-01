@@ -15,9 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   gdb \
   libssl-dev \
   pkg-config \
-  xz-utils \
-  mingw-w64 \
-  && rm -rf /var/lib/apt/lists/*
+  xz-utils
 
 COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh

@@ -1,7 +1,7 @@
-//@aux-build:proc_macros.rs:proc-macro
+// aux-build:macro_rules.rs
 
-extern crate proc_macros;
-use proc_macros::external;
+#[macro_use]
+extern crate macro_rules;
 
 #[warn(clippy::string_add)]
 #[allow(clippy::string_add_assign, unused)]
@@ -22,8 +22,5 @@ fn main() {
     x = x + 1;
     assert_eq!(2, x);
 
-    external!({
-        let y = "".to_owned();
-        let z = y + "...";
-    });
+    string_add!();
 }

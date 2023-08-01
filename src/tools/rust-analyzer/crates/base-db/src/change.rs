@@ -1,21 +1,19 @@
 //! Defines a unit of change that can applied to the database to get the next
 //! state. Changes are transactional.
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use salsa::Durability;
-use triomphe::Arc;
 use vfs::FileId;
 
-use crate::{CrateGraph, ProcMacros, SourceDatabaseExt, SourceRoot, SourceRootId};
+use crate::{CrateGraph, SourceDatabaseExt, SourceRoot, SourceRootId};
 
 /// Encapsulate a bunch of raw `.set` calls on the database.
 #[derive(Default)]
 pub struct Change {
     pub roots: Option<Vec<SourceRoot>>,
-    pub files_changed: Vec<(FileId, Option<Arc<str>>)>,
+    pub files_changed: Vec<(FileId, Option<Arc<String>>)>,
     pub crate_graph: Option<CrateGraph>,
-    pub proc_macros: Option<ProcMacros>,
 }
 
 impl fmt::Debug for Change {
@@ -35,7 +33,7 @@ impl fmt::Debug for Change {
 }
 
 impl Change {
-    pub fn new() -> Self {
+    pub fn new() -> Change {
         Change::default()
     }
 
@@ -43,16 +41,12 @@ impl Change {
         self.roots = Some(roots);
     }
 
-    pub fn change_file(&mut self, file_id: FileId, new_text: Option<Arc<str>>) {
+    pub fn change_file(&mut self, file_id: FileId, new_text: Option<Arc<String>>) {
         self.files_changed.push((file_id, new_text))
     }
 
     pub fn set_crate_graph(&mut self, graph: CrateGraph) {
         self.crate_graph = Some(graph);
-    }
-
-    pub fn set_proc_macros(&mut self, proc_macros: ProcMacros) {
-        self.proc_macros = Some(proc_macros);
     }
 
     pub fn apply(self, db: &mut dyn SourceDatabaseExt) {
@@ -73,14 +67,11 @@ impl Change {
             let source_root = db.source_root(source_root_id);
             let durability = durability(&source_root);
             // XXX: can't actually remove the file, just reset the text
-            let text = text.unwrap_or_else(|| Arc::from(""));
+            let text = text.unwrap_or_default();
             db.set_file_text_with_durability(file_id, text, durability)
         }
         if let Some(crate_graph) = self.crate_graph {
-            db.set_crate_graph_with_durability(Arc::new(crate_graph), Durability::HIGH);
-        }
-        if let Some(proc_macros) = self.proc_macros {
-            db.set_proc_macros_with_durability(Arc::new(proc_macros), Durability::HIGH);
+            db.set_crate_graph_with_durability(Arc::new(crate_graph), Durability::HIGH)
         }
     }
 }

@@ -13,7 +13,7 @@ macro_rules! define_semantic_token_types {
             $($standard:ident),*$(,)?
         }
         custom {
-            $(($custom:ident, $string:literal) $(=> $fallback:ident)?),*$(,)?
+            $(($custom:ident, $string:literal)),*$(,)?
         }
 
     ) => {
@@ -24,15 +24,6 @@ macro_rules! define_semantic_token_types {
             $(SemanticTokenType::$standard,)*
             $($custom),*
         ];
-
-        pub(crate) fn standard_fallback_type(token: SemanticTokenType) -> Option<SemanticTokenType> {
-            $(
-                if token == $custom {
-                    None $(.or(Some(SemanticTokenType::$fallback)))?
-                } else
-            )*
-            { Some(token )}
-        }
     };
 }
 
@@ -60,46 +51,42 @@ define_semantic_token_types![
 
     custom {
         (ANGLE, "angle"),
-        (ARITHMETIC, "arithmetic") => OPERATOR,
-        (ATTRIBUTE, "attribute") => DECORATOR,
-        (ATTRIBUTE_BRACKET, "attributeBracket") => DECORATOR,
-        (BITWISE, "bitwise") => OPERATOR,
+        (ARITHMETIC, "arithmetic"),
+        (ATTRIBUTE, "attribute"),
+        (ATTRIBUTE_BRACKET, "attributeBracket"),
+        (BITWISE, "bitwise"),
         (BOOLEAN, "boolean"),
         (BRACE, "brace"),
         (BRACKET, "bracket"),
-        (BUILTIN_ATTRIBUTE, "builtinAttribute") => DECORATOR,
+        (BUILTIN_ATTRIBUTE, "builtinAttribute"),
         (BUILTIN_TYPE, "builtinType"),
-        (CHAR, "character") => STRING,
+        (CHAR, "character"),
         (COLON, "colon"),
         (COMMA, "comma"),
-        (COMPARISON, "comparison") => OPERATOR,
+        (COMPARISON, "comparison"),
         (CONST_PARAMETER, "constParameter"),
-        (DERIVE, "derive") => DECORATOR,
-        (DERIVE_HELPER, "deriveHelper") => DECORATOR,
+        (DERIVE, "derive"),
+        (DERIVE_HELPER, "deriveHelper"),
         (DOT, "dot"),
-        (ESCAPE_SEQUENCE, "escapeSequence") => STRING,
-        (FORMAT_SPECIFIER, "formatSpecifier") => STRING,
-        (GENERIC, "generic") => TYPE_PARAMETER,
+        (ESCAPE_SEQUENCE, "escapeSequence"),
+        (FORMAT_SPECIFIER, "formatSpecifier"),
+        (GENERIC, "generic"),
         (LABEL, "label"),
         (LIFETIME, "lifetime"),
-        (LOGICAL, "logical") => OPERATOR,
-        (MACRO_BANG, "macroBang") => MACRO,
+        (LOGICAL, "logical"),
+        (MACRO_BANG, "macroBang"),
         (PARENTHESIS, "parenthesis"),
         (PUNCTUATION, "punctuation"),
-        (SELF_KEYWORD, "selfKeyword") => KEYWORD,
-        (SELF_TYPE_KEYWORD, "selfTypeKeyword") => KEYWORD,
+        (SELF_KEYWORD, "selfKeyword"),
+        (SELF_TYPE_KEYWORD, "selfTypeKeyword"),
         (SEMICOLON, "semicolon"),
         (TYPE_ALIAS, "typeAlias"),
-        (TOOL_MODULE, "toolModule") => DECORATOR,
+        (TOOL_MODULE, "toolModule"),
         (UNION, "union"),
         (UNRESOLVED_REFERENCE, "unresolvedReference"),
     }
 ];
 
-macro_rules! count_tts {
-    () => {0usize};
-    ($_head:tt $($tail:tt)*) => {1usize + count_tts!($($tail)*)};
-}
 macro_rules! define_semantic_token_modifiers {
     (
         standard {
@@ -118,8 +105,6 @@ macro_rules! define_semantic_token_modifiers {
             $(SemanticTokenModifier::$standard,)*
             $($custom),*
         ];
-
-        const LAST_STANDARD_MOD: usize = count_tts!($($standard)*);
     };
 }
 
@@ -141,7 +126,6 @@ define_semantic_token_modifiers![
         (INJECTED, "injected"),
         (INTRA_DOC_LINK, "intraDocLink"),
         (LIBRARY, "library"),
-        (MACRO_MODIFIER, "macro"),
         (MUTABLE, "mutable"),
         (PUBLIC, "public"),
         (REFERENCE, "reference"),
@@ -152,13 +136,6 @@ define_semantic_token_modifiers![
 
 #[derive(Default)]
 pub(crate) struct ModifierSet(pub(crate) u32);
-
-impl ModifierSet {
-    pub(crate) fn standard_fallback(&mut self) {
-        // Remove all non standard modifiers
-        self.0 = self.0 & !(!0u32 << LAST_STANDARD_MOD)
-    }
-}
 
 impl ops::BitOrAssign<SemanticTokenModifier> for ModifierSet {
     fn bitor_assign(&mut self, rhs: SemanticTokenModifier) {
@@ -184,8 +161,8 @@ impl SemanticTokensBuilder {
 
     /// Push a new token onto the builder
     pub(crate) fn push(&mut self, range: Range, token_index: u32, modifier_bitset: u32) {
-        let mut push_line = range.start.line;
-        let mut push_char = range.start.character;
+        let mut push_line = range.start.line as u32;
+        let mut push_char = range.start.character as u32;
 
         if !self.data.is_empty() {
             push_line -= self.prev_line;
@@ -200,15 +177,15 @@ impl SemanticTokensBuilder {
         let token = SemanticToken {
             delta_line: push_line,
             delta_start: push_char,
-            length: token_len,
+            length: token_len as u32,
             token_type: token_index,
             token_modifiers_bitset: modifier_bitset,
         };
 
         self.data.push(token);
 
-        self.prev_line = range.start.line;
-        self.prev_char = range.start.character;
+        self.prev_line = range.start.line as u32;
+        self.prev_char = range.start.character as u32;
     }
 
     pub(crate) fn build(self) -> SemanticTokens {

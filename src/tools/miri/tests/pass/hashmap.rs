@@ -1,5 +1,3 @@
-//@revisions: stack tree
-//@[tree]compile-flags: -Zmiri-tree-borrows
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 

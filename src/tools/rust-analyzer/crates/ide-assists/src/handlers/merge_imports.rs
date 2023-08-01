@@ -92,7 +92,7 @@ trait Merge: AstNode + Clone {
     fn try_merge_from(self, items: &mut dyn Iterator<Item = Self>) -> Option<Vec<Edit>> {
         let mut edits = Vec::new();
         let mut merged = self.clone();
-        for item in items {
+        while let Some(item) = items.next() {
             merged = merged.try_merge(&item)?;
             edits.push(Edit::Remove(item.into_either()));
         }

@@ -1,4 +1,4 @@
-//@error-in-other-file: memory leaked
+//@error-pattern: the evaluated program leaked memory
 //@normalize-stderr-test: ".*│.*" -> "$$stripped$$"
 
 fn main() {

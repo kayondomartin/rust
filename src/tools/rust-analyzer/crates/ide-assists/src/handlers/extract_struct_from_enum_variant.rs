@@ -158,7 +158,7 @@ fn existing_definition(db: &RootDatabase, variant_name: &ast::Name, variant: &Va
             ),
             _ => false,
         })
-        .any(|(name, _)| name.display(db).to_string() == variant_name.to_string())
+        .any(|(name, _)| name.to_string() == variant_name.to_string())
 }
 
 fn extract_generic_params(
@@ -178,7 +178,7 @@ fn extract_generic_params(
             .fold(false, |tagged, ty| tag_generics_in_variant(&ty, &mut generics) || tagged),
     };
 
-    let generics = generics.into_iter().filter_map(|(param, tag)| tag.then_some(param));
+    let generics = generics.into_iter().filter_map(|(param, tag)| tag.then(|| param));
     tagged_one.then(|| make::generic_param_list(generics))
 }
 
@@ -296,14 +296,10 @@ fn create_struct_def(
 
 fn update_variant(variant: &ast::Variant, generics: Option<ast::GenericParamList>) -> Option<()> {
     let name = variant.name()?;
-    let generic_args = generics
+    let ty = generics
         .filter(|generics| generics.generic_params().count() > 0)
-        .map(|generics| generics.to_generic_args());
-    // FIXME: replace with a `ast::make` constructor
-    let ty = match generic_args {
-        Some(generic_args) => make::ty(&format!("{name}{generic_args}")),
-        None => make::ty(&name.text()),
-    };
+        .map(|generics| make::ty(&format!("{}{}", &name.text(), generics.to_generic_args())))
+        .unwrap_or_else(|| make::ty(&name.text()));
 
     // change from a record to a tuple field list
     let tuple_field = make::tuple_field(None, ty);
@@ -1006,7 +1002,7 @@ enum X<'a, 'b, 'x> {
     }
 
     #[test]
-    fn test_extract_struct_with_lifetime_type_const() {
+    fn test_extract_struct_with_liftime_type_const() {
         check_assist(
             extract_struct_from_enum_variant,
             r#"

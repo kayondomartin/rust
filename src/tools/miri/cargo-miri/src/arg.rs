@@ -40,8 +40,7 @@ impl<'s, I: Iterator<Item = Cow<'s, str>>> Iterator for ArgSplitFlagValue<'_, I>
         if arg == "--" {
             // Stop searching at `--`.
             self.args = None;
-            // But yield the `--` so that it does not get lost!
-            return Some(Err(Cow::Borrowed("--")));
+            return None;
         }
         // These branches cannot be merged if we want to avoid the allocation in the `Borrowed` branch.
         match &arg {
@@ -80,8 +79,9 @@ impl<'a, I: Iterator<Item = String> + 'a> ArgSplitFlagValue<'a, I> {
     ) -> impl Iterator<Item = Result<String, String>> + 'a {
         ArgSplitFlagValue::new(args.map(Cow::Owned), name).map(|x| {
             match x {
-                Ok(s) => Ok(s.into_owned()),
-                Err(s) => Err(s.into_owned()),
+                Ok(Cow::Owned(s)) => Ok(s),
+                Err(Cow::Owned(s)) => Err(s),
+                _ => panic!("iterator converted owned to borrowed"),
             }
         })
     }

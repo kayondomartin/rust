@@ -2,16 +2,15 @@
 
 #![warn(rust_2018_idioms, unused_lifetimes, semicolon_in_expressions_from_macros)]
 
-use std::io as sio;
 use std::process::Command;
 use std::{cmp::Ordering, ops, time::Instant};
+use std::{io as sio, iter};
 
 mod macros;
+pub mod hash;
 pub mod process;
 pub mod panic_context;
 pub mod non_empty_vec;
-pub mod rand;
-pub mod thread;
 
 pub use always_assert::{always, never};
 
@@ -40,19 +39,15 @@ Uncomment `default = [ "backtrace" ]` in `crates/stdx/Cargo.toml`.
 }
 
 pub fn to_lower_snake_case(s: &str) -> String {
-    to_snake_case(s, char::to_lowercase)
+    to_snake_case(s, char::to_ascii_lowercase)
 }
 pub fn to_upper_snake_case(s: &str) -> String {
-    to_snake_case(s, char::to_uppercase)
+    to_snake_case(s, char::to_ascii_uppercase)
 }
 
 // Code partially taken from rust/compiler/rustc_lint/src/nonstandard_style.rs
 // commit: 9626f2b
-fn to_snake_case<F, I>(mut s: &str, change_case: F) -> String
-where
-    F: Fn(char) -> I,
-    I: Iterator<Item = char>,
-{
+fn to_snake_case<F: Fn(&char) -> char>(mut s: &str, change_case: F) -> String {
     let mut words = vec![];
 
     // Preserve leading underscores
@@ -80,7 +75,7 @@ where
             }
 
             last_upper = ch.is_uppercase();
-            buf.extend(change_case(ch));
+            buf.extend(iter::once(change_case(&ch)));
         }
 
         words.push(buf);

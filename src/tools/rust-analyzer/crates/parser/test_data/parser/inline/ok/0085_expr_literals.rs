@@ -9,6 +9,4 @@ fn foo() {
     let _ = r"d";
     let _ = b"e";
     let _ = br"f";
-    let _ = c"g";
-    let _ = cr"h";
 }

@@ -1,12 +1,12 @@
 use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_sugg};
 use clippy_utils::source::{snippet, snippet_with_applicability};
-use clippy_utils::ty::is_type_lang_item;
-use clippy_utils::{get_expr_use_or_unification_node, peel_blocks, SpanlessEq};
-use clippy_utils::{get_parent_expr, is_lint_allowed, is_path_diagnostic_item, method_calls};
+use clippy_utils::ty::is_type_diagnostic_item;
+use clippy_utils::{get_parent_expr, is_lint_allowed, match_function_call, method_calls, paths};
+use clippy_utils::{peel_blocks, SpanlessEq};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::def_id::DefId;
-use rustc_hir::{BinOpKind, BorrowKind, Expr, ExprKind, LangItem, Node, QPath};
+use rustc_hir::{BinOpKind, BorrowKind, Expr, ExprKind, LangItem, QPath};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty;
@@ -132,7 +132,7 @@ declare_clippy_lint! {
     /// Probably lots of false positives. If an index comes from a known valid position (e.g.
     /// obtained via `char_indices` over the same string), it is totally OK.
     ///
-    /// ### Example
+    /// # Example
     /// ```rust,should_panic
     /// &"Ölkanne"[1..];
     /// ```
@@ -190,7 +190,7 @@ impl<'tcx> LateLintPass<'tcx> for StringAdd {
             },
             ExprKind::Index(target, _idx) => {
                 let e_ty = cx.typeck_results().expr_ty(target).peel_refs();
-                if e_ty.is_str() || is_type_lang_item(cx, e_ty, LangItem::String) {
+                if matches!(e_ty.kind(), ty::Str) || is_type_diagnostic_item(cx, e_ty, sym::String) {
                     span_lint(
                         cx,
                         STRING_SLICE,
@@ -205,7 +205,7 @@ impl<'tcx> LateLintPass<'tcx> for StringAdd {
 }
 
 fn is_string(cx: &LateContext<'_>, e: &Expr<'_>) -> bool {
-    is_type_lang_item(cx, cx.typeck_results().expr_ty(e).peel_refs(), LangItem::String)
+    is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(e).peel_refs(), sym::String)
 }
 
 fn is_add(cx: &LateContext<'_>, src: &Expr<'_>, target: &Expr<'_>) -> bool {
@@ -249,14 +249,12 @@ const MAX_LENGTH_BYTE_STRING_LIT: usize = 32;
 declare_lint_pass!(StringLitAsBytes => [STRING_LIT_AS_BYTES, STRING_FROM_UTF8_AS_BYTES]);
 
 impl<'tcx> LateLintPass<'tcx> for StringLitAsBytes {
-    #[expect(clippy::too_many_lines)]
     fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) {
         use rustc_ast::LitKind;
 
         if_chain! {
             // Find std::str::converts::from_utf8
-            if let ExprKind::Call(fun, args) = e.kind;
-            if is_path_diagnostic_item(cx, fun, sym::str_from_utf8);
+            if let Some(args) = match_function_call(cx, e, &paths::STR_FROM_UTF8);
 
             // Find string::as_bytes
             if let ExprKind::AddrOf(BorrowKind::Ref, _, args) = args[0].kind;
@@ -293,7 +291,6 @@ impl<'tcx> LateLintPass<'tcx> for StringLitAsBytes {
         }
 
         if_chain! {
-            if !in_external_macro(cx.sess(), e.span);
             if let ExprKind::MethodCall(path, receiver, ..) = &e.kind;
             if path.ident.name == sym!(as_bytes);
             if let ExprKind::Lit(lit) = &receiver.kind;
@@ -319,27 +316,18 @@ impl<'tcx> LateLintPass<'tcx> for StringLitAsBytes {
                     && lit_content.as_str().len() <= MAX_LENGTH_BYTE_STRING_LIT
                     && !receiver.span.from_expansion()
                 {
-                    if let Some((parent, id)) = get_expr_use_or_unification_node(cx.tcx, e)
-                        && let Node::Expr(parent) = parent
-                        && let ExprKind::Match(scrutinee, ..) = parent.kind
-                        && scrutinee.hir_id == id
-                    {
-                        // Don't lint. Byte strings produce `&[u8; N]` whereas `as_bytes()` produces
-                        // `&[u8]`. This change would prevent matching with different sized slices.
-                    } else {
-                        span_lint_and_sugg(
-                            cx,
-                            STRING_LIT_AS_BYTES,
-                            e.span,
-                            "calling `as_bytes()` on a string literal",
-                            "consider using a byte string literal instead",
-                            format!(
-                                "b{}",
-                                snippet_with_applicability(cx, receiver.span, r#""foo""#, &mut applicability)
-                            ),
-                            applicability,
-                        );
-                    }
+                    span_lint_and_sugg(
+                        cx,
+                        STRING_LIT_AS_BYTES,
+                        e.span,
+                        "calling `as_bytes()` on a string literal",
+                        "consider using a byte string literal instead",
+                        format!(
+                            "b{}",
+                            snippet_with_applicability(cx, receiver.span, r#""foo""#, &mut applicability)
+                        ),
+                        applicability,
+                    );
                 }
             }
         }
@@ -409,7 +397,7 @@ impl<'tcx> LateLintPass<'tcx> for StrToString {
             if path.ident.name == sym::to_string;
             let ty = cx.typeck_results().expr_ty(self_arg);
             if let ty::Ref(_, ty, ..) = ty.kind();
-            if ty.is_str();
+            if *ty.kind() == ty::Str;
             then {
                 span_lint_and_help(
                     cx,
@@ -458,7 +446,7 @@ impl<'tcx> LateLintPass<'tcx> for StringToString {
             if let ExprKind::MethodCall(path, self_arg, ..) = &expr.kind;
             if path.ident.name == sym::to_string;
             let ty = cx.typeck_results().expr_ty(self_arg);
-            if is_type_lang_item(cx, ty, LangItem::String);
+            if is_type_diagnostic_item(cx, ty, sym::String);
             then {
                 span_lint_and_help(
                     cx,

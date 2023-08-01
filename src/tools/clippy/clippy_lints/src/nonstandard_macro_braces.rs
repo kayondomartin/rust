@@ -241,7 +241,7 @@ impl<'de> Deserialize<'de> for MacroMatcher {
                 V: de::MapAccess<'de>,
             {
                 let mut name = None;
-                let mut brace: Option<String> = None;
+                let mut brace: Option<&str> = None;
                 while let Some(key) = map.next_key()? {
                     match key {
                         Field::Name => {

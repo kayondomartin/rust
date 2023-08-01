@@ -174,15 +174,13 @@ pub(crate) fn generate_getter_impl(
                 // this buf inserts a newline at the end of a getter
                 // automatically, if one wants to add one more newline
                 // for separating it from other assoc items, that needs
-                // to be handled separately
+                // to be handled spearately
                 let mut getter_buf =
-                    generate_getter_from_info(ctx, &getter_info, record_field_info);
+                    generate_getter_from_info(ctx, &getter_info, &record_field_info);
 
                 // Insert `$0` only for last getter we generate
                 if i == record_fields_count - 1 {
-                    if ctx.config.snippet_cap.is_some() {
-                        getter_buf = getter_buf.replacen("fn ", "fn $0", 1);
-                    }
+                    getter_buf = getter_buf.replacen("fn ", "fn $0", 1);
                 }
 
                 // For first element we do not merge with '\n', as
@@ -237,7 +235,7 @@ fn generate_getter_from_info(
 ) -> String {
     let mut buf = String::with_capacity(512);
 
-    let vis = info.strukt.visibility().map_or(String::new(), |v| format!("{v} "));
+    let vis = info.strukt.visibility().map_or(String::new(), |v| format!("{} ", v));
     let (ty, body) = if info.mutable {
         (
             format!("&mut {}", record_field_info.field_ty),
@@ -273,7 +271,7 @@ fn generate_getter_from_info(
     }}",
         vis,
         record_field_info.fn_name,
-        info.mutable.then_some("mut ").unwrap_or_default(),
+        info.mutable.then(|| "mut ").unwrap_or_default(),
         ty,
         body,
     );
@@ -332,7 +330,7 @@ fn parse_record_field(record_field: ast::RecordField, mutable: bool) -> Option<R
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{check_assist, check_assist_no_snippet_cap, check_assist_not_applicable};
+    use crate::tests::{check_assist, check_assist_not_applicable};
 
     use super::*;
 
@@ -372,49 +370,6 @@ struct Context {
 
 impl Context {
     fn $0data_mut(&mut self) -> &mut Data {
-        &mut self.data
-    }
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn test_generate_getter_from_field_no_snippet_cap() {
-        check_assist_no_snippet_cap(
-            generate_getter,
-            r#"
-struct Context {
-    dat$0a: Data,
-}
-"#,
-            r#"
-struct Context {
-    data: Data,
-}
-
-impl Context {
-    fn data(&self) -> &Data {
-        &self.data
-    }
-}
-"#,
-        );
-
-        check_assist_no_snippet_cap(
-            generate_getter_mut,
-            r#"
-struct Context {
-    dat$0a: Data,
-}
-"#,
-            r#"
-struct Context {
-    data: Data,
-}
-
-impl Context {
-    fn data_mut(&mut self) -> &mut Data {
         &mut self.data
     }
 }
@@ -479,29 +434,6 @@ impl Context {
     }
 
     #[test]
-    fn test_generate_getter_from_field_with_visibility_marker_no_snippet_cap() {
-        check_assist_no_snippet_cap(
-            generate_getter,
-            r#"
-pub(crate) struct Context {
-    dat$0a: Data,
-}
-"#,
-            r#"
-pub(crate) struct Context {
-    data: Data,
-}
-
-impl Context {
-    pub(crate) fn data(&self) -> &Data {
-        &self.data
-    }
-}
-"#,
-        );
-    }
-
-    #[test]
     fn test_multiple_generate_getter() {
         check_assist(
             generate_getter,
@@ -529,41 +461,6 @@ impl Context {
     }
 
     fn $0count(&self) -> &usize {
-        &self.count
-    }
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn test_multiple_generate_getter_no_snippet_cap() {
-        check_assist_no_snippet_cap(
-            generate_getter,
-            r#"
-struct Context {
-    data: Data,
-    cou$0nt: usize,
-}
-
-impl Context {
-    fn data(&self) -> &Data {
-        &self.data
-    }
-}
-"#,
-            r#"
-struct Context {
-    data: Data,
-    count: usize,
-}
-
-impl Context {
-    fn data(&self) -> &Data {
-        &self.data
-    }
-
-    fn count(&self) -> &usize {
         &self.count
     }
 }

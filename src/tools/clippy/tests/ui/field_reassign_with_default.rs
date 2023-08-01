@@ -1,12 +1,12 @@
-//@aux-build:proc_macro_derive.rs:proc-macro
-//@aux-build:proc_macros.rs:proc-macro
+// aux-build:proc_macro_derive.rs
+// aux-build:macro_rules.rs
 
 #![warn(clippy::field_reassign_with_default)]
 
 #[macro_use]
 extern crate proc_macro_derive;
-extern crate proc_macros;
-use proc_macros::{external, inline_macros};
+#[macro_use]
+extern crate macro_rules;
 
 // Don't lint on derives that derive `Default`
 // See https://github.com/rust-lang/rust-clippy/issues/6545
@@ -36,6 +36,14 @@ struct D {
     b: Option<i32>,
 }
 
+macro_rules! m {
+    ($key:ident: $value:tt) => {{
+        let mut data = $crate::D::default();
+        data.$key = Some($value);
+        data
+    }};
+}
+
 /// Implements .next() that returns a different number each time.
 struct SideEffect(i32);
 
@@ -49,7 +57,6 @@ impl SideEffect {
     }
 }
 
-#[inline_macros]
 fn main() {
     // wrong, produces first error in stderr
     let mut a: A = Default::default();
@@ -143,18 +150,7 @@ fn main() {
     a.i = vec![1];
 
     // Don't lint in external macros
-    external! {
-        #[derive(Default)]
-        struct A {
-            pub i: i32,
-            pub j: i64,
-        }
-        fn lint() {
-            let mut a: A = Default::default();
-            a.i = 42;
-            a;
-        }
-    }
+    field_reassign_with_default!();
 
     // be sure suggestion is correct with generics
     let mut a: Wrapper<bool> = Default::default();
@@ -164,11 +160,9 @@ fn main() {
     a.i = 42;
 
     // Don't lint in macros
-    inline!(
-        let mut data = $crate::D::default();
-        data.$a = Some($42);
-        data
-    );
+    m! {
+        a: 42
+    };
 }
 
 mod m {
@@ -252,25 +246,4 @@ mod issue6312 {
             f
         }
     }
-}
-
-struct Collection {
-    items: Vec<i32>,
-    len: usize,
-}
-
-impl Default for Collection {
-    fn default() -> Self {
-        Self {
-            items: vec![1, 2, 3],
-            len: 0,
-        }
-    }
-}
-
-#[allow(clippy::redundant_closure_call)]
-fn issue10136() {
-    let mut c = Collection::default();
-    // don't lint, since c.items was used to calculate this value
-    c.len = (|| c.items.len())();
 }

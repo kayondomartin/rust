@@ -287,12 +287,15 @@ impl<'a> VecArgs<'a> {
                     Some(VecArgs::Repeat(&args[0], &args[1]))
                 } else if match_def_path(cx, fun_def_id, &paths::SLICE_INTO_VEC) && args.len() == 1 {
                     // `vec![a, b, c]` case
-                    if let hir::ExprKind::Call(_, [arg]) = &args[0].kind
-                        && let hir::ExprKind::Array(args) = arg.kind {
-                        Some(VecArgs::Vec(args))
-                    } else {
-                        None
+                    if_chain! {
+                        if let hir::ExprKind::Box(boxed) = args[0].kind;
+                        if let hir::ExprKind::Array(args) = boxed.kind;
+                        then {
+                            return Some(VecArgs::Vec(args));
+                        }
                     }
+
+                    None
                 } else if match_def_path(cx, fun_def_id, &paths::VEC_NEW) && args.is_empty() {
                     Some(VecArgs::Vec(&[]))
                 } else {
@@ -311,8 +314,6 @@ pub struct While<'hir> {
     pub condition: &'hir Expr<'hir>,
     /// `while` loop body
     pub body: &'hir Expr<'hir>,
-    /// Span of the loop header
-    pub span: Span,
 }
 
 impl<'hir> While<'hir> {
@@ -338,10 +339,10 @@ impl<'hir> While<'hir> {
             },
             _,
             LoopSource::While,
-            span,
+            _,
         ) = expr.kind
         {
-            return Some(Self { condition, body, span });
+            return Some(Self { condition, body });
         }
         None
     }

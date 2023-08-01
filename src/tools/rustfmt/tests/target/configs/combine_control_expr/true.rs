@@ -96,6 +96,12 @@ fn main() {
         bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,
     ));
 
+    // Box
+    foo(box Bar {
+        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
+        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    });
+
     // Unary
     foo(!bar(
         aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,

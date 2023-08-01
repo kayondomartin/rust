@@ -38,11 +38,11 @@ pub(crate) enum PathContext {
 pub(crate) fn rewrite_path(
     context: &RewriteContext<'_>,
     path_context: PathContext,
-    qself: &Option<ptr::P<ast::QSelf>>,
+    qself: Option<&ast::QSelf>,
     path: &ast::Path,
     shape: Shape,
 ) -> Option<String> {
-    let skip_count = qself.as_ref().map_or(0, |x| x.position);
+    let skip_count = qself.map_or(0, |x| x.position);
 
     let mut result = if path.is_global() && qself.is_none() && path_context != PathContext::Import {
         "::".to_owned()
@@ -552,12 +552,6 @@ impl Rewrite for ast::GenericBound {
                     ast::TraitBoundModifier::MaybeConstMaybe => poly_trait_ref
                         .rewrite(context, shape.offset_left(8)?)
                         .map(|s| format!("~const ?{}", s)),
-                    ast::TraitBoundModifier::Negative => poly_trait_ref
-                        .rewrite(context, shape.offset_left(1)?)
-                        .map(|s| format!("!{}", s)),
-                    ast::TraitBoundModifier::MaybeConstNegative => poly_trait_ref
-                        .rewrite(context, shape.offset_left(8)?)
-                        .map(|s| format!("~const !{}", s)),
                 };
                 rewrite.map(|s| if has_paren { format!("({})", s) } else { s })
             }
@@ -578,41 +572,49 @@ impl Rewrite for ast::GenericBounds {
 
 impl Rewrite for ast::GenericParam {
     fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
+        let mut result = String::with_capacity(128);
         // FIXME: If there are more than one attributes, this will force multiline.
-        let mut result = self.attrs.rewrite(context, shape).unwrap_or(String::new());
-        let has_attrs = !result.is_empty();
+        match self.attrs.rewrite(context, shape) {
+            Some(ref rw) if !rw.is_empty() => {
+                result.push_str(rw);
+                // When rewriting generic params, an extra newline should be put
+                // if the attributes end with a doc comment
+                if let Some(true) = self.attrs.last().map(|a| a.is_doc_comment()) {
+                    result.push_str(&shape.indent.to_string_with_newline(context.config));
+                } else {
+                    result.push(' ');
+                }
+            }
+            _ => (),
+        }
 
-        let mut param = String::with_capacity(128);
-
-        let param_start = if let ast::GenericParamKind::Const {
+        if let ast::GenericParamKind::Const {
             ref ty,
-            kw_span,
+            kw_span: _,
             default,
         } = &self.kind
         {
-            param.push_str("const ");
-            param.push_str(rewrite_ident(context, self.ident));
-            param.push_str(": ");
-            param.push_str(&ty.rewrite(context, shape)?);
+            result.push_str("const ");
+            result.push_str(rewrite_ident(context, self.ident));
+            result.push_str(": ");
+            result.push_str(&ty.rewrite(context, shape)?);
             if let Some(default) = default {
                 let eq_str = match context.config.type_punctuation_density() {
                     TypeDensity::Compressed => "=",
                     TypeDensity::Wide => " = ",
                 };
-                param.push_str(eq_str);
-                let budget = shape.width.checked_sub(param.len())?;
+                result.push_str(eq_str);
+                let budget = shape.width.checked_sub(result.len())?;
                 let rewrite = default.rewrite(context, Shape::legacy(budget, shape.indent))?;
-                param.push_str(&rewrite);
+                result.push_str(&rewrite);
             }
-            kw_span.lo()
         } else {
-            param.push_str(rewrite_ident(context, self.ident));
-            self.ident.span.lo()
-        };
+            result.push_str(rewrite_ident(context, self.ident));
+        }
 
         if !self.bounds.is_empty() {
-            param.push_str(type_bound_colon(context));
-            param.push_str(&self.bounds.rewrite(context, shape)?)
+            result.push_str(type_bound_colon(context));
+            result.push_str(&self.bounds.rewrite(context, shape)?)
         }
         if let ast::GenericParamKind::Type {
             default: Some(ref def),
@@ -622,33 +624,11 @@ impl Rewrite for ast::GenericParam {
                 TypeDensity::Compressed => "=",
                 TypeDensity::Wide => " = ",
             };
-            param.push_str(eq_str);
-            let budget = shape.width.checked_sub(param.len())?;
+            result.push_str(eq_str);
+            let budget = shape.width.checked_sub(result.len())?;
             let rewrite =
-                def.rewrite(context, Shape::legacy(budget, shape.indent + param.len()))?;
-            param.push_str(&rewrite);
-        }
-
-        if let Some(last_attr) = self.attrs.last().filter(|last_attr| {
-            contains_comment(context.snippet(mk_sp(last_attr.span.hi(), param_start)))
-        }) {
-            result = combine_strs_with_missing_comments(
-                context,
-                &result,
-                &param,
-                mk_sp(last_attr.span.hi(), param_start),
-                shape,
-                !last_attr.is_doc_comment(),
-            )?;
-        } else {
-            // When rewriting generic params, an extra newline should be put
-            // if the attributes end with a doc comment
-            if let Some(true) = self.attrs.last().map(|a| a.is_doc_comment()) {
-                result.push_str(&shape.indent.to_string_with_newline(context.config));
-            } else if has_attrs {
-                result.push(' ');
-            }
-            result.push_str(&param);
+                def.rewrite(context, Shape::legacy(budget, shape.indent + result.len()))?;
+            result.push_str(&rewrite);
         }
 
         Some(result)
@@ -675,7 +655,7 @@ impl Rewrite for ast::PolyTraitRef {
 
 impl Rewrite for ast::TraitRef {
     fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
-        rewrite_path(context, PathContext::Type, &None, &self.path, shape)
+        rewrite_path(context, PathContext::Type, None, &self.path, shape)
     }
 }
 
@@ -708,7 +688,7 @@ impl Rewrite for ast::Ty {
 
                 rewrite_unary_prefix(context, prefix, &*mt.ty, shape)
             }
-            ast::TyKind::Ref(ref lifetime, ref mt) => {
+            ast::TyKind::Rptr(ref lifetime, ref mt) => {
                 let mut_str = format_mutability(mt.mutbl);
                 let mut_len = mut_str.len();
                 let mut result = String::with_capacity(128);
@@ -820,7 +800,7 @@ impl Rewrite for ast::Ty {
                 rewrite_tuple(context, items.iter(), self.span, shape, items.len() == 1)
             }
             ast::TyKind::Path(ref q_self, ref path) => {
-                rewrite_path(context, PathContext::Type, q_self, path, shape)
+                rewrite_path(context, PathContext::Type, q_self.as_ref(), path, shape)
             }
             ast::TyKind::Array(ref ty, ref repeats) => rewrite_pair(
                 &**ty,
@@ -961,28 +941,6 @@ fn join_bounds_inner(
         ast::GenericBound::Trait(..) => last_line_extendable(s),
     };
 
-    // Whether a GenericBound item is a PathSegment segment that includes internal array
-    // that contains more than one item
-    let is_item_with_multi_items_array = |item: &ast::GenericBound| match item {
-        ast::GenericBound::Trait(ref poly_trait_ref, ..) => {
-            let segments = &poly_trait_ref.trait_ref.path.segments;
-            if segments.len() > 1 {
-                true
-            } else {
-                if let Some(args_in) = &segments[0].args {
-                    matches!(
-                        args_in.deref(),
-                        ast::GenericArgs::AngleBracketed(bracket_args)
-                            if bracket_args.args.len() > 1
-                    )
-                } else {
-                    false
-                }
-            }
-        }
-        _ => false,
-    };
-
     let result = items.iter().enumerate().try_fold(
         (String::new(), None, false),
         |(strs, prev_trailing_span, prev_extendable), (i, item)| {
@@ -1077,24 +1035,10 @@ fn join_bounds_inner(
         },
     )?;
 
-    // Whether to retry with a forced newline:
-    //   Only if result is not already multiline and did not exceed line width,
-    //   and either there is more than one item;
-    //       or the single item is of type `Trait`,
-    //          and any of the internal arrays contains more than one item;
-    let retry_with_force_newline = match context.config.version() {
-        Version::One => {
-            !force_newline
-                && items.len() > 1
-                && (result.0.contains('\n') || result.0.len() > shape.width)
-        }
-        Version::Two if force_newline => false,
-        Version::Two if (!result.0.contains('\n') && result.0.len() <= shape.width) => false,
-        Version::Two if items.len() > 1 => true,
-        Version::Two => is_item_with_multi_items_array(&items[0]),
-    };
-
-    if retry_with_force_newline {
+    if !force_newline
+        && items.len() > 1
+        && (result.0.contains('\n') || result.0.len() > shape.width)
+    {
         join_bounds_inner(context, shape, items, need_indent, true)
     } else {
         Some(result.0)
@@ -1115,7 +1059,7 @@ pub(crate) fn can_be_overflowed_type(
 ) -> bool {
     match ty.kind {
         ast::TyKind::Tup(..) => context.use_block_indent() && len == 1,
-        ast::TyKind::Ref(_, ref mutty) | ast::TyKind::Ptr(ref mutty) => {
+        ast::TyKind::Rptr(_, ref mutty) | ast::TyKind::Ptr(ref mutty) => {
             can_be_overflowed_type(context, &*mutty.ty, len)
         }
         _ => false,

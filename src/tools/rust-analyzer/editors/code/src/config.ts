@@ -1,6 +1,5 @@
-import * as Is from "vscode-languageclient/lib/common/utils/is";
-import * as os from "os";
 import * as path from "path";
+import * as os from "os";
 import * as vscode from "vscode";
 import { Env } from "./client";
 import { log } from "./util";
@@ -21,6 +20,7 @@ export class Config {
         "serverPath",
         "server",
         "files",
+        "lens", // works as lens.*
     ].map((opt) => `${this.rootSection}.${opt}`);
 
     readonly package: {
@@ -33,7 +33,6 @@ export class Config {
 
     constructor(ctx: vscode.ExtensionContext) {
         this.globalStorageUri = ctx.globalStorageUri;
-        this.discoveredWorkspaces = [];
         vscode.workspace.onDidChangeConfiguration(
             this.onDidChangeConfiguration,
             this,
@@ -48,14 +47,12 @@ export class Config {
     }
 
     private refreshLogging() {
-        log.setEnabled(this.traceExtension ?? false);
+        log.setEnabled(this.traceExtension);
         log.info("Extension version:", this.package.version);
 
         const cfg = Object.entries(this.cfg).filter(([_, val]) => !(val instanceof Function));
         log.info("Using configuration", Object.fromEntries(cfg));
     }
-
-    public discoveredWorkspaces: JsonProject[];
 
     private async onDidChangeConfiguration(event: vscode.ConfigurationChangeEvent) {
         this.refreshLogging();
@@ -69,7 +66,7 @@ export class Config {
         if (!requiresReloadOpt) return;
 
         if (this.restartServerOnConfigChange) {
-            await vscode.commands.executeCommand("rust-analyzer.restartServer");
+            await vscode.commands.executeCommand("rust-analyzer.reload");
             return;
         }
 
@@ -77,7 +74,7 @@ export class Config {
         const userResponse = await vscode.window.showInformationMessage(message, "Restart now");
 
         if (userResponse) {
-            const command = "rust-analyzer.restartServer";
+            const command = "rust-analyzer.reload";
             await vscode.commands.executeCommand(command);
         }
     }
@@ -89,84 +86,58 @@ export class Config {
      * [1]: https://github.com/Microsoft/vscode/issues/11514#issuecomment-244707076
      */
     private configureLanguage() {
-        // Only need to dispose of the config if there's a change
-        if (this.configureLang) {
+        if (this.typingContinueCommentsOnNewline && !this.configureLang) {
+            const indentAction = vscode.IndentAction.None;
+
+            this.configureLang = vscode.languages.setLanguageConfiguration("rust", {
+                onEnterRules: [
+                    {
+                        // Doc single-line comment
+                        // e.g. ///|
+                        beforeText: /^\s*\/{3}.*$/,
+                        action: { indentAction, appendText: "/// " },
+                    },
+                    {
+                        // Parent doc single-line comment
+                        // e.g. //!|
+                        beforeText: /^\s*\/{2}\!.*$/,
+                        action: { indentAction, appendText: "//! " },
+                    },
+                    {
+                        // Begins an auto-closed multi-line comment (standard or parent doc)
+                        // e.g. /** | */ or /*! | */
+                        beforeText: /^\s*\/\*(\*|\!)(?!\/)([^\*]|\*(?!\/))*$/,
+                        afterText: /^\s*\*\/$/,
+                        action: {
+                            indentAction: vscode.IndentAction.IndentOutdent,
+                            appendText: " * ",
+                        },
+                    },
+                    {
+                        // Begins a multi-line comment (standard or parent doc)
+                        // e.g. /** ...| or /*! ...|
+                        beforeText: /^\s*\/\*(\*|\!)(?!\/)([^\*]|\*(?!\/))*$/,
+                        action: { indentAction, appendText: " * " },
+                    },
+                    {
+                        // Continues a multi-line comment
+                        // e.g.  * ...|
+                        beforeText: /^(\ \ )*\ \*(\ ([^\*]|\*(?!\/))*)?$/,
+                        action: { indentAction, appendText: "* " },
+                    },
+                    {
+                        // Dedents after closing a multi-line comment
+                        // e.g.  */|
+                        beforeText: /^(\ \ )*\ \*\/\s*$/,
+                        action: { indentAction, removeText: 1 },
+                    },
+                ],
+            });
+        }
+        if (!this.typingContinueCommentsOnNewline && this.configureLang) {
             this.configureLang.dispose();
             this.configureLang = undefined;
         }
-
-        let onEnterRules: vscode.OnEnterRule[] = [
-            {
-                // Carry indentation from the previous line
-                beforeText: /^\s*$/,
-                action: { indentAction: vscode.IndentAction.None },
-            },
-            {
-                // After the end of a function/field chain,
-                // with the semicolon on the same line
-                beforeText: /^\s+\..*;/,
-                action: { indentAction: vscode.IndentAction.Outdent },
-            },
-            {
-                // After the end of a function/field chain,
-                // with semicolon detached from the rest
-                beforeText: /^\s+;/,
-                previousLineText: /^\s+\..*/,
-                action: { indentAction: vscode.IndentAction.Outdent },
-            },
-        ];
-
-        if (this.typingContinueCommentsOnNewline) {
-            const indentAction = vscode.IndentAction.None;
-
-            onEnterRules = [
-                ...onEnterRules,
-                {
-                    // Doc single-line comment
-                    // e.g. ///|
-                    beforeText: /^\s*\/{3}.*$/,
-                    action: { indentAction, appendText: "/// " },
-                },
-                {
-                    // Parent doc single-line comment
-                    // e.g. //!|
-                    beforeText: /^\s*\/{2}\!.*$/,
-                    action: { indentAction, appendText: "//! " },
-                },
-                {
-                    // Begins an auto-closed multi-line comment (standard or parent doc)
-                    // e.g. /** | */ or /*! | */
-                    beforeText: /^\s*\/\*(\*|\!)(?!\/)([^\*]|\*(?!\/))*$/,
-                    afterText: /^\s*\*\/$/,
-                    action: {
-                        indentAction: vscode.IndentAction.IndentOutdent,
-                        appendText: " * ",
-                    },
-                },
-                {
-                    // Begins a multi-line comment (standard or parent doc)
-                    // e.g. /** ...| or /*! ...|
-                    beforeText: /^\s*\/\*(\*|\!)(?!\/)([^\*]|\*(?!\/))*$/,
-                    action: { indentAction, appendText: " * " },
-                },
-                {
-                    // Continues a multi-line comment
-                    // e.g.  * ...|
-                    beforeText: /^(\ \ )*\ \*(\ ([^\*]|\*(?!\/))*)?$/,
-                    action: { indentAction, appendText: "* " },
-                },
-                {
-                    // Dedents after closing a multi-line comment
-                    // e.g.  */|
-                    beforeText: /^(\ \ )*\ \*\/\s*$/,
-                    action: { indentAction, removeText: 1 },
-                },
-            ];
-        }
-
-        this.configureLang = vscode.languages.setLanguageConfiguration("rust", {
-            onEnterRules,
-        });
     }
 
     // We don't do runtime config validation here for simplicity. More on stackoverflow:
@@ -192,32 +163,22 @@ export class Config {
      * ```
      * So this getter handles this quirk by not requiring the caller to use postfix `!`
      */
-    private get<T>(path: string): T | undefined {
-        return prepareVSCodeConfig(this.cfg.get<T>(path));
+    private get<T>(path: string): T {
+        return this.cfg.get<T>(path)!;
     }
 
     get serverPath() {
         return this.get<null | string>("server.path") ?? this.get<null | string>("serverPath");
     }
-
     get serverExtraEnv(): Env {
         const extraEnv =
             this.get<{ [key: string]: string | number } | null>("server.extraEnv") ?? {};
-        return substituteVariablesInEnv(
-            Object.fromEntries(
-                Object.entries(extraEnv).map(([k, v]) => [
-                    k,
-                    typeof v !== "string" ? v.toString() : v,
-                ])
-            )
+        return Object.fromEntries(
+            Object.entries(extraEnv).map(([k, v]) => [k, typeof v !== "string" ? v.toString() : v])
         );
     }
     get traceExtension() {
         return this.get<boolean>("trace.extension");
-    }
-
-    get discoverProjectCommand() {
-        return this.get<string[] | undefined>("discoverProjectCommand");
     }
 
     get cargoRunner() {
@@ -255,13 +216,13 @@ export class Config {
         if (sourceFileMap !== "auto") {
             // "/rustc/<id>" used by suggestions only.
             const { ["/rustc/<id>"]: _, ...trimmed } =
-                this.get<Record<string, string>>("debug.sourceFileMap") ?? {};
+                this.get<Record<string, string>>("debug.sourceFileMap");
             sourceFileMap = trimmed;
         }
 
         return {
             engine: this.get<string>("debug.engine"),
-            engineSettings: this.get<object>("debug.engineSettings") ?? {},
+            engineSettings: this.get<object>("debug.engineSettings"),
             openDebugPane: this.get<boolean>("debug.openDebugPane"),
             sourceFileMap: sourceFileMap,
         };
@@ -277,52 +238,39 @@ export class Config {
             gotoTypeDef: this.get<boolean>("hover.actions.gotoTypeDef.enable"),
         };
     }
-    get previewRustcOutput() {
-        return this.get<boolean>("diagnostics.previewRustcOutput");
-    }
-
-    get useRustcErrorCode() {
-        return this.get<boolean>("diagnostics.useRustcErrorCode");
-    }
-
-    get showDependenciesExplorer() {
-        return this.get<boolean>("showDependenciesExplorer");
-    }
 }
 
-// the optional `cb?` parameter is meant to be used to add additional
-// key/value pairs to the VS Code configuration. This needed for, e.g.,
-// including a `rust-project.json` into the `linkedProjects` key as part
-// of the configuration/InitializationParams _without_ causing VS Code
-// configuration to be written out to workspace-level settings. This is
-// undesirable behavior because rust-project.json files can be tens of
-// thousands of lines of JSON, most of which is not meant for humans
-// to interact with.
-export function prepareVSCodeConfig<T>(
-    resp: T,
-    cb?: (key: Extract<keyof T, string>, res: { [key: string]: any }) => void
-): T {
-    if (Is.string(resp)) {
-        return substituteVSCodeVariableInString(resp) as T;
-    } else if (resp && Is.array<any>(resp)) {
+const VarRegex = new RegExp(/\$\{(.+?)\}/g);
+
+export function substituteVSCodeVariableInString(val: string): string {
+    return val.replace(VarRegex, (substring: string, varName) => {
+        if (typeof varName === "string") {
+            return computeVscodeVar(varName) || substring;
+        } else {
+            return substring;
+        }
+    });
+}
+
+export function substituteVSCodeVariables(resp: any): any {
+    if (typeof resp === "string") {
+        return substituteVSCodeVariableInString(resp);
+    } else if (resp && Array.isArray(resp)) {
         return resp.map((val) => {
-            return prepareVSCodeConfig(val);
-        }) as T;
+            return substituteVSCodeVariables(val);
+        });
     } else if (resp && typeof resp === "object") {
         const res: { [key: string]: any } = {};
         for (const key in resp) {
             const val = resp[key];
-            res[key] = prepareVSCodeConfig(val);
-            if (cb) {
-                cb(key, res);
-            }
+            res[key] = substituteVSCodeVariables(val);
         }
-        return res as T;
+        return res;
+    } else if (typeof resp === "function") {
+        return null;
     }
     return resp;
 }
-
-// FIXME: Merge this with `substituteVSCodeVariables` above
 export function substituteVariablesInEnv(env: Env): Env {
     const missingDeps = new Set<string>();
     // vscode uses `env:ENV_NAME` for env vars resolution, and it's easier
@@ -398,17 +346,6 @@ export function substituteVariablesInEnv(env: Env): Env {
         resolvedEnv[key] = envWithDeps[`env:${key}`].value;
     }
     return resolvedEnv;
-}
-
-const VarRegex = new RegExp(/\$\{(.+?)\}/g);
-function substituteVSCodeVariableInString(val: string): string {
-    return val.replace(VarRegex, (substring: string, varName) => {
-        if (Is.string(varName)) {
-            return computeVscodeVar(varName) || substring;
-        } else {
-            return substring;
-        }
-    });
 }
 
 function computeVscodeVar(varName: string): string | null {

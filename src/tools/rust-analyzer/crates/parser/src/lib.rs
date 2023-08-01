@@ -102,14 +102,10 @@ impl TopEntryPoint {
                 match step {
                     Step::Enter { .. } => depth += 1,
                     Step::Exit => depth -= 1,
-                    Step::FloatSplit { ends_in_dot: has_pseudo_dot } => {
-                        depth -= 1 + !has_pseudo_dot as usize
-                    }
                     Step::Token { .. } | Step::Error { .. } => (),
                 }
             }
             assert!(!first, "no tree at all");
-            assert_eq!(depth, 0, "unbalanced tree");
         }
 
         res
@@ -131,7 +127,6 @@ pub enum PrefixEntryPoint {
     Block,
     Stmt,
     Pat,
-    PatTop,
     Ty,
     Expr,
     Path,
@@ -146,7 +141,6 @@ impl PrefixEntryPoint {
             PrefixEntryPoint::Block => grammar::entry::prefix::block,
             PrefixEntryPoint::Stmt => grammar::entry::prefix::stmt,
             PrefixEntryPoint::Pat => grammar::entry::prefix::pat,
-            PrefixEntryPoint::PatTop => grammar::entry::prefix::pat_top,
             PrefixEntryPoint::Ty => grammar::entry::prefix::ty,
             PrefixEntryPoint::Expr => grammar::entry::prefix::expr,
             PrefixEntryPoint::Path => grammar::entry::prefix::path,

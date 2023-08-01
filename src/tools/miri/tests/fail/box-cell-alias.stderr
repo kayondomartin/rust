@@ -2,7 +2,7 @@ error: Undefined Behavior: trying to retag from <TAG> for SharedReadWrite permis
   --> $DIR/box-cell-alias.rs:LL:CC
    |
 LL |     unsafe { (*ptr).set(20) };
-   |              ^^^^^^
+   |              ^^^^^^^^^^^^^^
    |              |
    |              trying to retag from <TAG> for SharedReadWrite permission at ALLOC[0x0], but that tag does not exist in the borrow stack for this location
    |              this error occurs as part of retag at ALLOC[0x0..0x1]
@@ -19,9 +19,9 @@ help: <TAG> was later invalidated at offsets [0x0..0x1] by a Unique retag
    |
 LL |     let res = helper(val, ptr);
    |                      ^^^
-   = note: BACKTRACE (of the first span):
+   = note: BACKTRACE:
    = note: inside `helper` at $DIR/box-cell-alias.rs:LL:CC
-note: inside `main`
+note: inside `main` at $DIR/box-cell-alias.rs:LL:CC
   --> $DIR/box-cell-alias.rs:LL:CC
    |
 LL |     let res = helper(val, ptr);

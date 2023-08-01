@@ -39,13 +39,13 @@
         ast::Root::cast(self.syntax()).unwrap()
     }
     pub fn syntax(&self) -> SyntaxNodeRef {
-        self.root.borrowed()
+        self.root.brroowed()
     }
     mp_tree(root),
                     );
                     assert!(
                         node.next_sibling().is_none() && pair.prev_sibling().is_none(),
-                        "\nfloating curlies at {:?}\nfile:\n{}\nerror:\n{}\n",
+                        "\nfloating curlys at {:?}\nfile:\n{}\nerror:\n{}\n",
                         node,
                         root.text(),
                         node.text(),

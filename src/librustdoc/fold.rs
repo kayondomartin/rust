@@ -37,21 +37,17 @@ pub(crate) trait DocFolder: Sized {
                 i.items = i.items.into_iter().filter_map(|x| self.fold_item(x)).collect();
                 ImplItem(i)
             }
-            VariantItem(Variant { kind, discriminant }) => {
-                let kind = match kind {
-                    VariantKind::Struct(mut j) => {
-                        j.fields = j.fields.into_iter().filter_map(|x| self.fold_item(x)).collect();
-                        VariantKind::Struct(j)
-                    }
-                    VariantKind::Tuple(fields) => {
-                        let fields = fields.into_iter().filter_map(|x| self.fold_item(x)).collect();
-                        VariantKind::Tuple(fields)
-                    }
-                    VariantKind::CLike => VariantKind::CLike,
-                };
-
-                VariantItem(Variant { kind, discriminant })
-            }
+            VariantItem(i) => match i {
+                Variant::Struct(mut j) => {
+                    j.fields = j.fields.into_iter().filter_map(|x| self.fold_item(x)).collect();
+                    VariantItem(Variant::Struct(j))
+                }
+                Variant::Tuple(fields) => {
+                    let fields = fields.into_iter().filter_map(|x| self.fold_item(x)).collect();
+                    VariantItem(Variant::Tuple(fields))
+                }
+                Variant::CLike(disr) => VariantItem(Variant::CLike(disr)),
+            },
             ExternCrateItem { src: _ }
             | ImportItem(_)
             | FunctionItem(_)

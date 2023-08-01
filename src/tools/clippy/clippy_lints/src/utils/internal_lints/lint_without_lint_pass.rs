@@ -215,13 +215,14 @@ impl<'tcx> LateLintPass<'tcx> for LintWithoutLintPass {
                     cx,
                 };
                 let body_id = cx.tcx.hir().body_owned_by(
-                    impl_item_refs
-                        .iter()
-                        .find(|iiref| iiref.ident.as_str() == "get_lints")
-                        .expect("LintPass needs to implement get_lints")
-                        .id
-                        .owner_id
-                        .def_id,
+                    cx.tcx.hir().local_def_id(
+                        impl_item_refs
+                            .iter()
+                            .find(|iiref| iiref.ident.as_str() == "get_lints")
+                            .expect("LintPass needs to implement get_lints")
+                            .id
+                            .hir_id(),
+                    ),
                 );
                 collector.visit_expr(cx.tcx.hir().body(body_id).value);
             }
@@ -255,8 +256,8 @@ impl<'tcx> LateLintPass<'tcx> for LintWithoutLintPass {
     }
 }
 
-pub(super) fn is_lint_ref_type(cx: &LateContext<'_>, ty: &hir::Ty<'_>) -> bool {
-    if let TyKind::Ref(
+pub(super) fn is_lint_ref_type<'tcx>(cx: &LateContext<'tcx>, ty: &hir::Ty<'_>) -> bool {
+    if let TyKind::Rptr(
         _,
         MutTy {
             ty: inner,
@@ -329,7 +330,7 @@ struct LintCollector<'a, 'tcx> {
 impl<'a, 'tcx> Visitor<'tcx> for LintCollector<'a, 'tcx> {
     type NestedFilter = nested_filter::All;
 
-    fn visit_path(&mut self, path: &Path<'_>, _: HirId) {
+    fn visit_path(&mut self, path: &'tcx Path<'_>, _: HirId) {
         if path.segments.len() == 1 {
             self.output.insert(path.segments[0].ident.name);
         }

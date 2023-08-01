@@ -29,12 +29,12 @@ pub(crate) enum LinkFromSrc {
 
 /// This function will do at most two things:
 ///
-/// 1. Generate a `span` correspondence map which links an item `span` to its definition `span`.
+/// 1. Generate a `span` correspondance map which links an item `span` to its definition `span`.
 /// 2. Collect the source code files.
 ///
-/// It returns the `krate`, the source code files and the `span` correspondence map.
+/// It returns the `krate`, the source code files and the `span` correspondance map.
 ///
-/// Note about the `span` correspondence map: the keys are actually `(lo, hi)` of `span`s. We don't
+/// Note about the `span` correspondance map: the keys are actually `(lo, hi)` of `span`s. We don't
 /// need the `span` context later on, only their position, so instead of keep a whole `Span`, we
 /// only keep the `lo` and `hi`.
 pub(crate) fn collect_spans_and_sources(
@@ -140,7 +140,7 @@ impl<'tcx> Visitor<'tcx> for SpanMapVisitor<'tcx> {
         self.tcx.hir()
     }
 
-    fn visit_path(&mut self, path: &rustc_hir::Path<'tcx>, _id: HirId) {
+    fn visit_path(&mut self, path: &'tcx rustc_hir::Path<'tcx>, _id: HirId) {
         if self.handle_macro(path.span) {
             return;
         }
@@ -189,5 +189,13 @@ impl<'tcx> Visitor<'tcx> for SpanMapVisitor<'tcx> {
             return;
         }
         intravisit::walk_expr(self, expr);
+    }
+
+    fn visit_use(&mut self, path: &'tcx rustc_hir::Path<'tcx>, id: HirId) {
+        if self.handle_macro(path.span) {
+            return;
+        }
+        self.handle_path(path);
+        intravisit::walk_use(self, path, id);
     }
 }

@@ -236,21 +236,6 @@ impl ast::GenericParamList {
         }
     }
 
-    /// Removes the existing generic param
-    pub fn remove_generic_param(&self, generic_param: ast::GenericParam) {
-        if let Some(previous) = generic_param.syntax().prev_sibling() {
-            if let Some(next_token) = previous.next_sibling_or_token() {
-                ted::remove_all(next_token..=generic_param.syntax().clone().into());
-            }
-        } else if let Some(next) = generic_param.syntax().next_sibling() {
-            if let Some(next_token) = next.prev_sibling_or_token() {
-                ted::remove_all(generic_param.syntax().clone().into()..=next_token);
-            }
-        } else {
-            ted::remove(generic_param.syntax());
-        }
-    }
-
     /// Constructs a matching [`ast::GenericArgList`]
     pub fn to_generic_args(&self) -> ast::GenericArgList {
         let args = self.generic_params().filter_map(|param| match param {
@@ -480,8 +465,6 @@ impl ast::Impl {
 }
 
 impl ast::AssocItemList {
-    /// Attention! This function does align the first line of `item` with respect to `self`,
-    /// but it does _not_ change indentation of other lines (if any).
     pub fn add_item(&self, item: ast::AssocItem) {
         let (indent, position, whitespace) = match self.assoc_items().last() {
             Some(last_item) => (
@@ -498,7 +481,7 @@ impl ast::AssocItemList {
             },
         };
         let elements: Vec<SyntaxElement<_>> = vec![
-            make::tokens::whitespace(&format!("{whitespace}{indent}")).into(),
+            make::tokens::whitespace(&format!("{}{}", whitespace, indent)).into(),
             item.syntax().clone().into(),
         ];
         ted::insert_all(position, elements);
@@ -554,7 +537,7 @@ impl ast::MatchArmList {
             },
         };
         let indent = IndentLevel::from_node(self.syntax()) + 1;
-        elements.push(make::tokens::whitespace(&format!("\n{indent}")).into());
+        elements.push(make::tokens::whitespace(&format!("\n{}", indent)).into());
         elements.push(arm.syntax().clone().into());
         if needs_comma(&arm) {
             ted::append_child(arm.syntax(), make::token(SyntaxKind::COMMA));
@@ -572,7 +555,7 @@ impl ast::RecordExprFieldList {
         let is_multiline = self.syntax().text().contains_char('\n');
         let whitespace = if is_multiline {
             let indent = IndentLevel::from_node(self.syntax()) + 1;
-            make::tokens::whitespace(&format!("\n{indent}"))
+            make::tokens::whitespace(&format!("\n{}", indent))
         } else {
             make::tokens::single_space()
         };
@@ -633,7 +616,7 @@ impl ast::RecordPatFieldList {
         let is_multiline = self.syntax().text().contains_char('\n');
         let whitespace = if is_multiline {
             let indent = IndentLevel::from_node(self.syntax()) + 1;
-            make::tokens::whitespace(&format!("\n{indent}"))
+            make::tokens::whitespace(&format!("\n{}", indent))
         } else {
             make::tokens::single_space()
         };
@@ -698,7 +681,7 @@ impl ast::VariantList {
             },
         };
         let elements: Vec<SyntaxElement<_>> = vec![
-            make::tokens::whitespace(&format!("{}{indent}", "\n")).into(),
+            make::tokens::whitespace(&format!("{}{}", "\n", indent)).into(),
             variant.syntax().clone().into(),
             ast::make::token(T![,]).into(),
         ];
@@ -721,11 +704,11 @@ fn normalize_ws_between_braces(node: &SyntaxNode) -> Option<()> {
     match l.next_sibling_or_token() {
         Some(ws) if ws.kind() == SyntaxKind::WHITESPACE => {
             if ws.next_sibling_or_token()?.into_token()? == r {
-                ted::replace(ws, make::tokens::whitespace(&format!("\n{indent}")));
+                ted::replace(ws, make::tokens::whitespace(&format!("\n{}", indent)));
             }
         }
         Some(ws) if ws.kind() == T!['}'] => {
-            ted::insert(Position::after(l), make::tokens::whitespace(&format!("\n{indent}")));
+            ted::insert(Position::after(l), make::tokens::whitespace(&format!("\n{}", indent)));
         }
         _ => (),
     }
@@ -905,6 +888,6 @@ enum Foo {
         let enum_ = ast_mut_from_text::<ast::Enum>(before);
         enum_.variant_list().map(|it| it.add_variant(variant));
         let after = enum_.to_string();
-        assert_eq_text!(&trim_indent(expected.trim()), &trim_indent(after.trim()));
+        assert_eq_text!(&trim_indent(expected.trim()), &trim_indent(&after.trim()));
     }
 }

@@ -4,9 +4,8 @@
 #![warn(missing_docs)]
 
 use std::{
-    cmp, fmt,
+    fmt,
     hash::{Hash, Hasher},
-    iter::{Enumerate, FusedIterator},
     marker::PhantomData,
     ops::{Index, IndexMut, Range, RangeInclusive},
 };
@@ -18,27 +17,13 @@ pub use map::{ArenaMap, Entry, OccupiedEntry, VacantEntry};
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RawIdx(u32);
 
-impl RawIdx {
-    /// Constructs a [`RawIdx`] from a u32.
-    pub const fn from_u32(u32: u32) -> Self {
-        RawIdx(u32)
-    }
-
-    /// Deconstructs a [`RawIdx`] into the underlying u32.
-    pub const fn into_u32(self) -> u32 {
-        self.0
-    }
-}
-
 impl From<RawIdx> for u32 {
-    #[inline]
     fn from(raw: RawIdx) -> u32 {
         raw.0
     }
 }
 
 impl From<u32> for RawIdx {
-    #[inline]
     fn from(idx: u32) -> RawIdx {
         RawIdx(idx)
     }
@@ -60,18 +45,6 @@ impl fmt::Display for RawIdx {
 pub struct Idx<T> {
     raw: RawIdx,
     _ty: PhantomData<fn() -> T>,
-}
-
-impl<T> Ord for Idx<T> {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.raw.cmp(&other.raw)
-    }
-}
-
-impl<T> PartialOrd for Idx<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        self.raw.partial_cmp(&other.raw)
-    }
 }
 
 impl<T> Clone for Idx<T> {
@@ -106,12 +79,12 @@ impl<T> fmt::Debug for Idx<T> {
 
 impl<T> Idx<T> {
     /// Creates a new index from a [`RawIdx`].
-    pub const fn from_raw(raw: RawIdx) -> Self {
+    pub fn from_raw(raw: RawIdx) -> Self {
         Idx { raw, _ty: PhantomData }
     }
 
     /// Converts this index into the underlying [`RawIdx`].
-    pub const fn into_raw(self) -> RawIdx {
+    pub fn into_raw(self) -> RawIdx {
         self.raw
     }
 }
@@ -174,45 +147,12 @@ impl<T> IdxRange<T> {
     pub fn is_empty(&self) -> bool {
         self.range.is_empty()
     }
-
-    /// Returns the start of the index range.
-    pub fn start(&self) -> Idx<T> {
-        Idx::from_raw(RawIdx::from(self.range.start))
-    }
-
-    /// Returns the end of the index range.
-    pub fn end(&self) -> Idx<T> {
-        Idx::from_raw(RawIdx::from(self.range.end))
-    }
 }
 
 impl<T> Iterator for IdxRange<T> {
     type Item = Idx<T>;
-
     fn next(&mut self) -> Option<Self::Item> {
         self.range.next().map(|raw| Idx::from_raw(raw.into()))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.range.size_hint()
-    }
-
-    fn count(self) -> usize
-    where
-        Self: Sized,
-    {
-        self.range.count()
-    }
-
-    fn last(self) -> Option<Self::Item>
-    where
-        Self: Sized,
-    {
-        self.range.last().map(|raw| Idx::from_raw(raw.into()))
-    }
-
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        self.range.nth(n).map(|raw| Idx::from_raw(raw.into()))
     }
 }
 
@@ -221,10 +161,6 @@ impl<T> DoubleEndedIterator for IdxRange<T> {
         self.range.next_back().map(|raw| Idx::from_raw(raw.into()))
     }
 }
-
-impl<T> ExactSizeIterator for IdxRange<T> {}
-
-impl<T> FusedIterator for IdxRange<T> {}
 
 impl<T> fmt::Debug for IdxRange<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -344,21 +280,6 @@ impl<T> Arena<T> {
         idx
     }
 
-    /// Densely allocates multiple values, returning the values’ index range.
-    ///
-    /// ```
-    /// let mut arena = la_arena::Arena::new();
-    /// let range = arena.alloc_many(0..4);
-    ///
-    /// assert_eq!(arena[range], [0, 1, 2, 3]);
-    /// ```
-    pub fn alloc_many<II: IntoIterator<Item = T>>(&mut self, iter: II) -> IdxRange<T> {
-        let start = self.next_idx();
-        self.extend(iter);
-        let end = self.next_idx();
-        IdxRange::new(start..end)
-    }
-
     /// Returns an iterator over the arena’s elements.
     ///
     /// ```
@@ -374,7 +295,7 @@ impl<T> Arena<T> {
     /// ```
     pub fn iter(
         &self,
-    ) -> impl Iterator<Item = (Idx<T>, &T)> + ExactSizeIterator + DoubleEndedIterator + Clone {
+    ) -> impl Iterator<Item = (Idx<T>, &T)> + ExactSizeIterator + DoubleEndedIterator {
         self.data.iter().enumerate().map(|(idx, value)| (Idx::from_raw(RawIdx(idx as u32)), value))
     }
 
@@ -414,7 +335,7 @@ impl<T> Arena<T> {
     /// assert_eq!(iterator.next(), Some(&40));
     /// assert_eq!(iterator.next(), Some(&60));
     /// ```
-    pub fn values(&self) -> impl Iterator<Item = &T> + ExactSizeIterator + DoubleEndedIterator {
+    pub fn values(&mut self) -> impl Iterator<Item = &T> + ExactSizeIterator + DoubleEndedIterator {
         self.data.iter()
     }
 
@@ -448,12 +369,6 @@ impl<T> Arena<T> {
     /// This method should remain private to make creating invalid `Idx`s harder.
     fn next_idx(&self) -> Idx<T> {
         Idx::from_raw(RawIdx(self.data.len() as u32))
-    }
-}
-
-impl<T> AsMut<[T]> for Arena<T> {
-    fn as_mut(&mut self) -> &mut [T] {
-        self.data.as_mut()
     }
 }
 
@@ -493,34 +408,5 @@ impl<T> FromIterator<T> for Arena<T> {
         I: IntoIterator<Item = T>,
     {
         Arena { data: Vec::from_iter(iter) }
-    }
-}
-
-/// An iterator over the arena’s elements.
-pub struct IntoIter<T>(Enumerate<<Vec<T> as IntoIterator>::IntoIter>);
-
-impl<T> Iterator for IntoIter<T> {
-    type Item = (Idx<T>, T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|(idx, value)| (Idx::from_raw(RawIdx(idx as u32)), value))
-    }
-}
-
-impl<T> IntoIterator for Arena<T> {
-    type Item = (Idx<T>, T);
-
-    type IntoIter = IntoIter<T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        IntoIter(self.data.into_iter().enumerate())
-    }
-}
-
-impl<T> Extend<T> for Arena<T> {
-    fn extend<II: IntoIterator<Item = T>>(&mut self, iter: II) {
-        for t in iter {
-            self.alloc(t);
-        }
     }
 }

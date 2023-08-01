@@ -15,8 +15,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
   gdb \
   libssl-dev \
   pkg-config \
-  xz-utils \
-  && rm -rf /var/lib/apt/lists/*
+  xz-utils
 
 COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh

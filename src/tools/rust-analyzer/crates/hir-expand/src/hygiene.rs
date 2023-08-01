@@ -2,6 +2,8 @@
 //!
 //! Specifically, `ast` + `Hygiene` allows you to create a `Name`. Note that, at
 //! this moment, this is horribly incomplete and handles only `$crate`.
+use std::sync::Arc;
+
 use base_db::CrateId;
 use db::TokenExpander;
 use either::Either;
@@ -10,13 +12,12 @@ use syntax::{
     ast::{self, HasDocComments},
     AstNode, SyntaxKind, SyntaxNode, TextRange, TextSize,
 };
-use triomphe::Arc;
 
 use crate::{
-    db::{self, ExpandDatabase},
+    db::{self, AstDatabase},
     fixup,
     name::{AsName, Name},
-    HirFileId, InFile, MacroCallKind, MacroCallLoc, MacroDefKind, MacroFile,
+    HirFileId, HirFileIdRepr, InFile, MacroCallKind, MacroCallLoc, MacroDefKind, MacroFile,
 };
 
 #[derive(Clone, Debug)]
@@ -25,7 +26,7 @@ pub struct Hygiene {
 }
 
 impl Hygiene {
-    pub fn new(db: &dyn ExpandDatabase, file_id: HirFileId) -> Hygiene {
+    pub fn new(db: &dyn AstDatabase, file_id: HirFileId) -> Hygiene {
         Hygiene { frames: Some(HygieneFrames::new(db, file_id)) }
     }
 
@@ -36,7 +37,7 @@ impl Hygiene {
     // FIXME: this should just return name
     pub fn name_ref_to_name(
         &self,
-        db: &dyn ExpandDatabase,
+        db: &dyn AstDatabase,
         name_ref: ast::NameRef,
     ) -> Either<Name, CrateId> {
         if let Some(frames) = &self.frames {
@@ -50,7 +51,7 @@ impl Hygiene {
         Either::Left(name_ref.as_name())
     }
 
-    pub fn local_inner_macros(&self, db: &dyn ExpandDatabase, path: ast::Path) -> Option<CrateId> {
+    pub fn local_inner_macros(&self, db: &dyn AstDatabase, path: ast::Path) -> Option<CrateId> {
         let mut token = path.syntax().first_token()?.text_range();
         let frames = self.frames.as_ref()?;
         let mut current = &frames.0;
@@ -86,13 +87,13 @@ pub struct HygieneFrame {
 }
 
 impl HygieneFrames {
-    fn new(db: &dyn ExpandDatabase, file_id: HirFileId) -> Self {
+    fn new(db: &dyn AstDatabase, file_id: HirFileId) -> Self {
         // Note that this intentionally avoids the `hygiene_frame` query to avoid blowing up memory
         // usage. The query is only helpful for nested `HygieneFrame`s as it avoids redundant work.
         HygieneFrames(Arc::new(HygieneFrame::new(db, file_id)))
     }
 
-    fn root_crate(&self, db: &dyn ExpandDatabase, node: &SyntaxNode) -> Option<CrateId> {
+    fn root_crate(&self, db: &dyn AstDatabase, node: &SyntaxNode) -> Option<CrateId> {
         let mut token = node.first_token()?.text_range();
         let mut result = self.0.krate;
         let mut current = self.0.clone();
@@ -127,7 +128,7 @@ struct HygieneInfo {
     attr_input_or_mac_def_start: Option<InFile<TextSize>>,
 
     macro_def: Arc<TokenExpander>,
-    macro_arg: Arc<(crate::tt::Subtree, mbe::TokenMap, fixup::SyntaxFixupUndoInfo)>,
+    macro_arg: Arc<(tt::Subtree, mbe::TokenMap, fixup::SyntaxFixupUndoInfo)>,
     macro_arg_shift: mbe::Shift,
     exp_map: Arc<mbe::TokenMap>,
 }
@@ -135,7 +136,7 @@ struct HygieneInfo {
 impl HygieneInfo {
     fn map_ident_up(
         &self,
-        db: &dyn ExpandDatabase,
+        db: &dyn AstDatabase,
         token: TextRange,
     ) -> Option<(InFile<TextRange>, Origin)> {
         let token_id = self.exp_map.token_by_range(token)?;
@@ -174,7 +175,7 @@ impl HygieneInfo {
 }
 
 fn make_hygiene_info(
-    db: &dyn ExpandDatabase,
+    db: &dyn AstDatabase,
     macro_file: MacroFile,
     loc: &MacroCallLoc,
 ) -> Option<HygieneInfo> {
@@ -190,7 +191,7 @@ fn make_hygiene_info(
             let tt = ast_id
                 .to_node(db)
                 .doc_comments_and_attrs()
-                .nth(invoc_attr_index.ast_index())
+                .nth(invoc_attr_index as usize)
                 .and_then(Either::left)?
                 .token_tree()?;
             Some(InFile::new(ast_id.file_id, tt))
@@ -199,14 +200,8 @@ fn make_hygiene_info(
     });
 
     let macro_def = db.macro_def(loc.def).ok()?;
-    let (_, exp_map) = db.parse_macro_expansion(macro_file).value;
-    let macro_arg = db.macro_arg(macro_file.macro_call_id).unwrap_or_else(|| {
-        Arc::new((
-            tt::Subtree { delimiter: tt::Delimiter::UNSPECIFIED, token_trees: Vec::new() },
-            Default::default(),
-            Default::default(),
-        ))
-    });
+    let (_, exp_map) = db.parse_macro_expansion(macro_file).value?;
+    let macro_arg = db.macro_arg(macro_file.macro_call_id)?;
 
     Some(HygieneInfo {
         file: macro_file,
@@ -220,10 +215,10 @@ fn make_hygiene_info(
 }
 
 impl HygieneFrame {
-    pub(crate) fn new(db: &dyn ExpandDatabase, file_id: HirFileId) -> HygieneFrame {
-        let (info, krate, local_inner) = match file_id.macro_file() {
-            None => (None, None, false),
-            Some(macro_file) => {
+    pub(crate) fn new(db: &dyn AstDatabase, file_id: HirFileId) -> HygieneFrame {
+        let (info, krate, local_inner) = match file_id.0 {
+            HirFileIdRepr::FileId(_) => (None, None, false),
+            HirFileIdRepr::MacroFile(macro_file) => {
                 let loc = db.lookup_intern_macro_call(macro_file.macro_call_id);
                 let info =
                     make_hygiene_info(db, macro_file, &loc).map(|info| (loc.kind.file_id(), info));

@@ -15,7 +15,6 @@ mod flags;
 mod install;
 mod release;
 mod dist;
-mod publish;
 mod metrics;
 
 use anyhow::bail;
@@ -37,7 +36,6 @@ fn main() -> anyhow::Result<()> {
         flags::XtaskCmd::Release(cmd) => cmd.run(sh),
         flags::XtaskCmd::Promote(cmd) => cmd.run(sh),
         flags::XtaskCmd::Dist(cmd) => cmd.run(sh),
-        flags::XtaskCmd::PublishReleaseNotes(cmd) => cmd.run(sh),
         flags::XtaskCmd::Metrics(cmd) => cmd.run(sh),
         flags::XtaskCmd::Bb(cmd) => {
             {

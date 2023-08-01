@@ -9,6 +9,7 @@ mod cast_possible_truncation;
 mod cast_possible_wrap;
 mod cast_precision_loss;
 mod cast_ptr_alignment;
+mod cast_ref_to_mut;
 mod cast_sign_loss;
 mod cast_slice_different_sizes;
 mod cast_slice_from_raw_parts;
@@ -17,15 +18,14 @@ mod fn_to_numeric_cast;
 mod fn_to_numeric_cast_any;
 mod fn_to_numeric_cast_with_truncation;
 mod ptr_as_ptr;
-mod ptr_cast_constness;
 mod unnecessary_cast;
 mod utils;
 
-use clippy_utils::is_hir_ty_cfg_dependant;
-use clippy_utils::msrvs::{self, Msrv};
+use clippy_utils::{is_hir_ty_cfg_dependant, meets_msrv, msrvs};
 use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 declare_clippy_lint! {
@@ -80,8 +80,7 @@ declare_clippy_lint! {
     /// ### What it does
     /// Checks for casts between numerical types that may
     /// truncate large values. This is expected behavior, so the cast is `Allow` by
-    /// default. It suggests user either explicitly ignore the lint,
-    /// or use `try_from()` and handle the truncation, default, or panic explicitly.
+    /// default.
     ///
     /// ### Why is this bad?
     /// In some problem domains, it is good practice to avoid
@@ -94,21 +93,6 @@ declare_clippy_lint! {
     ///     x as u8
     /// }
     /// ```
-    /// Use instead:
-    /// ```
-    /// fn as_u8(x: u64) -> u8 {
-    ///     if let Ok(x) = u8::try_from(x) {
-    ///         x
-    ///     } else {
-    ///         todo!();
-    ///     }
-    /// }
-    /// // Or
-    /// #[allow(clippy::cast_possible_truncation)]
-    /// fn as_u16(x: u64) -> u16 {
-    ///     x as u16
-    /// }
-    /// ```
     #[clippy::version = "pre 1.29.0"]
     pub CAST_POSSIBLE_TRUNCATION,
     pedantic,
@@ -118,10 +102,9 @@ declare_clippy_lint! {
 declare_clippy_lint! {
     /// ### What it does
     /// Checks for casts from an unsigned type to a signed type of
-    /// the same size, or possibly smaller due to target dependent integers.
-    /// Performing such a cast is a 'no-op' for the compiler, i.e., nothing is
-    /// changed at the bit level, and the binary representation of the value is
-    /// reinterpreted. This can cause wrapping if the value is too big
+    /// the same size. Performing such a cast is a 'no-op' for the compiler,
+    /// i.e., nothing is changed at the bit level, and the binary representation of
+    /// the value is reinterpreted. This can cause wrapping if the value is too big
     /// for the target signed type. However, the cast works as defined, so this lint
     /// is `Allow` by default.
     ///
@@ -175,8 +158,8 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for casts to the same type, casts of int literals to integer types, casts of float
-    /// literals to float types and casts between raw pointers without changing type or constness.
+    /// Checks for casts to the same type, casts of int literals to integer types
+    /// and casts of float literals to float types.
     ///
     /// ### Why is this bad?
     /// It's just unnecessary.
@@ -333,6 +316,41 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
+    /// Checks for casts of `&T` to `&mut T` anywhere in the code.
+    ///
+    /// ### Why is this bad?
+    /// It’s basically guaranteed to be undefined behavior.
+    /// `UnsafeCell` is the only way to obtain aliasable data that is considered
+    /// mutable.
+    ///
+    /// ### Example
+    /// ```rust,ignore
+    /// fn x(r: &i32) {
+    ///     unsafe {
+    ///         *(r as *const _ as *mut _) += 1;
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Instead consider using interior mutability types.
+    ///
+    /// ```rust
+    /// use std::cell::UnsafeCell;
+    ///
+    /// fn x(r: &UnsafeCell<i32>) {
+    ///     unsafe {
+    ///         *r.get() += 1;
+    ///     }
+    /// }
+    /// ```
+    #[clippy::version = "1.33.0"]
+    pub CAST_REF_TO_MUT,
+    correctness,
+    "a cast of reference to a mutable pointer"
+}
+
+declare_clippy_lint! {
+    /// ### What it does
     /// Checks for expressions where a character literal is cast
     /// to `u8` and suggests using a byte literal instead.
     ///
@@ -365,7 +383,7 @@ declare_clippy_lint! {
     /// namely `*const T` to `*const U` and `*mut T` to `*mut U`.
     ///
     /// ### Why is this bad?
-    /// Though `as` casts between raw pointers are not terrible, `pointer::cast` is safer because
+    /// Though `as` casts between raw pointers is not terrible, `pointer::cast` is safer because
     /// it cannot accidentally change the pointer's mutability nor cast the pointer to other types like `usize`.
     ///
     /// ### Example
@@ -386,34 +404,6 @@ declare_clippy_lint! {
     pub PTR_AS_PTR,
     pedantic,
     "casting using `as` from and to raw pointers that doesn't change its mutability, where `pointer::cast` could take the place of `as`"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
-    /// Checks for `as` casts between raw pointers which change its constness, namely `*const T` to
-    /// `*mut T` and `*mut T` to `*const T`.
-    ///
-    /// ### Why is this bad?
-    /// Though `as` casts between raw pointers are not terrible, `pointer::cast_mut` and
-    /// `pointer::cast_const` are safer because they cannot accidentally cast the pointer to another
-    /// type.
-    ///
-    /// ### Example
-    /// ```rust
-    /// let ptr: *const u32 = &42_u32;
-    /// let mut_ptr = ptr as *mut u32;
-    /// let ptr = mut_ptr as *const u32;
-    /// ```
-    /// Use instead:
-    /// ```rust
-    /// let ptr: *const u32 = &42_u32;
-    /// let mut_ptr = ptr.cast_mut();
-    /// let ptr = mut_ptr.cast_const();
-    /// ```
-    #[clippy::version = "1.71.0"]
-    pub PTR_CAST_CONSTNESS,
-    pedantic,
-    "casting using `as` from and to raw pointers to change constness when specialized methods apply"
 }
 
 declare_clippy_lint! {
@@ -500,7 +490,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of the `abs()` method that cast the result to unsigned.
+    /// Checks for uses of the `abs()` method that cast the result to unsigned.
     ///
     /// ### Why is this bad?
     /// The `unsigned_abs()` method avoids panic when called on the MIN value.
@@ -523,7 +513,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for the usage of `as _` conversion using inferred type.
+    /// Check for the usage of `as _` conversion using inferred type.
     ///
     /// ### Why is this bad?
     /// The conversion might include lossy conversion and dangerous cast that might go
@@ -603,7 +593,7 @@ declare_clippy_lint! {
     /// let _: *mut [u8] = std::ptr::slice_from_raw_parts_mut(ptr, len);
     /// ```
     /// [safety requirements]: https://doc.rust-lang.org/std/slice/fn.from_raw_parts.html#safety
-    #[clippy::version = "1.65.0"]
+    #[clippy::version = "1.64.0"]
     pub CAST_SLICE_FROM_RAW_PARTS,
     suspicious,
     "casting a slice created from a pointer and length to a slice pointer"
@@ -619,20 +609,20 @@ declare_clippy_lint! {
     ///
     /// ### Example
     /// ```rust
-    /// let mut vec = Vec::<u8>::with_capacity(1);
-    /// let ptr = vec.as_ptr() as *mut u8;
+    /// let string = String::with_capacity(1);
+    /// let ptr = string.as_ptr() as *mut u8;
     /// unsafe { ptr.write(4) }; // UNDEFINED BEHAVIOUR
     /// ```
     /// Use instead:
     /// ```rust
-    /// let mut vec = Vec::<u8>::with_capacity(1);
-    /// let ptr = vec.as_mut_ptr();
+    /// let mut string = String::with_capacity(1);
+    /// let ptr = string.as_mut_ptr();
     /// unsafe { ptr.write(4) };
     /// ```
     #[clippy::version = "1.66.0"]
     pub AS_PTR_CAST_MUT,
     nursery,
-    "casting the result of the `&self`-taking `as_ptr` to a mutable pointer"
+    "casting the result of the `&self`-taking `as_ptr` to a mutabe pointer"
 }
 
 declare_clippy_lint! {
@@ -651,19 +641,19 @@ declare_clippy_lint! {
     /// ```rust,ignore
     /// let _: = 0_u64;
     /// ```
-    #[clippy::version = "1.66.0"]
+    #[clippy::version = "1.64.0"]
     pub CAST_NAN_TO_INT,
     suspicious,
     "casting a known floating-point NaN into an integer"
 }
 
 pub struct Casts {
-    msrv: Msrv,
+    msrv: Option<RustcVersion>,
 }
 
 impl Casts {
     #[must_use]
-    pub fn new(msrv: Msrv) -> Self {
+    pub fn new(msrv: Option<RustcVersion>) -> Self {
         Self { msrv }
     }
 }
@@ -674,6 +664,7 @@ impl_lint_pass!(Casts => [
     CAST_POSSIBLE_TRUNCATION,
     CAST_POSSIBLE_WRAP,
     CAST_LOSSLESS,
+    CAST_REF_TO_MUT,
     CAST_PTR_ALIGNMENT,
     CAST_SLICE_DIFFERENT_SIZES,
     UNNECESSARY_CAST,
@@ -682,7 +673,6 @@ impl_lint_pass!(Casts => [
     FN_TO_NUMERIC_CAST_WITH_TRUNCATION,
     CHAR_LIT_AS_U8,
     PTR_AS_PTR,
-    PTR_CAST_CONSTNESS,
     CAST_ENUM_TRUNCATION,
     CAST_ENUM_CONSTRUCTOR,
     CAST_ABS_TO_UNSIGNED,
@@ -696,7 +686,7 @@ impl_lint_pass!(Casts => [
 impl<'tcx> LateLintPass<'tcx> for Casts {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         if !in_external_macro(cx.sess(), expr.span) {
-            ptr_as_ptr::check(cx, expr, &self.msrv);
+            ptr_as_ptr::check(cx, expr, self.msrv);
         }
 
         if expr.span.from_expansion() {
@@ -715,37 +705,37 @@ impl<'tcx> LateLintPass<'tcx> for Casts {
             if unnecessary_cast::check(cx, expr, cast_expr, cast_from, cast_to) {
                 return;
             }
-            cast_slice_from_raw_parts::check(cx, expr, cast_expr, cast_to, &self.msrv);
-            ptr_cast_constness::check(cx, expr, cast_expr, cast_from, cast_to, &self.msrv);
+            cast_slice_from_raw_parts::check(cx, expr, cast_expr, cast_to, self.msrv);
             as_ptr_cast_mut::check(cx, expr, cast_expr, cast_to);
             fn_to_numeric_cast_any::check(cx, expr, cast_expr, cast_from, cast_to);
             fn_to_numeric_cast::check(cx, expr, cast_expr, cast_from, cast_to);
             fn_to_numeric_cast_with_truncation::check(cx, expr, cast_expr, cast_from, cast_to);
 
             if cast_to.is_numeric() && !in_external_macro(cx.sess(), expr.span) {
-                cast_possible_truncation::check(cx, expr, cast_expr, cast_from, cast_to, cast_to_hir.span);
+                cast_possible_truncation::check(cx, expr, cast_expr, cast_from, cast_to);
                 if cast_from.is_numeric() {
                     cast_possible_wrap::check(cx, expr, cast_from, cast_to);
                     cast_precision_loss::check(cx, expr, cast_from, cast_to);
                     cast_sign_loss::check(cx, expr, cast_expr, cast_from, cast_to);
-                    cast_abs_to_unsigned::check(cx, expr, cast_expr, cast_from, cast_to, &self.msrv);
+                    cast_abs_to_unsigned::check(cx, expr, cast_expr, cast_from, cast_to, self.msrv);
                     cast_nan_to_int::check(cx, expr, cast_expr, cast_from, cast_to);
                 }
-                cast_lossless::check(cx, expr, cast_expr, cast_from, cast_to, &self.msrv);
+                cast_lossless::check(cx, expr, cast_expr, cast_from, cast_to, self.msrv);
                 cast_enum_constructor::check(cx, expr, cast_expr, cast_from);
             }
 
             as_underscore::check(cx, expr, cast_to_hir);
 
-            if self.msrv.meets(msrvs::BORROW_AS_PTR) {
+            if meets_msrv(self.msrv, msrvs::BORROW_AS_PTR) {
                 borrow_as_ptr::check(cx, expr, cast_expr, cast_to_hir);
             }
         }
 
+        cast_ref_to_mut::check(cx, expr);
         cast_ptr_alignment::check(cx, expr);
         char_lit_as_u8::check(cx, expr);
-        ptr_as_ptr::check(cx, expr, &self.msrv);
-        cast_slice_different_sizes::check(cx, expr, &self.msrv);
+        ptr_as_ptr::check(cx, expr, self.msrv);
+        cast_slice_different_sizes::check(cx, expr, self.msrv);
     }
 
     extract_msrv_attr!(LateContext);

@@ -110,7 +110,6 @@ pub(crate) struct CallData {
     pub(crate) url: String,
     pub(crate) display_name: String,
     pub(crate) edition: Edition,
-    pub(crate) is_bin: bool,
 }
 
 pub(crate) type FnCallLocations = FxHashMap<PathBuf, CallData>;
@@ -123,7 +122,6 @@ struct FindCalls<'a, 'tcx> {
     cx: Context<'tcx>,
     target_crates: Vec<CrateNum>,
     calls: &'a mut AllCallLocations,
-    bin_crate: bool,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for FindCalls<'a, 'tcx>
@@ -169,7 +167,7 @@ where
                 };
 
                 let ident_span = path.ident.span;
-                (tcx.type_of(def_id).subst_identity(), call_span, ident_span)
+                (tcx.type_of(def_id), call_span, ident_span)
             }
             _ => {
                 return;
@@ -247,9 +245,7 @@ where
                 let mk_call_data = || {
                     let display_name = file_path.display().to_string();
                     let edition = call_span.edition();
-                    let is_bin = self.bin_crate;
-
-                    CallData { locations: Vec::new(), url, display_name, edition, is_bin }
+                    CallData { locations: Vec::new(), url, display_name, edition }
                 };
 
                 let fn_key = tcx.def_path_hash(*def_id);
@@ -278,7 +274,6 @@ pub(crate) fn run(
     cache: formats::cache::Cache,
     tcx: TyCtxt<'_>,
     options: ScrapeExamplesOptions,
-    bin_crate: bool,
 ) -> interface::Result<()> {
     let inner = move || -> Result<(), String> {
         // Generates source files for examples
@@ -286,7 +281,7 @@ pub(crate) fn run(
         let (cx, _) = Context::init(krate, renderopts, cache, tcx).map_err(|e| e.to_string())?;
 
         // Collect CrateIds corresponding to provided target crates
-        // If two different versions of the crate in the dependency tree, then examples will be collected from both.
+        // If two different versions of the crate in the dependency tree, then examples will be collcted from both.
         let all_crates = tcx
             .crates(())
             .iter()
@@ -305,8 +300,7 @@ pub(crate) fn run(
 
         // Run call-finder on all items
         let mut calls = FxHashMap::default();
-        let mut finder =
-            FindCalls { calls: &mut calls, tcx, map: tcx.hir(), cx, target_crates, bin_crate };
+        let mut finder = FindCalls { calls: &mut calls, tcx, map: tcx.hir(), cx, target_crates };
         tcx.hir().visit_all_item_likes_in_crate(&mut finder);
 
         // The visitor might have found a type error, which we need to
@@ -331,7 +325,7 @@ pub(crate) fn run(
     };
 
     if let Err(e) = inner() {
-        tcx.sess.fatal(e);
+        tcx.sess.fatal(&e);
     }
 
     Ok(())
@@ -358,7 +352,7 @@ pub(crate) fn load_call_locations(
     };
 
     inner().map_err(|e: String| {
-        diag.err(format!("failed to load examples: {}", e));
+        diag.err(&format!("failed to load examples: {}", e));
         1
     })
 }

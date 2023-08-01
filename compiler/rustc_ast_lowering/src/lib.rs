@@ -43,7 +43,6 @@ extern crate tracing;
 
 use crate::errors::{AssocTyParentheses, AssocTyParenthesesSub, MisplacedImplTrait, TraitFnAsync};
 
-use hir::OwnerId;
 use rustc_arena::declare_arena;
 use rustc_ast::ptr::P;
 use rustc_ast::visit;
@@ -132,7 +131,7 @@ struct LoweringContext<'a, 'hir> {
     trait_map: FxHashMap<ItemLocalId, Box<[TraitCandidate]>>,
     
     //SORLAB: @kayondomartin
-    metaupdate_id_offset_map: FxHashMap<DefId, u32>, 
+    metaupdate_id_offset_map: FxHashMap<NodeId, u32>, 
 
     impl_trait_defs: Vec<hir::GenericParam<'hir>>,
     impl_trait_bounds: Vec<hir::WherePredicate<'hir>>,

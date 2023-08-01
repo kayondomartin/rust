@@ -1,12 +1,12 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::msrvs::{self, Msrv};
-use clippy_utils::source::snippet_with_context;
-use clippy_utils::{match_def_path, paths};
+use clippy_utils::source::snippet_with_applicability;
+use clippy_utils::{match_def_path, meets_msrv, msrvs, paths};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{def_id::DefId, Expr, ExprKind};
 use rustc_lint::LateContext;
 use rustc_middle::ty::{self, Ty};
+use rustc_semver::RustcVersion;
 
 use super::CAST_SLICE_FROM_RAW_PARTS;
 
@@ -25,17 +25,21 @@ fn raw_parts_kind(cx: &LateContext<'_>, did: DefId) -> Option<RawPartsKind> {
     }
 }
 
-pub(super) fn check(cx: &LateContext<'_>, expr: &Expr<'_>, cast_expr: &Expr<'_>, cast_to: Ty<'_>, msrv: &Msrv) {
+pub(super) fn check(
+    cx: &LateContext<'_>,
+    expr: &Expr<'_>,
+    cast_expr: &Expr<'_>,
+    cast_to: Ty<'_>,
+    msrv: Option<RustcVersion>,
+) {
     if_chain! {
-        if msrv.meets(msrvs::PTR_SLICE_RAW_PARTS);
+        if meets_msrv(msrv, msrvs::PTR_SLICE_RAW_PARTS);
         if let ty::RawPtr(ptrty) = cast_to.kind();
         if let ty::Slice(_) = ptrty.ty.kind();
         if let ExprKind::Call(fun, [ptr_arg, len_arg]) = cast_expr.peel_blocks().kind;
         if let ExprKind::Path(ref qpath) = fun.kind;
         if let Some(fun_def_id) = cx.qpath_res(qpath, fun.hir_id).opt_def_id();
         if let Some(rpk) = raw_parts_kind(cx, fun_def_id);
-        let ctxt = expr.span.ctxt();
-        if cast_expr.span.ctxt() == ctxt;
         then {
             let func = match rpk {
                 RawPartsKind::Immutable => "from_raw_parts",
@@ -43,8 +47,8 @@ pub(super) fn check(cx: &LateContext<'_>, expr: &Expr<'_>, cast_expr: &Expr<'_>,
             };
             let span = expr.span;
             let mut applicability = Applicability::MachineApplicable;
-            let ptr = snippet_with_context(cx, ptr_arg.span, ctxt, "ptr", &mut applicability).0;
-            let len = snippet_with_context(cx, len_arg.span, ctxt, "len", &mut applicability).0;
+            let ptr = snippet_with_applicability(cx, ptr_arg.span, "ptr", &mut applicability);
+            let len = snippet_with_applicability(cx, len_arg.span, "len", &mut applicability);
             span_lint_and_sugg(
                 cx,
                 CAST_SLICE_FROM_RAW_PARTS,

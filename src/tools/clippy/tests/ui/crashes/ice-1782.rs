@@ -1,5 +1,4 @@
 #![allow(dead_code, unused_variables)]
-#![allow(clippy::unnecessary_cast)]
 
 /// Should not trigger an ICE in `SpanlessEq` / `consts::constant`
 ///

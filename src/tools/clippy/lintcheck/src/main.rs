@@ -17,9 +17,9 @@ use crate::recursive::LintcheckServer;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::env::consts::EXE_SUFFIX;
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, ErrorKind};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -120,8 +120,8 @@ impl ClippyWarning {
             format!("$CARGO_HOME/{}", stripped.display())
         } else {
             format!(
-                "target/lintcheck/sources/{crate_name}-{crate_version}/{}",
-                span.file_name
+                "target/lintcheck/sources/{}-{}/{}",
+                crate_name, crate_version, span.file_name
             )
         };
 
@@ -145,8 +145,8 @@ impl ClippyWarning {
             }
 
             let mut output = String::from("| ");
-            let _: fmt::Result = write!(output, "[`{file_with_pos}`]({file}#L{})", self.line);
-            let _: fmt::Result = write!(output, r#" | `{:<50}` | "{}" |"#, self.lint_type, self.message);
+            let _ = write!(output, "[`{file_with_pos}`]({file}#L{})", self.line);
+            let _ = write!(output, r#" | `{:<50}` | "{}" |"#, self.lint_type, self.message);
             output.push('\n');
             output
         } else {
@@ -322,13 +322,13 @@ impl Crate {
 
         if config.max_jobs == 1 {
             println!(
-                "{index}/{total_crates_to_lint} {perc}% Linting {} {}",
-                &self.name, &self.version
+                "{}/{} {}% Linting {} {}",
+                index, total_crates_to_lint, perc, &self.name, &self.version
             );
         } else {
             println!(
-                "{index}/{total_crates_to_lint} {perc}% Linting {} {} in target dir {thread_index:?}",
-                &self.name, &self.version
+                "{}/{} {}% Linting {} {} in target dir {:?}",
+                index, total_crates_to_lint, perc, &self.name, &self.version, thread_index
             );
         }
 
@@ -398,7 +398,8 @@ impl Crate {
             .output()
             .unwrap_or_else(|error| {
                 panic!(
-                    "Encountered error:\n{error:?}\ncargo_clippy_path: {}\ncrate path:{}\n",
+                    "Encountered error:\n{:?}\ncargo_clippy_path: {}\ncrate path:{}\n",
+                    error,
                     &cargo_clippy_path.display(),
                     &self.path.display()
                 );
@@ -421,7 +422,7 @@ impl Crate {
             {
                 let subcrate = &stderr[63..];
                 println!(
-                    "ERROR: failed to apply some suggestion to {} / to (sub)crate {subcrate}",
+                    "ERROR: failed to apply some suggetion to {} / to (sub)crate {subcrate}",
                     self.name
                 );
             }
@@ -474,7 +475,7 @@ fn read_crates(toml_path: &Path) -> (Vec<CrateSource>, RecursiveOptions) {
             });
         } else if let Some(ref versions) = tk.versions {
             // if we have multiple versions, save each one
-            for ver in versions {
+            for ver in versions.iter() {
                 crate_sources.push(CrateSource::CratesIo {
                     name: tk.name.clone(),
                     version: ver.to_string(),
@@ -543,6 +544,34 @@ fn gather_stats(clippy_warnings: &[ClippyWarning]) -> (String, HashMap<&String, 
     (stats_string, counter)
 }
 
+/// check if the latest modification of the logfile is older than the modification date of the
+/// clippy binary, if this is true, we should clean the lintchec shared target directory and recheck
+fn lintcheck_needs_rerun(lintcheck_logs_path: &Path, paths: [&Path; 2]) -> bool {
+    if !lintcheck_logs_path.exists() {
+        return true;
+    }
+
+    let clippy_modified: std::time::SystemTime = {
+        let [cargo, driver] = paths.map(|p| {
+            std::fs::metadata(p)
+                .expect("failed to get metadata of file")
+                .modified()
+                .expect("failed to get modification date")
+        });
+        // the oldest modification of either of the binaries
+        std::cmp::max(cargo, driver)
+    };
+
+    let logs_modified: std::time::SystemTime = std::fs::metadata(lintcheck_logs_path)
+        .expect("failed to get metadata of file")
+        .modified()
+        .expect("failed to get modification date");
+
+    // time is represented in seconds since X
+    // logs_modified 2 and clippy_modified 5 means clippy binary is older and we need to recheck
+    logs_modified < clippy_modified
+}
+
 #[allow(clippy::too_many_lines)]
 fn main() {
     // We're being executed as a `RUSTC_WRAPPER` as part of `--recursive`
@@ -564,6 +593,23 @@ fn main() {
 
     let cargo_clippy_path = fs::canonicalize(format!("target/debug/cargo-clippy{EXE_SUFFIX}")).unwrap();
     let clippy_driver_path = fs::canonicalize(format!("target/debug/clippy-driver{EXE_SUFFIX}")).unwrap();
+
+    // if the clippy bin is newer than our logs, throw away target dirs to force clippy to
+    // refresh the logs
+    if lintcheck_needs_rerun(
+        &config.lintcheck_results_path,
+        [&cargo_clippy_path, &clippy_driver_path],
+    ) {
+        let shared_target_dir = "target/lintcheck/shared_target_dir";
+        // if we get an Err here, the shared target dir probably does simply not exist
+        if let Ok(metadata) = std::fs::metadata(shared_target_dir) {
+            if metadata.is_dir() {
+                println!("Clippy is newer than lint check logs, clearing lintcheck shared target dir...");
+                std::fs::remove_dir_all(shared_target_dir)
+                    .expect("failed to remove target/lintcheck/shared_target_dir");
+            }
+        }
+    }
 
     // assert that clippy is found
     assert!(
@@ -632,7 +678,7 @@ fn main() {
         .unwrap();
 
     let server = config.recursive.then(|| {
-        let _: io::Result<()> = fs::remove_dir_all("target/lintcheck/shared_target_dir/recursive");
+        fs::remove_dir_all("target/lintcheck/shared_target_dir/recursive").unwrap_or_default();
 
         LintcheckServer::spawn(recursive_options)
     });
@@ -689,7 +735,7 @@ fn main() {
     write!(text, "{}", all_msgs.join("")).unwrap();
     text.push_str("\n\n### ICEs:\n");
     for (cratename, msg) in &ices {
-        let _: fmt::Result = write!(text, "{cratename}: '{msg}'");
+        let _ = write!(text, "{cratename}: '{msg}'");
     }
 
     println!("Writing logs to {}", config.lintcheck_results_path.display());

@@ -1,15 +1,13 @@
 //! Utilities for LSP-related boilerplate code.
-use std::{mem, ops::Range};
+use std::{ops::Range, sync::Arc};
 
 use lsp_server::Notification;
-use lsp_types::request::Request;
-use triomphe::Arc;
 
 use crate::{
     from_proto,
     global_state::GlobalState,
     line_index::{LineEndings, LineIndex, PositionEncoding},
-    lsp_ext, LspError,
+    LspError,
 };
 
 pub(crate) fn invalid_params_error(message: String) -> LspError {
@@ -37,63 +35,31 @@ impl Progress {
 }
 
 impl GlobalState {
-    pub(crate) fn show_message(
-        &mut self,
-        typ: lsp_types::MessageType,
-        message: String,
-        show_open_log_button: bool,
-    ) {
-        match self.config.open_server_logs() && show_open_log_button  {
-            true => self.send_request::<lsp_types::request::ShowMessageRequest>(
-                lsp_types::ShowMessageRequestParams {
-                    typ,
-                    message,
-                    actions: Some(vec![lsp_types::MessageActionItem {
-                        title: "Open server logs".to_owned(),
-                        properties: Default::default(),
-                    }]),
-                },
-                |this, resp| {
-                    let lsp_server::Response { error: None, result: Some(result), .. } = resp
-                    else { return };
-                    if let Ok(Some(_item)) = crate::from_json::<
-                        <lsp_types::request::ShowMessageRequest as lsp_types::request::Request>::Result,
-                    >(
-                        lsp_types::request::ShowMessageRequest::METHOD, &result
-                    ) {
-                        this.send_notification::<lsp_ext::OpenServerLogs>(());
-                    }
-                },
-            ),
-            false => self.send_notification::<lsp_types::notification::ShowMessage>(
-                lsp_types::ShowMessageParams {
-                    typ,
-                    message,
-                },
-            ),
-        }
+    pub(crate) fn show_message(&mut self, typ: lsp_types::MessageType, message: String) {
+        let message = message;
+        self.send_notification::<lsp_types::notification::ShowMessage>(
+            lsp_types::ShowMessageParams { typ, message },
+        )
     }
 
     /// Sends a notification to the client containing the error `message`.
     /// If `additional_info` is [`Some`], appends a note to the notification telling to check the logs.
     /// This will always log `message` + `additional_info` to the server's error log.
     pub(crate) fn show_and_log_error(&mut self, message: String, additional_info: Option<String>) {
+        let mut message = message;
         match additional_info {
             Some(additional_info) => {
-                tracing::error!("{}:\n{}", &message, &additional_info);
-                self.show_message(
-                    lsp_types::MessageType::ERROR,
-                    message,
-                    tracing::enabled!(tracing::Level::ERROR),
-                );
+                tracing::error!("{}\n\n{}", &message, &additional_info);
+                if tracing::enabled!(tracing::Level::ERROR) {
+                    message.push_str("\n\nCheck the server logs for additional info.");
+                }
             }
-            None => {
-                tracing::error!("{}", &message);
-                self.send_notification::<lsp_types::notification::ShowMessage>(
-                    lsp_types::ShowMessageParams { typ: lsp_types::MessageType::ERROR, message },
-                );
-            }
+            None => tracing::error!("{}", &message),
         }
+
+        self.send_notification::<lsp_types::notification::ShowMessage>(
+            lsp_types::ShowMessageParams { typ: lsp_types::MessageType::ERROR, message },
+        )
     }
 
     /// rust-analyzer is resilient -- if it fails, this doesn't usually affect
@@ -111,7 +77,7 @@ impl GlobalState {
         let from_source_build = option_env!("POKE_RA_DEVS").is_some();
         let profiling_enabled = std::env::var("RA_PROFILE").is_ok();
         if from_source_build || profiling_enabled {
-            self.show_and_log_error(message, None);
+            self.show_message(lsp_types::MessageType::ERROR, message)
         }
     }
 
@@ -132,7 +98,7 @@ impl GlobalState {
         });
         let cancellable = Some(cancel_token.is_some());
         let token = lsp_types::ProgressToken::String(
-            cancel_token.unwrap_or_else(|| format!("rustAnalyzer/{title}")),
+            cancel_token.unwrap_or_else(|| format!("rustAnalyzer/{}", title)),
         );
         let work_done_progress = match state {
             Progress::Begin => {
@@ -167,41 +133,14 @@ impl GlobalState {
 }
 
 pub(crate) fn apply_document_changes(
-    encoding: PositionEncoding,
-    file_contents: impl FnOnce() -> String,
-    mut content_changes: Vec<lsp_types::TextDocumentContentChangeEvent>,
-) -> String {
-    // Skip to the last full document change, as it invalidates all previous changes anyways.
-    let mut start = content_changes
-        .iter()
-        .rev()
-        .position(|change| change.range.is_none())
-        .map(|idx| content_changes.len() - idx - 1)
-        .unwrap_or(0);
-
-    let mut text: String = match content_changes.get_mut(start) {
-        // peek at the first content change as an optimization
-        Some(lsp_types::TextDocumentContentChangeEvent { range: None, text, .. }) => {
-            let text = mem::take(text);
-            start += 1;
-
-            // The only change is a full document update
-            if start == content_changes.len() {
-                return text;
-            }
-            text
-        }
-        Some(_) => file_contents(),
-        // we received no content changes
-        None => return file_contents(),
-    };
-
+    old_text: &mut String,
+    content_changes: Vec<lsp_types::TextDocumentContentChangeEvent>,
+) {
     let mut line_index = LineIndex {
-        // the index will be overwritten in the bottom loop's first iteration
-        index: Arc::new(ide::LineIndex::new(&text)),
-        // We don't care about line endings here.
+        index: Arc::new(ide::LineIndex::new(old_text)),
+        // We don't care about line endings or offset encoding here.
         endings: LineEndings::Unix,
-        encoding,
+        encoding: PositionEncoding::Utf16,
     };
 
     // The changes we got must be applied sequentially, but can cross lines so we
@@ -209,20 +148,38 @@ pub(crate) fn apply_document_changes(
     // Some clients (e.g. Code) sort the ranges in reverse. As an optimization, we
     // remember the last valid line in the index and only rebuild it if needed.
     // The VFS will normalize the end of lines to `\n`.
-    let mut index_valid = !0u32;
-    for change in content_changes {
-        // The None case can't happen as we have handled it above already
-        if let Some(range) = change.range {
-            if index_valid <= range.end.line {
-                *Arc::make_mut(&mut line_index.index) = ide::LineIndex::new(&text);
-            }
-            index_valid = range.start.line;
-            if let Ok(range) = from_proto::text_range(&line_index, range) {
-                text.replace_range(Range::<usize>::from(range), &change.text);
+    enum IndexValid {
+        All,
+        UpToLineExclusive(u32),
+    }
+
+    impl IndexValid {
+        fn covers(&self, line: u32) -> bool {
+            match *self {
+                IndexValid::UpToLineExclusive(to) => to > line,
+                _ => true,
             }
         }
     }
-    text
+
+    let mut index_valid = IndexValid::All;
+    for change in content_changes {
+        match change.range {
+            Some(range) => {
+                if !index_valid.covers(range.end.line) {
+                    line_index.index = Arc::new(ide::LineIndex::new(old_text));
+                }
+                index_valid = IndexValid::UpToLineExclusive(range.start.line);
+                if let Ok(range) = from_proto::text_range(&line_index, range) {
+                    old_text.replace_range(Range::<usize>::from(range), &change.text);
+                }
+            }
+            None => {
+                *old_text = change.text;
+                index_valid = IndexValid::UpToLineExclusive(0);
+            }
+        }
+    }
 }
 
 /// Checks that the edits inside the completion and the additional edits do not overlap.
@@ -263,7 +220,6 @@ pub(crate) fn all_edits_are_disjoint(
 
 #[cfg(test)]
 mod tests {
-    use ide_db::line_index::WideEncoding;
     use lsp_types::{
         CompletionItem, CompletionTextEdit, InsertReplaceEdit, Position, Range,
         TextDocumentContentChangeEvent,
@@ -286,12 +242,11 @@ mod tests {
             };
         }
 
-        let encoding = PositionEncoding::Wide(WideEncoding::Utf16);
-        let text = apply_document_changes(encoding, || String::new(), vec![]);
+        let mut text = String::new();
+        apply_document_changes(&mut text, vec![]);
         assert_eq!(text, "");
-        let text = apply_document_changes(
-            encoding,
-            || text,
+        apply_document_changes(
+            &mut text,
             vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
@@ -299,49 +254,39 @@ mod tests {
             }],
         );
         assert_eq!(text, "the");
-        let text = apply_document_changes(encoding, || text, c![0, 3; 0, 3 => " quick"]);
+        apply_document_changes(&mut text, c![0, 3; 0, 3 => " quick"]);
         assert_eq!(text, "the quick");
-        let text =
-            apply_document_changes(encoding, || text, c![0, 0; 0, 4 => "", 0, 5; 0, 5 => " foxes"]);
+        apply_document_changes(&mut text, c![0, 0; 0, 4 => "", 0, 5; 0, 5 => " foxes"]);
         assert_eq!(text, "quick foxes");
-        let text = apply_document_changes(encoding, || text, c![0, 11; 0, 11 => "\ndream"]);
+        apply_document_changes(&mut text, c![0, 11; 0, 11 => "\ndream"]);
         assert_eq!(text, "quick foxes\ndream");
-        let text = apply_document_changes(encoding, || text, c![1, 0; 1, 0 => "have "]);
+        apply_document_changes(&mut text, c![1, 0; 1, 0 => "have "]);
         assert_eq!(text, "quick foxes\nhave dream");
-        let text = apply_document_changes(
-            encoding,
-            || text,
+        apply_document_changes(
+            &mut text,
             c![0, 0; 0, 0 => "the ", 1, 4; 1, 4 => " quiet", 1, 16; 1, 16 => "s\n"],
         );
         assert_eq!(text, "the quick foxes\nhave quiet dreams\n");
-        let text = apply_document_changes(
-            encoding,
-            || text,
-            c![0, 15; 0, 15 => "\n", 2, 17; 2, 17 => "\n"],
-        );
+        apply_document_changes(&mut text, c![0, 15; 0, 15 => "\n", 2, 17; 2, 17 => "\n"]);
         assert_eq!(text, "the quick foxes\n\nhave quiet dreams\n\n");
-        let text = apply_document_changes(
-            encoding,
-            || text,
+        apply_document_changes(
+            &mut text,
             c![1, 0; 1, 0 => "DREAM", 2, 0; 2, 0 => "they ", 3, 0; 3, 0 => "DON'T THEY?"],
         );
         assert_eq!(text, "the quick foxes\nDREAM\nthey have quiet dreams\nDON'T THEY?\n");
-        let text =
-            apply_document_changes(encoding, || text, c![0, 10; 1, 5 => "", 2, 0; 2, 12 => ""]);
+        apply_document_changes(&mut text, c![0, 10; 1, 5 => "", 2, 0; 2, 12 => ""]);
         assert_eq!(text, "the quick \nthey have quiet dreams\n");
 
-        let text = String::from("❤️");
-        let text = apply_document_changes(encoding, || text, c![0, 0; 0, 0 => "a"]);
+        text = String::from("❤️");
+        apply_document_changes(&mut text, c![0, 0; 0, 0 => "a"]);
         assert_eq!(text, "a❤️");
 
-        let text = String::from("a\nb");
-        let text =
-            apply_document_changes(encoding, || text, c![0, 1; 1, 0 => "\nțc", 0, 1; 1, 1 => "d"]);
+        text = String::from("a\nb");
+        apply_document_changes(&mut text, c![0, 1; 1, 0 => "\nțc", 0, 1; 1, 1 => "d"]);
         assert_eq!(text, "adcb");
 
-        let text = String::from("a\nb");
-        let text =
-            apply_document_changes(encoding, || text, c![0, 1; 1, 0 => "ț\nc", 0, 2; 0, 2 => "c"]);
+        text = String::from("a\nb");
+        apply_document_changes(&mut text, c![0, 1; 1, 0 => "ț\nc", 0, 2; 0, 2 => "c"]);
         assert_eq!(text, "ațc\ncb");
     }
 

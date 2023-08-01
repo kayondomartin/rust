@@ -1,13 +1,14 @@
 use crate::core::DocContext;
+use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def::DefKind;
-use rustc_hir::def_id::{DefId, DefIdSet};
+use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
 
 // FIXME: this may not be exhaustive, but is sufficient for rustdocs current uses
 
 #[derive(Default)]
 pub(crate) struct RustdocEffectiveVisibilities {
-    extern_public: DefIdSet,
+    extern_public: FxHashSet<DefId>,
 }
 
 macro_rules! define_method {
@@ -42,9 +43,9 @@ pub(crate) fn lib_embargo_visit_item(cx: &mut DocContext<'_>, def_id: DefId) {
 struct LibEmbargoVisitor<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     // Effective visibilities for reachable nodes
-    extern_public: &'a mut DefIdSet,
+    extern_public: &'a mut FxHashSet<DefId>,
     // Keeps track of already visited modules, in case a module re-exports its parent
-    visited_mods: DefIdSet,
+    visited_mods: FxHashSet<DefId>,
 }
 
 impl LibEmbargoVisitor<'_, '_> {

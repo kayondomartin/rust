@@ -2,19 +2,19 @@
 
 use clippy_utils::ast_utils::{eq_field_pat, eq_id, eq_maybe_qself, eq_pat, eq_path};
 use clippy_utils::diagnostics::span_lint_and_then;
-use clippy_utils::msrvs::{self, Msrv};
-use clippy_utils::over;
+use clippy_utils::{meets_msrv, msrvs, over};
 use rustc_ast::mut_visit::*;
 use rustc_ast::ptr::P;
 use rustc_ast::{self as ast, Mutability, Pat, PatKind, PatKind::*, DUMMY_NODE_ID};
 use rustc_ast_pretty::pprust;
 use rustc_errors::Applicability;
 use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::DUMMY_SP;
+
 use std::cell::Cell;
 use std::mem;
-use thin_vec::{thin_vec, ThinVec};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -45,13 +45,14 @@ declare_clippy_lint! {
     "unnested or-patterns, e.g., `Foo(Bar) | Foo(Baz) instead of `Foo(Bar | Baz)`"
 }
 
+#[derive(Clone, Copy)]
 pub struct UnnestedOrPatterns {
-    msrv: Msrv,
+    msrv: Option<RustcVersion>,
 }
 
 impl UnnestedOrPatterns {
     #[must_use]
-    pub fn new(msrv: Msrv) -> Self {
+    pub fn new(msrv: Option<RustcVersion>) -> Self {
         Self { msrv }
     }
 }
@@ -60,13 +61,13 @@ impl_lint_pass!(UnnestedOrPatterns => [UNNESTED_OR_PATTERNS]);
 
 impl EarlyLintPass for UnnestedOrPatterns {
     fn check_arm(&mut self, cx: &EarlyContext<'_>, a: &ast::Arm) {
-        if self.msrv.meets(msrvs::OR_PATTERNS) {
+        if meets_msrv(self.msrv, msrvs::OR_PATTERNS) {
             lint_unnested_or_patterns(cx, &a.pat);
         }
     }
 
     fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &ast::Expr) {
-        if self.msrv.meets(msrvs::OR_PATTERNS) {
+        if meets_msrv(self.msrv, msrvs::OR_PATTERNS) {
             if let ast::ExprKind::Let(pat, _, _) = &e.kind {
                 lint_unnested_or_patterns(cx, pat);
             }
@@ -74,13 +75,13 @@ impl EarlyLintPass for UnnestedOrPatterns {
     }
 
     fn check_param(&mut self, cx: &EarlyContext<'_>, p: &ast::Param) {
-        if self.msrv.meets(msrvs::OR_PATTERNS) {
+        if meets_msrv(self.msrv, msrvs::OR_PATTERNS) {
             lint_unnested_or_patterns(cx, &p.pat);
         }
     }
 
     fn check_local(&mut self, cx: &EarlyContext<'_>, l: &ast::Local) {
-        if self.msrv.meets(msrvs::OR_PATTERNS) {
+        if meets_msrv(self.msrv, msrvs::OR_PATTERNS) {
             lint_unnested_or_patterns(cx, &l.pat);
         }
     }
@@ -214,7 +215,7 @@ macro_rules! always_pat {
 /// Focus on `focus_idx` in `alternatives`,
 /// attempting to extend it with elements of the same constructor `C`
 /// in `alternatives[focus_idx + 1..]`.
-fn transform_with_focus_on_idx(alternatives: &mut ThinVec<P<Pat>>, focus_idx: usize) -> bool {
+fn transform_with_focus_on_idx(alternatives: &mut Vec<P<Pat>>, focus_idx: usize) -> bool {
     // Extract the kind; we'll need to make some changes in it.
     let mut focus_kind = mem::replace(&mut alternatives[focus_idx].kind, PatKind::Wild);
     // We'll focus on `alternatives[focus_idx]`,
@@ -291,12 +292,12 @@ fn transform_with_focus_on_idx(alternatives: &mut ThinVec<P<Pat>>, focus_idx: us
 /// So when we fixate on some `ident_k: pat_k`, we try to find `ident_k` in the other pattern
 /// and check that all `fp_i` where `i ∈ ((0...n) \ k)` between two patterns are equal.
 fn extend_with_struct_pat(
-    qself1: &Option<P<ast::QSelf>>,
+    qself1: &Option<ast::QSelf>,
     path1: &ast::Path,
     fps1: &mut [ast::PatField],
     rest1: bool,
     start: usize,
-    alternatives: &mut ThinVec<P<Pat>>,
+    alternatives: &mut Vec<P<Pat>>,
 ) -> bool {
     (0..fps1.len()).any(|idx| {
         let pos_in_2 = Cell::new(None); // The element `k`.
@@ -336,9 +337,9 @@ fn extend_with_struct_pat(
 fn extend_with_matching_product(
     targets: &mut [P<Pat>],
     start: usize,
-    alternatives: &mut ThinVec<P<Pat>>,
+    alternatives: &mut Vec<P<Pat>>,
     predicate: impl Fn(&PatKind, &[P<Pat>], usize) -> bool,
-    extract: impl Fn(PatKind) -> ThinVec<P<Pat>>,
+    extract: impl Fn(PatKind) -> Vec<P<Pat>>,
 ) -> bool {
     (0..targets.len()).any(|idx| {
         let tail_or = drain_matching(
@@ -365,14 +366,14 @@ fn take_pat(from: &mut Pat) -> Pat {
 
 /// Extend `target` as an or-pattern with the alternatives
 /// in `tail_or` if there are any and return if there were.
-fn extend_with_tail_or(target: &mut Pat, tail_or: ThinVec<P<Pat>>) -> bool {
-    fn extend(target: &mut Pat, mut tail_or: ThinVec<P<Pat>>) {
+fn extend_with_tail_or(target: &mut Pat, tail_or: Vec<P<Pat>>) -> bool {
+    fn extend(target: &mut Pat, mut tail_or: Vec<P<Pat>>) {
         match target {
             // On an existing or-pattern in the target, append to it.
             Pat { kind: Or(ps), .. } => ps.append(&mut tail_or),
             // Otherwise convert the target to an or-pattern.
             target => {
-                let mut init_or = thin_vec![P(take_pat(target))];
+                let mut init_or = vec![P(take_pat(target))];
                 init_or.append(&mut tail_or);
                 target.kind = Or(init_or);
             },
@@ -391,42 +392,26 @@ fn extend_with_tail_or(target: &mut Pat, tail_or: ThinVec<P<Pat>>) -> bool {
 // Only elements beginning with `start` are considered for extraction.
 fn drain_matching(
     start: usize,
-    alternatives: &mut ThinVec<P<Pat>>,
+    alternatives: &mut Vec<P<Pat>>,
     predicate: impl Fn(&PatKind) -> bool,
     extract: impl Fn(PatKind) -> P<Pat>,
-) -> ThinVec<P<Pat>> {
-    let mut tail_or = ThinVec::new();
+) -> Vec<P<Pat>> {
+    let mut tail_or = vec![];
     let mut idx = 0;
-
-    // If `ThinVec` had the `drain_filter` method, this loop could be rewritten
-    // like so:
-    //
-    //   for pat in alternatives.drain_filter(|p| {
-    //       // Check if we should extract, but only if `idx >= start`.
-    //       idx += 1;
-    //       idx > start && predicate(&p.kind)
-    //   }) {
-    //       tail_or.push(extract(pat.into_inner().kind));
-    //   }
-    let mut i = 0;
-    while i < alternatives.len() {
-        idx += 1;
+    for pat in alternatives.drain_filter(|p| {
         // Check if we should extract, but only if `idx >= start`.
-        if idx > start && predicate(&alternatives[i].kind) {
-            let pat = alternatives.remove(i);
-            tail_or.push(extract(pat.into_inner().kind));
-        } else {
-            i += 1;
-        }
+        idx += 1;
+        idx > start && predicate(&p.kind)
+    }) {
+        tail_or.push(extract(pat.into_inner().kind));
     }
-
     tail_or
 }
 
 fn extend_with_matching(
     target: &mut Pat,
     start: usize,
-    alternatives: &mut ThinVec<P<Pat>>,
+    alternatives: &mut Vec<P<Pat>>,
     predicate: impl Fn(&PatKind) -> bool,
     extract: impl Fn(PatKind) -> P<Pat>,
 ) -> bool {

@@ -1,6 +1,7 @@
 use super::*;
 
-use rustc_resolve::rustdoc::{unindent_doc_fragments, DocFragment, DocFragmentKind};
+use crate::clean::collapse_doc_fragments;
+
 use rustc_span::create_default_session_globals_then;
 use rustc_span::source_map::DUMMY_SP;
 use rustc_span::symbol::Symbol;
@@ -8,7 +9,7 @@ use rustc_span::symbol::Symbol;
 fn create_doc_fragment(s: &str) -> Vec<DocFragment> {
     vec![DocFragment {
         span: DUMMY_SP,
-        item_id: None,
+        parent_module: None,
         doc: Symbol::intern(s),
         kind: DocFragmentKind::SugaredDoc,
         indent: 0,
@@ -20,8 +21,7 @@ fn run_test(input: &str, expected: &str) {
     create_default_session_globals_then(|| {
         let mut s = create_doc_fragment(input);
         unindent_doc_fragments(&mut s);
-        let attrs = Attributes { doc_strings: s, other_attrs: Default::default() };
-        assert_eq!(attrs.doc_value(), expected);
+        assert_eq!(collapse_doc_fragments(&s), expected);
     });
 }
 
@@ -67,15 +67,4 @@ fn should_trim_mixed_indentation() {
 fn should_not_trim() {
     run_test("\t    line1  \n\t    line2", "line1  \nline2");
     run_test("    \tline1  \n    \tline2", "line1  \nline2");
-}
-
-#[test]
-fn is_same_generic() {
-    use crate::clean::types::{PrimitiveType, Type};
-    use crate::formats::cache::Cache;
-    let cache = Cache::new(false);
-    let generic = Type::Generic(rustc_span::symbol::sym::Any);
-    let unit = Type::Primitive(PrimitiveType::Unit);
-    assert!(!generic.is_doc_subtype_of(&unit, &cache));
-    assert!(unit.is_doc_subtype_of(&generic, &cache));
 }

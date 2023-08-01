@@ -1,5 +1,5 @@
-//@run-rustfix
-//@aux-build:proc_macros.rs:proc-macro
+// run-rustfix
+// aux-build:macro_rules.rs
 
 #![warn(clippy::default_numeric_fallback)]
 #![allow(
@@ -9,12 +9,11 @@
     clippy::unnecessary_operation,
     clippy::branches_sharing_code,
     clippy::match_single_binding,
-    clippy::let_unit_value,
-    clippy::let_with_type_underscore
+    clippy::let_unit_value
 )]
 
-extern crate proc_macros;
-use proc_macros::{external, inline_macros};
+#[macro_use]
+extern crate macro_rules;
 
 mod basic_expr {
     fn test() {
@@ -167,17 +166,20 @@ mod method_calls {
 }
 
 mod in_macro {
-    use super::*;
+    macro_rules! internal_macro {
+        () => {
+            let x = 22.;
+        };
+    }
 
     // Should lint in internal macro.
-    #[inline_macros]
     fn internal() {
-        inline!(let x = 22.;);
+        internal_macro!();
     }
 
     // Should NOT lint in external macro.
     fn external() {
-        external!(let x = 22.;);
+        default_numeric_fallback!();
     }
 }
 

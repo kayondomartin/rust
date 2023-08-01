@@ -119,7 +119,7 @@ use foo::*;
 use foo::bar::*;
 
 //- /foo/mod.rs
-pub mod bar;
+mod bar;
 fn Foo() {};
 pub struct Foo {};
 
@@ -132,7 +132,6 @@ pub(crate) struct PubCrateStruct;
             crate
             Foo: t
             PubCrateStruct: t v
-            bar: t
             foo: t
 
             crate::foo
@@ -334,36 +333,6 @@ mod d {
             crate::d
             Y: t v
             foo: t
-        "#]],
-    );
-}
-
-#[test]
-fn glob_name_collision_check_visibility() {
-    check(
-        r#"
-mod event {
-    mod serenity {
-        pub fn Event() {}
-    }
-    use serenity::*;
-
-    pub struct Event {}
-}
-
-use event::Event;
-        "#,
-        expect![[r#"
-            crate
-            Event: t
-            event: t
-
-            crate::event
-            Event: t v
-            serenity: t
-
-            crate::event::serenity
-            Event: v
         "#]],
     );
 }

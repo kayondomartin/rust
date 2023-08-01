@@ -1,4 +1,4 @@
-#![allow(clippy::needless_borrow, clippy::useless_vec)]
+#![allow(clippy::needless_borrow)]
 
 #[deny(clippy::naive_bytecount)]
 fn main() {

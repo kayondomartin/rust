@@ -1,10 +1,5 @@
 ## Items
 
-Items consist of the set of things permitted at the top level of a module.
-However, Rust also allows some items to appear within some other types of
-items, such as within a function. The same formatting conventions apply whether
-an item appears at module level or within another item.
-
 `extern crate` statements must be first in a file. They must be ordered
 alphabetically.
 
@@ -20,8 +15,8 @@ Tools should make the above ordering optional.
 
 ### Function definitions
 
-In Rust, people often find functions by searching for `fn [function-name]`, so
-the formatting of function definitions shold enable this.
+In Rust, one finds functions by searching for `fn [function-name]`; It's
+important that you style your code so that it's very searchable in this way.
 
 The proper ordering and spacing is:
 
@@ -68,9 +63,8 @@ let y = (11, 22, 33);
 
 In the declaration, put each variant on its own line, block indented.
 
-Format each variant accordingly as either a struct (but without the `struct`
-keyword), a tuple struct, or an identifier (which doesn't require special
-formatting):
+Format each variant accordingly as either a struct, tuple struct, or identifier,
+which doesn't require special formatting (but without the `struct` keyword.
 
 ```rust
 enum FooBar {
@@ -145,7 +139,7 @@ union Foo {
 
 Put the whole struct on one line if possible. Types in the parentheses should be
 separated by a comma and space with no trailing comma. No spaces around the
-parentheses or semicolon:
+parentheses or semi-colon:
 
 ```rust
 pub struct Foo(String, u8);
@@ -236,7 +230,7 @@ impl Bar
 
 `extern crate foo;`
 
-Use spaces around keywords, no spaces around the semicolon.
+Use spaces around keywords, no spaces around the semi-colon.
 
 
 ### Modules
@@ -251,7 +245,7 @@ mod foo;
 ```
 
 Use spaces around keywords and before the opening brace, no spaces around the
-semicolon.
+semi-colon.
 
 ### macro\_rules!
 
@@ -484,8 +478,8 @@ foo::{
 A *group* of imports is a set of imports on the same or sequential lines. One or
 more blank lines or other items (e.g., a function) separate groups of imports.
 
-Within a group of imports, imports must be sorted ASCIIbetically (uppercase
-before lowercase). Groups of imports must not be merged or re-ordered.
+Within a group of imports, imports must be sorted ascii-betically. Groups of
+imports must not be merged or re-ordered.
 
 
 E.g., input:
@@ -511,9 +505,13 @@ use b;
 Because of `macro_use`, attributes must also start a new group and prevent
 re-ordering.
 
+Note that tools which only have access to syntax (such as Rustfmt) cannot tell
+which imports are from an external crate or the std lib, etc.
+
+
 #### Ordering list import
 
-Names in a list import must be sorted ASCIIbetically, but with `self` and
+Names in a list import must be sorted ascii-betically, but with `self` and
 `super` first, and groups and glob imports last. This applies recursively. For
 example, `a::*` comes before `b::a` but `a::b` comes before `a::*`. E.g.,
 `use foo::bar::{a, b::c, b::d, b::d::{x, y, z}, b::{self, r, s}};`.

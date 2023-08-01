@@ -71,10 +71,8 @@ fn render(
         }
         None => (name.clone().into(), name.into(), false),
     };
-    let (qualified_name, escaped_qualified_name) = (
-        qualified_name.unescaped().display(ctx.db()).to_string(),
-        qualified_name.display(ctx.db()).to_string(),
-    );
+    let (qualified_name, escaped_qualified_name) =
+        (qualified_name.unescaped().to_string(), qualified_name.to_string());
     let snippet_cap = ctx.snippet_cap();
 
     let mut rendered = match kind {
@@ -86,7 +84,7 @@ fn render(
         }
         _ => RenderedLiteral {
             literal: escaped_qualified_name.clone(),
-            detail: escaped_qualified_name,
+            detail: escaped_qualified_name.clone(),
         },
     };
 
@@ -98,9 +96,9 @@ fn render(
     if !should_add_parens {
         kind = StructKind::Unit;
     }
-    let label = format_literal_label(&qualified_name, kind, snippet_cap);
+    let label = format_literal_label(&qualified_name, kind);
     let lookup = if qualified {
-        format_literal_lookup(&short_qualified_name.display(ctx.db()).to_string(), kind)
+        format_literal_lookup(&short_qualified_name.to_string(), kind)
     } else {
         format_literal_lookup(&qualified_name, kind)
     };
@@ -115,7 +113,7 @@ fn render(
     item.detail(rendered.detail);
 
     match snippet_cap {
-        Some(snippet_cap) => item.insert_snippet(snippet_cap, rendered.literal).trigger_call_info(),
+        Some(snippet_cap) => item.insert_snippet(snippet_cap, rendered.literal),
         None => item.insert_text(rendered.literal),
     };
 

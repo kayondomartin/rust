@@ -23,13 +23,13 @@ mod single_match;
 mod try_err;
 mod wild_in_or_pats;
 
-use clippy_utils::msrvs::{self, Msrv};
 use clippy_utils::source::{snippet_opt, walk_span_to_context};
-use clippy_utils::{higher, in_constant, is_direct_expn_of, is_span_match, tokenize_with_text};
+use clippy_utils::{higher, in_constant, is_span_match, meets_msrv, msrvs};
 use rustc_hir::{Arm, Expr, ExprKind, Local, MatchSource, Pat};
-use rustc_lexer::TokenKind;
+use rustc_lexer::{tokenize, TokenKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::{Span, SpanData, SyntaxContext};
 
@@ -37,11 +37,6 @@ declare_clippy_lint! {
     /// ### What it does
     /// Checks for matches with a single arm where an `if let`
     /// will usually suffice.
-    ///
-    /// This intentionally does not lint if there are comments
-    /// inside of the other arm, so as to allow the user to document
-    /// why having another explicit pattern with an empty body is necessary,
-    /// or because the comments need to be preserved for other reasons.
     ///
     /// ### Why is this bad?
     /// Just readability – `if let` nests less than a `match`.
@@ -564,9 +559,6 @@ declare_clippy_lint! {
     /// ### What it does
     /// Checks for `match` with identical arm bodies.
     ///
-    /// Note: Does not lint on wildcards if the `non_exhaustive_omitted_patterns_lint` feature is
-    /// enabled and disallowed.
-    ///
     /// ### Why is this bad?
     /// This is probably a copy & paste error. If arm bodies
     /// are the same on purpose, you can factor them
@@ -785,7 +777,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for temporaries returned from function calls in a match scrutinee that have the
+    /// Check for temporaries returned from function calls in a match scrutinee that have the
     /// `clippy::has_significant_drop` attribute.
     ///
     /// ### Why is this bad?
@@ -851,7 +843,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of `Err(x)?`.
+    /// Checks for usages of `Err(x)?`.
     ///
     /// ### Why is this bad?
     /// The `?` operator is designed to allow calls that
@@ -886,7 +878,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of `match` which could be implemented using `map`
+    /// Checks for usages of `match` which could be implemented using `map`
     ///
     /// ### Why is this bad?
     /// Using the `map` method is clearer and more concise.
@@ -910,7 +902,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of `match` which could be implemented using `filter`
+    /// Checks for usages of `match` which could be implemented using `filter`
     ///
     /// ### Why is this bad?
     /// Using the `filter` method is clearer and more concise.
@@ -933,18 +925,18 @@ declare_clippy_lint! {
     #[clippy::version = "1.66.0"]
     pub MANUAL_FILTER,
     complexity,
-    "reimplementation of `filter`"
+    "reimplentation of `filter`"
 }
 
 #[derive(Default)]
 pub struct Matches {
-    msrv: Msrv,
+    msrv: Option<RustcVersion>,
     infallible_destructuring_match_linted: bool,
 }
 
 impl Matches {
     #[must_use]
-    pub fn new(msrv: Msrv) -> Self {
+    pub fn new(msrv: Option<RustcVersion>) -> Self {
         Self {
             msrv,
             ..Matches::default()
@@ -982,16 +974,12 @@ impl_lint_pass!(Matches => [
 
 impl<'tcx> LateLintPass<'tcx> for Matches {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
-        if is_direct_expn_of(expr.span, "matches").is_none() && in_external_macro(cx.sess(), expr.span) {
+        if in_external_macro(cx.sess(), expr.span) {
             return;
         }
         let from_expansion = expr.span.from_expansion();
 
         if let ExprKind::Match(ex, arms, source) = expr.kind {
-            if is_direct_expn_of(expr.span, "matches").is_some() {
-                redundant_pattern_match::check_match(cx, expr, ex, arms);
-            }
-
             if source == MatchSource::Normal && !is_span_match(cx, expr.span) {
                 return;
             }
@@ -1012,7 +1000,9 @@ impl<'tcx> LateLintPass<'tcx> for Matches {
 
             if !from_expansion && !contains_cfg_arm(cx, expr, ex, arms) {
                 if source == MatchSource::Normal {
-                    if !(self.msrv.meets(msrvs::MATCHES_MACRO) && match_like_matches::check_match(cx, expr, ex, arms)) {
+                    if !(meets_msrv(self.msrv, msrvs::MATCHES_MACRO)
+                        && match_like_matches::check_match(cx, expr, ex, arms))
+                    {
                         match_same_arms::check(cx, arms);
                     }
 
@@ -1044,7 +1034,7 @@ impl<'tcx> LateLintPass<'tcx> for Matches {
             collapsible_match::check_if_let(cx, if_let.let_pat, if_let.if_then, if_let.if_else);
             if !from_expansion {
                 if let Some(else_expr) = if_let.if_else {
-                    if self.msrv.meets(msrvs::MATCHES_MACRO) {
+                    if meets_msrv(self.msrv, msrvs::MATCHES_MACRO) {
                         match_like_matches::check_if_let(
                             cx,
                             expr,
@@ -1159,7 +1149,12 @@ fn span_contains_cfg(cx: &LateContext<'_>, s: Span) -> bool {
         // Assume true. This would require either an invalid span, or one which crosses file boundaries.
         return true;
     };
-    let mut iter = tokenize_with_text(&snip);
+    let mut pos = 0usize;
+    let mut iter = tokenize(&snip).map(|t| {
+        let start = pos;
+        pos += t.len as usize;
+        (t.kind, start..pos)
+    });
 
     // Search for the token sequence [`#`, `[`, `cfg`]
     while iter.any(|(t, _)| matches!(t, TokenKind::Pound)) {
@@ -1170,7 +1165,7 @@ fn span_contains_cfg(cx: &LateContext<'_>, s: Span) -> bool {
             )
         });
         if matches!(iter.next(), Some((TokenKind::OpenBracket, _)))
-            && matches!(iter.next(), Some((TokenKind::Ident, "cfg")))
+            && matches!(iter.next(), Some((TokenKind::Ident, range)) if &snip[range.clone()] == "cfg")
         {
             return true;
         }

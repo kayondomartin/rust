@@ -217,25 +217,26 @@ impl<'tcx> DumpVisitor<'tcx> {
         let krate_name = self.tcx.crate_name(adt_def.krate).to_string();
         if let Some(struct_map) = self.struct_field_records.get_mut(&krate_name){
             if let Some(fields) = struct_map.get_mut(&LocalDefId{local_def_index: adt_def.index}) {
-                let node_id = self.tcx.def_id_to_node_id(field_hir.owner);
-                if let Some(field) = fields.get_mut(&field_ident) {
-                    if let Some(uses) = field.used_exprs.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()) {
-                        if let Some(exprs) = uses.get_mut(&node_id) {
-                            let old = exprs.insert(field_hir.local_id.as_u32(), if !unboxable {Some(FieldExprAction::DontTouch)} else {None});
-                            if unboxable && old.is_some() && old.as_ref().unwrap().is_some(){
-                                exprs.insert(field_hir.local_id.as_u32(), old.unwrap());
+                if let Some(node_id) = self.tcx.def_id_to_node_id(field_hir.owner) {
+                    if let Some(field) = fields.get_mut(&field_ident) {
+                        if let Some(uses) = field.used_exprs.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()) {
+                            if let Some(exprs) = uses.get_mut(&node_id) {
+                                let old = exprs.insert(field_hir.local_id.as_u32(), if !unboxable {Some(FieldExprAction::DontTouch)} else {None});
+                                if unboxable && old.is_some() && old.as_ref().unwrap().is_some(){
+                                    exprs.insert(field_hir.local_id.as_u32(), old.unwrap());
+                                }
+                            } else {
+                                let mut locals = FxHashMap::default();
+                                locals.insert(field_hir.local_id.as_u32(), if !unboxable {Some(FieldExprAction::DontTouch)} else {None});
+                                uses.insert(node_id, locals);
                             }
                         } else {
+                            let mut uses = FxHashMap::default();
                             let mut locals = FxHashMap::default();
                             locals.insert(field_hir.local_id.as_u32(), if !unboxable {Some(FieldExprAction::DontTouch)} else {None});
                             uses.insert(node_id, locals);
+                            field.used_exprs.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), uses);
                         }
-                    } else {
-                        let mut uses = FxHashMap::default();
-                        let mut locals = FxHashMap::default();
-                        locals.insert(field_hir.local_id.as_u32(), if !unboxable {Some(FieldExprAction::DontTouch)} else {None});
-                        uses.insert(node_id, locals);
-                        field.used_exprs.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), uses);
                     }
                 }
             }
@@ -247,27 +248,28 @@ impl<'tcx> DumpVisitor<'tcx> {
         if let Some(struct_map) = self.struct_field_records.get_mut(&krate_name){
             if let Some(fields) = struct_map.get_mut(&LocalDefId{local_def_index: adt_def.index}) {
                 if let Some(field) = fields.get_mut(&field_ident) {
-                    let node_id = self.tcx.def_id_to_node_id(field_hir.owner);
-                    if !field.needs_boxed && is_special{
-                        field.needs_boxed = true;
-                    }
-                    if let Some(uses) = field.used_exprs.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()) {
-                        if let Some(exprs) = uses.get_mut(&node_id) {
-                            let old = exprs.insert(field_hir.local_id.as_u32(), if is_special {Some(FieldExprAction::NeedsBox)} else {None});
-                            if !is_special && old.is_some() && old.as_ref().unwrap().is_some() {
-                                exprs.insert(field_hir.local_id.as_u32(), old.unwrap());
+                    if let Some(node_id) = self.tcx.def_id_to_node_id(field_hir.owner.to_def_id()) {
+                        if !field.needs_boxed && is_special{
+                            field.needs_boxed = true;
+                        }
+                        if let Some(uses) = field.used_exprs.get_mut(&self.tcx.crate_name(LOCAL_CRATE).to_string()) {
+                            if let Some(exprs) = uses.get_mut(&node_id) {
+                                let old = exprs.insert(field_hir.local_id.as_u32(), if is_special {Some(FieldExprAction::NeedsBox)} else {None});
+                                if !is_special && old.is_some() && old.as_ref().unwrap().is_some() {
+                                    exprs.insert(field_hir.local_id.as_u32(), old.unwrap());
+                                }
+                            } else {
+                                let mut locals = FxHashMap::default();
+                                locals.insert(field_hir.local_id.as_u32(), if is_special {Some(FieldExprAction::NeedsBox)} else {None});
+                                uses.insert(node_id, locals);
                             }
                         } else {
+                            let mut uses = FxHashMap::default();
                             let mut locals = FxHashMap::default();
                             locals.insert(field_hir.local_id.as_u32(), if is_special {Some(FieldExprAction::NeedsBox)} else {None});
                             uses.insert(node_id, locals);
+                            field.used_exprs.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), uses);
                         }
-                    } else {
-                        let mut uses = FxHashMap::default();
-                        let mut locals = FxHashMap::default();
-                        locals.insert(field_hir.local_id.as_u32(), if is_special {Some(FieldExprAction::NeedsBox)} else {None});
-                        uses.insert(node_id, locals);
-                        field.used_exprs.insert(self.tcx.crate_name(LOCAL_CRATE).to_string(), uses);
                     }
                 }
             }

@@ -1,12 +1,10 @@
 use hir::Semantics;
 use ide_db::{
-    base_db::{FileId, FilePosition, FileRange},
+    base_db::{FileId, FilePosition},
     defs::{Definition, IdentClass},
     helpers::pick_best_token,
     search::{FileReference, ReferenceCategory, SearchScope},
-    syntax_helpers::node_ext::{
-        for_each_break_and_continue_expr, for_each_tail_expr, full_path_of_name_ref, walk_expr,
-    },
+    syntax_helpers::node_ext::{for_each_break_and_continue_expr, for_each_tail_expr, walk_expr},
     FxHashSet, RootDatabase,
 };
 use syntax::{
@@ -16,7 +14,7 @@ use syntax::{
     SyntaxNode, SyntaxToken, TextRange, T,
 };
 
-use crate::{navigation_target::ToNav, references, NavigationTarget, TryToNav};
+use crate::{references, NavigationTarget, TryToNav};
 
 #[derive(PartialEq, Eq, Hash)]
 pub struct HighlightedRange {
@@ -32,7 +30,6 @@ pub struct HighlightRelatedConfig {
     pub references: bool,
     pub exit_points: bool,
     pub break_points: bool,
-    pub closure_captures: bool,
     pub yield_points: bool,
 }
 
@@ -41,13 +38,11 @@ pub struct HighlightRelatedConfig {
 // Highlights constructs related to the thing under the cursor:
 //
 // . if on an identifier, highlights all references to that identifier in the current file
-// .. additionally, if the identifier is a trait in a where clause, type parameter trait bound or use item, highlights all references to that trait's assoc items in the corresponding scope
 // . if on an `async` or `await token, highlights all yield points for that async context
 // . if on a `return` or `fn` keyword, `?` character or `->` return type arrow, highlights all exit points for that context
 // . if on a `break`, `loop`, `while` or `for` token, highlights all break points for that loop or block context
-// . if on a `move` or `|` token that belongs to a closure, highlights all captures of the closure.
 //
-// Note: `?`, `|` and `->` do not currently trigger this behavior in the VSCode editor.
+// Note: `?` and `->` do not currently trigger this behavior in the VSCode editor.
 pub(crate) fn highlight_related(
     sema: &Semantics<'_, RootDatabase>,
     config: HighlightRelatedConfig,
@@ -58,13 +53,11 @@ pub(crate) fn highlight_related(
 
     let token = pick_best_token(syntax.token_at_offset(offset), |kind| match kind {
         T![?] => 4, // prefer `?` when the cursor is sandwiched like in `await$0?`
-        T![->] => 4,
-        kind if kind.is_keyword() => 3,
-        IDENT | INT_NUMBER => 2,
-        T![|] => 1,
+        T![->] => 3,
+        kind if kind.is_keyword() => 2,
+        IDENT | INT_NUMBER => 1,
         _ => 0,
     })?;
-    // most if not all of these should be re-implemented with information seeded from hir
     match token.kind() {
         T![?] if config.exit_points && token.parent().and_then(ast::TryExpr::cast).is_some() => {
             highlight_exit_points(sema, token)
@@ -77,55 +70,9 @@ pub(crate) fn highlight_related(
         T![break] | T![loop] | T![while] | T![continue] if config.break_points => {
             highlight_break_points(token)
         }
-        T![|] if config.closure_captures => highlight_closure_captures(sema, token, file_id),
-        T![move] if config.closure_captures => highlight_closure_captures(sema, token, file_id),
         _ if config.references => highlight_references(sema, &syntax, token, file_id),
         _ => None,
     }
-}
-
-fn highlight_closure_captures(
-    sema: &Semantics<'_, RootDatabase>,
-    token: SyntaxToken,
-    file_id: FileId,
-) -> Option<Vec<HighlightedRange>> {
-    let closure = token.parent_ancestors().take(2).find_map(ast::ClosureExpr::cast)?;
-    let search_range = closure.body()?.syntax().text_range();
-    let ty = &sema.type_of_expr(&closure.into())?.original;
-    let c = ty.as_closure()?;
-    Some(
-        c.captured_items(sema.db)
-            .into_iter()
-            .map(|capture| capture.local())
-            .flat_map(|local| {
-                let usages = Definition::Local(local)
-                    .usages(sema)
-                    .set_scope(Some(SearchScope::file_range(FileRange {
-                        file_id,
-                        range: search_range,
-                    })))
-                    .include_self_refs()
-                    .all()
-                    .references
-                    .remove(&file_id)
-                    .into_iter()
-                    .flatten()
-                    .map(|FileReference { category, range, .. }| HighlightedRange {
-                        range,
-                        category,
-                    });
-                let category = local.is_mut(sema.db).then_some(ReferenceCategory::Write);
-                local
-                    .sources(sema.db)
-                    .into_iter()
-                    .map(|x| x.to_nav(sema.db))
-                    .filter(|decl| decl.file_id == file_id)
-                    .filter_map(|decl| decl.focus_range)
-                    .map(move |range| HighlightedRange { range, category })
-                    .chain(usages)
-            })
-            .collect(),
-    )
 }
 
 fn highlight_references(
@@ -134,7 +81,7 @@ fn highlight_references(
     token: SyntaxToken,
     file_id: FileId,
 ) -> Option<Vec<HighlightedRange>> {
-    let defs = find_defs(sema, token.clone());
+    let defs = find_defs(sema, token);
     let usages = defs
         .iter()
         .filter_map(|&d| {
@@ -146,94 +93,37 @@ fn highlight_references(
                 .remove(&file_id)
         })
         .flatten()
-        .map(|FileReference { category, range, .. }| HighlightedRange { range, category });
+        .map(|FileReference { category: access, range, .. }| HighlightedRange {
+            range,
+            category: access,
+        });
     let mut res = FxHashSet::default();
-    for &def in &defs {
-        // highlight trait usages
-        if let Definition::Trait(t) = def {
-            let trait_item_use_scope = (|| {
-                let name_ref = token.parent().and_then(ast::NameRef::cast)?;
-                let path = full_path_of_name_ref(&name_ref)?;
-                let parent = path.syntax().parent()?;
-                match_ast! {
-                    match parent {
-                        ast::UseTree(it) => it.syntax().ancestors().find(|it| {
-                            ast::SourceFile::can_cast(it.kind()) || ast::Module::can_cast(it.kind())
-                        }),
-                        ast::PathType(it) => it
-                            .syntax()
-                            .ancestors()
-                            .nth(2)
-                            .and_then(ast::TypeBoundList::cast)?
-                            .syntax()
-                            .parent()
-                            .filter(|it| ast::WhereClause::can_cast(it.kind()) || ast::TypeParam::can_cast(it.kind()))?
-                            .ancestors()
-                            .find(|it| {
-                                ast::Item::can_cast(it.kind())
-                            }),
-                        _ => None,
-                    }
-                }
-            })();
-            if let Some(trait_item_use_scope) = trait_item_use_scope {
-                res.extend(
-                    t.items_with_supertraits(sema.db)
-                        .into_iter()
-                        .filter_map(|item| {
-                            Definition::from(item)
-                                .usages(sema)
-                                .set_scope(Some(SearchScope::file_range(FileRange {
-                                    file_id,
-                                    range: trait_item_use_scope.text_range(),
-                                })))
-                                .include_self_refs()
-                                .all()
-                                .references
-                                .remove(&file_id)
-                        })
-                        .flatten()
-                        .map(|FileReference { category, range, .. }| HighlightedRange {
-                            range,
-                            category,
-                        }),
-                );
-            }
-        }
 
-        // highlight the defs themselves
+    let mut def_to_hl_range = |def| {
+        let hl_range = match def {
+            Definition::Module(module) => {
+                Some(NavigationTarget::from_module_to_decl(sema.db, module))
+            }
+            def => def.try_to_nav(sema.db),
+        }
+        .filter(|decl| decl.file_id == file_id)
+        .and_then(|decl| decl.focus_range)
+        .map(|range| {
+            let category =
+                references::decl_mutability(&def, node, range).then(|| ReferenceCategory::Write);
+            HighlightedRange { range, category }
+        });
+        if let Some(hl_range) = hl_range {
+            res.insert(hl_range);
+        }
+    };
+    for &def in &defs {
         match def {
-            Definition::Local(local) => {
-                let category = local.is_mut(sema.db).then_some(ReferenceCategory::Write);
-                local
-                    .sources(sema.db)
-                    .into_iter()
-                    .map(|x| x.to_nav(sema.db))
-                    .filter(|decl| decl.file_id == file_id)
-                    .filter_map(|decl| decl.focus_range)
-                    .map(|range| HighlightedRange { range, category })
-                    .for_each(|x| {
-                        res.insert(x);
-                    });
-            }
-            def => {
-                let hl_range = match def {
-                    Definition::Module(module) => {
-                        Some(NavigationTarget::from_module_to_decl(sema.db, module))
-                    }
-                    def => def.try_to_nav(sema.db),
-                }
-                .filter(|decl| decl.file_id == file_id)
-                .and_then(|decl| decl.focus_range)
-                .map(|range| {
-                    let category = references::decl_mutability(&def, node, range)
-                        .then_some(ReferenceCategory::Write);
-                    HighlightedRange { range, category }
-                });
-                if let Some(hl_range) = hl_range {
-                    res.insert(hl_range);
-                }
-            }
+            Definition::Local(local) => local
+                .associated_locals(sema.db)
+                .iter()
+                .for_each(|&local| def_to_hl_range(Definition::Local(local))),
+            def => def_to_hl_range(def),
         }
     }
 
@@ -251,16 +141,9 @@ fn highlight_exit_points(
 ) -> Option<Vec<HighlightedRange>> {
     fn hl(
         sema: &Semantics<'_, RootDatabase>,
-        def_ranges: [Option<TextRange>; 2],
         body: Option<ast::Expr>,
     ) -> Option<Vec<HighlightedRange>> {
         let mut highlights = Vec::new();
-        highlights.extend(
-            def_ranges
-                .into_iter()
-                .flatten()
-                .map(|range| HighlightedRange { category: None, range }),
-        );
         let body = body?;
         walk_expr(&body, &mut |expr| match expr {
             ast::Expr::ReturnExpr(expr) => {
@@ -304,21 +187,10 @@ fn highlight_exit_points(
     for anc in token.parent_ancestors() {
         return match_ast! {
             match anc {
-                ast::Fn(fn_) => hl(sema, [fn_.fn_token().map(|it| it.text_range()), None], fn_.body().map(ast::Expr::BlockExpr)),
-                ast::ClosureExpr(closure) => hl(
-                    sema,
-                    closure.param_list().map_or([None; 2], |p| [p.l_paren_token().map(|it| it.text_range()), p.r_paren_token().map(|it| it.text_range())]),
-                    closure.body()
-                ),
+                ast::Fn(fn_) => hl(sema, fn_.body().map(ast::Expr::BlockExpr)),
+                ast::ClosureExpr(closure) => hl(sema, closure.body()),
                 ast::BlockExpr(block_expr) => if matches!(block_expr.modifier(), Some(ast::BlockModifier::Async(_) | ast::BlockModifier::Try(_)| ast::BlockModifier::Const(_))) {
-                    hl(
-                        sema,
-                        [block_expr.modifier().and_then(|modifier| match modifier {
-                            ast::BlockModifier::Async(t) | ast::BlockModifier::Try(t) | ast::BlockModifier::Const(t) => Some(t.text_range()),
-                            _ => None,
-                        }), None],
-                        Some(block_expr.into())
-                    )
+                    hl(sema, Some(block_expr.into()))
                 } else {
                     continue;
                 },
@@ -473,17 +345,16 @@ mod tests {
 
     use super::*;
 
-    const ENABLED_CONFIG: HighlightRelatedConfig = HighlightRelatedConfig {
-        break_points: true,
-        exit_points: true,
-        references: true,
-        closure_captures: true,
-        yield_points: true,
-    };
-
     #[track_caller]
     fn check(ra_fixture: &str) {
-        check_with_config(ra_fixture, ENABLED_CONFIG);
+        let config = HighlightRelatedConfig {
+            break_points: true,
+            exit_points: true,
+            references: true,
+            yield_points: true,
+        };
+
+        check_with_config(ra_fixture, config);
     }
 
     #[track_caller]
@@ -494,7 +365,7 @@ mod tests {
 
         let mut expected = annotations
             .into_iter()
-            .map(|(r, access)| (r.range, (!access.is_empty()).then_some(access)))
+            .map(|(r, access)| (r.range, (!access.is_empty()).then(|| access)))
             .collect::<Vec<_>>();
 
         let mut actual = hls
@@ -693,29 +564,6 @@ pub async$0 fn foo() {
     }
 
     #[test]
-    fn test_hl_let_else_yield_points() {
-        check(
-            r#"
-pub async fn foo() {
- // ^^^^^
-    let x = foo()
-        .await$0
-      // ^^^^^
-        .await;
-      // ^^^^^
-    || { 0.await };
-    let Some(_) = None else {
-        foo().await
-           // ^^^^^
-    };
-    (async { 0.await }).await
-                     // ^^^^^
-}
-"#,
-        );
-    }
-
-    #[test]
     fn test_hl_yield_nested_fn() {
         check(
             r#"
@@ -755,8 +603,7 @@ async fn foo() {
     fn test_hl_exit_points() {
         check(
             r#"
-  fn foo() -> u32 {
-//^^
+fn foo() -> u32 {
     if true {
         return$0 0;
      // ^^^^^^
@@ -775,8 +622,7 @@ async fn foo() {
     fn test_hl_exit_points2() {
         check(
             r#"
-  fn foo() ->$0 u32 {
-//^^
+fn foo() ->$0 u32 {
     if true {
         return 0;
      // ^^^^^^
@@ -795,32 +641,11 @@ async fn foo() {
     fn test_hl_exit_points3() {
         check(
             r#"
-  fn$0 foo() -> u32 {
-//^^
+fn$0 foo() -> u32 {
     if true {
         return 0;
      // ^^^^^^
     }
-
-    0?;
-  // ^
-    0xDEAD_BEEF
- // ^^^^^^^^^^^
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn test_hl_let_else_exit_points() {
-        check(
-            r#"
-  fn$0 foo() -> u32 {
-//^^
-    let Some(bar) = None else {
-        return 0;
-     // ^^^^^^
-    };
 
     0?;
   // ^
@@ -862,8 +687,7 @@ macro_rules! never {
     () => { never() }
 }
 fn never() -> ! { loop {} }
-  fn foo() ->$0 u32 {
-//^^
+fn foo() ->$0 u32 {
     never();
  // ^^^^^^^
     never!();
@@ -883,8 +707,7 @@ fn never() -> ! { loop {} }
     fn test_hl_inner_tail_exit_points() {
         check(
             r#"
-  fn foo() ->$0 u32 {
-//^^
+fn foo() ->$0 u32 {
     if true {
         unsafe {
             return 5;
@@ -925,8 +748,7 @@ fn never() -> ! { loop {} }
     fn test_hl_inner_tail_exit_points_labeled_block() {
         check(
             r#"
-  fn foo() ->$0 u32 {
-//^^
+fn foo() ->$0 u32 {
     'foo: {
         break 'foo 0;
      // ^^^^^
@@ -937,24 +759,6 @@ fn never() -> ! { loop {} }
         }
         0
      // ^
-    }
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn test_hl_inner_tail_exit_points_loops() {
-        check(
-            r#"
-  fn foo() ->$0 u32 {
-//^^
-    'foo: while { return 0; true } {
-               // ^^^^^^
-        break 'foo 0;
-     // ^^^^^
-        return 0;
-     // ^^^^^^
     }
 }
 "#,
@@ -1258,7 +1062,12 @@ fn function(field: u32) {
 
     #[test]
     fn test_hl_disabled_ref_local() {
-        let config = HighlightRelatedConfig { references: false, ..ENABLED_CONFIG };
+        let config = HighlightRelatedConfig {
+            references: false,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+        };
 
         check_with_config(
             r#"
@@ -1273,7 +1082,12 @@ fn foo() {
 
     #[test]
     fn test_hl_disabled_ref_local_preserved_break() {
-        let config = HighlightRelatedConfig { references: false, ..ENABLED_CONFIG };
+        let config = HighlightRelatedConfig {
+            references: false,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+        };
 
         check_with_config(
             r#"
@@ -1308,7 +1122,12 @@ fn foo() {
 
     #[test]
     fn test_hl_disabled_ref_local_preserved_yield() {
-        let config = HighlightRelatedConfig { references: false, ..ENABLED_CONFIG };
+        let config = HighlightRelatedConfig {
+            references: false,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+        };
 
         check_with_config(
             r#"
@@ -1339,7 +1158,12 @@ async fn foo() {
 
     #[test]
     fn test_hl_disabled_ref_local_preserved_exit() {
-        let config = HighlightRelatedConfig { references: false, ..ENABLED_CONFIG };
+        let config = HighlightRelatedConfig {
+            references: false,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+        };
 
         check_with_config(
             r#"
@@ -1359,8 +1183,7 @@ fn foo() -> i32 {
 
         check_with_config(
             r#"
-  fn foo() ->$0 i32 {
-//^^
+fn foo() ->$0 i32 {
     let x = 5;
     let y = x * 2;
 
@@ -1378,7 +1201,12 @@ fn foo() -> i32 {
 
     #[test]
     fn test_hl_disabled_break() {
-        let config = HighlightRelatedConfig { break_points: false, ..ENABLED_CONFIG };
+        let config = HighlightRelatedConfig {
+            references: true,
+            break_points: false,
+            exit_points: true,
+            yield_points: true,
+        };
 
         check_with_config(
             r#"
@@ -1394,7 +1222,12 @@ fn foo() {
 
     #[test]
     fn test_hl_disabled_yield() {
-        let config = HighlightRelatedConfig { yield_points: false, ..ENABLED_CONFIG };
+        let config = HighlightRelatedConfig {
+            references: true,
+            break_points: true,
+            exit_points: true,
+            yield_points: false,
+        };
 
         check_with_config(
             r#"
@@ -1408,7 +1241,12 @@ async$0 fn foo() {
 
     #[test]
     fn test_hl_disabled_exit() {
-        let config = HighlightRelatedConfig { exit_points: false, ..ENABLED_CONFIG };
+        let config = HighlightRelatedConfig {
+            references: true,
+            break_points: true,
+            exit_points: false,
+            yield_points: true,
+        };
 
         check_with_config(
             r#"
@@ -1501,6 +1339,7 @@ fn main() {
             r#"
 trait Trait {
     fn func(self) {}
+     //^^^^
 }
 
 impl Trait for () {
@@ -1520,6 +1359,7 @@ fn main() {
             r#"
 trait Trait {
     fn func(self) {}
+     //^^^^
 }
 
 impl Trait for () {
@@ -1548,75 +1388,6 @@ trait Trait {
 impl Trait for () {
     type Output$0 = ();
       // ^^^^^^
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn test_closure_capture_pipe() {
-        check(
-            r#"
-fn f() {
-    let x = 1;
-    //  ^
-    let c = $0|y| x + y;
-    //          ^ read
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn test_closure_capture_move() {
-        check(
-            r#"
-fn f() {
-    let x = 1;
-    //  ^
-    let c = move$0 |y| x + y;
-    //               ^ read
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn test_trait_highlights_assoc_item_uses() {
-        check(
-            r#"
-trait Foo {
-    //^^^
-    type T;
-    const C: usize;
-    fn f() {}
-    fn m(&self) {}
-}
-impl Foo for i32 {
-   //^^^
-    type T = i32;
-    const C: usize = 0;
-    fn f() {}
-    fn m(&self) {}
-}
-fn f<T: Foo$0>(t: T) {
-      //^^^
-    let _: T::T;
-            //^
-    t.m();
-    //^
-    T::C;
-     //^
-    T::f();
-     //^
-}
-
-fn f2<T: Foo>(t: T) {
-       //^^^
-    let _: T::T;
-    t.m();
-    T::C;
-    T::f();
 }
 "#,
         );

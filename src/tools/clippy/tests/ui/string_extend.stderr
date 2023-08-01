@@ -18,11 +18,5 @@ error: calling `.extend(_.chars())`
 LL |     s.extend(def.chars());
    |     ^^^^^^^^^^^^^^^^^^^^^ help: try this: `s.push_str(&def)`
 
-error: calling `.extend(_.chars())`
-  --> $DIR/string_extend.rs:34:5
-   |
-LL |     s.extend(abc[0..2].chars());
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try this: `s.push_str(&abc[0..2])`
-
-error: aborting due to 4 previous errors
+error: aborting due to 3 previous errors
 

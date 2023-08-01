@@ -12,8 +12,6 @@ pub fn dylib_path_var() -> &'static str {
         "DYLD_LIBRARY_PATH"
     } else if cfg!(target_os = "haiku") {
         "LIBRARY_PATH"
-    } else if cfg!(target_os = "aix") {
-        "LIBPATH"
     } else {
         "LD_LIBRARY_PATH"
     }

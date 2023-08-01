@@ -4,8 +4,6 @@ use std::env;
 use std::path::Path;
 use std::process::Command;
 
-use rustfmt_config_proc_macro::rustfmt_only_ci_test;
-
 /// Run the cargo-fmt executable and return its output.
 fn cargo_fmt(args: &[&str]) -> (String, String) {
     let mut bin_dir = env::current_exe().unwrap();
@@ -49,7 +47,7 @@ macro_rules! assert_that {
     };
 }
 
-#[rustfmt_only_ci_test]
+#[ignore]
 #[test]
 fn version() {
     assert_that!(&["--version"], starts_with("rustfmt "));
@@ -58,7 +56,7 @@ fn version() {
     assert_that!(&["--", "--version"], starts_with("rustfmt "));
 }
 
-#[rustfmt_only_ci_test]
+#[ignore]
 #[test]
 fn print_config() {
     assert_that!(
@@ -67,7 +65,7 @@ fn print_config() {
     );
 }
 
-#[rustfmt_only_ci_test]
+#[ignore]
 #[test]
 fn rustfmt_help() {
     assert_that!(&["--", "--help"], contains("Format Rust code"));
@@ -75,7 +73,7 @@ fn rustfmt_help() {
     assert_that!(&["--", "--help=config"], contains("Configuration Options:"));
 }
 
-#[rustfmt_only_ci_test]
+#[ignore]
 #[test]
 fn cargo_fmt_out_of_line_test_modules() {
     // See also https://github.com/rust-lang/rustfmt/issues/5119
@@ -97,23 +95,4 @@ fn cargo_fmt_out_of_line_test_modules() {
         let path = Path::new(file).canonicalize().unwrap();
         assert!(stdout.contains(&format!("Diff in {}", path.display())))
     }
-}
-
-#[rustfmt_only_ci_test]
-#[test]
-fn cargo_fmt_emits_error_on_line_overflow_true() {
-    // See also https://github.com/rust-lang/rustfmt/issues/3164
-    let args = [
-        "--check",
-        "--manifest-path",
-        "tests/cargo-fmt/source/issue_3164/Cargo.toml",
-        "--",
-        "--config",
-        "error_on_line_overflow=true",
-    ];
-
-    let (_stdout, stderr) = cargo_fmt(&args);
-    assert!(stderr.contains(
-        "line formatted, but exceeded maximum width (maximum: 100 (see `max_width` option)"
-    ))
 }

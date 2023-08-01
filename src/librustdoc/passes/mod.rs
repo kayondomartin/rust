@@ -2,16 +2,18 @@
 //! process.
 
 use rustc_middle::ty::TyCtxt;
-use rustc_resolve::rustdoc::DocFragmentKind;
 use rustc_span::{InnerSpan, Span, DUMMY_SP};
 use std::ops::Range;
 
 use self::Condition::*;
-use crate::clean;
+use crate::clean::{self, DocFragmentKind};
 use crate::core::DocContext;
 
 mod stripper;
 pub(crate) use stripper::*;
+
+mod bare_urls;
+pub(crate) use self::bare_urls::CHECK_BARE_URLS;
 
 mod strip_hidden;
 pub(crate) use self::strip_hidden::STRIP_HIDDEN;
@@ -34,11 +36,14 @@ pub(crate) use self::check_doc_test_visibility::CHECK_DOC_TEST_VISIBILITY;
 mod collect_trait_impls;
 pub(crate) use self::collect_trait_impls::COLLECT_TRAIT_IMPLS;
 
+mod check_code_block_syntax;
+pub(crate) use self::check_code_block_syntax::CHECK_CODE_BLOCK_SYNTAX;
+
 mod calculate_doc_coverage;
 pub(crate) use self::calculate_doc_coverage::CALCULATE_DOC_COVERAGE;
 
-mod lint;
-pub(crate) use self::lint::RUN_LINTS;
+mod html_tags;
+pub(crate) use self::html_tags::CHECK_INVALID_HTML_TAGS;
 
 /// A single pass over the cleaned documentation.
 ///
@@ -77,9 +82,11 @@ pub(crate) const PASSES: &[Pass] = &[
     STRIP_PRIV_IMPORTS,
     PROPAGATE_DOC_CFG,
     COLLECT_INTRA_DOC_LINKS,
+    CHECK_CODE_BLOCK_SYNTAX,
     COLLECT_TRAIT_IMPLS,
     CALCULATE_DOC_COVERAGE,
-    RUN_LINTS,
+    CHECK_INVALID_HTML_TAGS,
+    CHECK_BARE_URLS,
 ];
 
 /// The list of passes run by default.
@@ -90,8 +97,10 @@ pub(crate) const DEFAULT_PASSES: &[ConditionalPass] = &[
     ConditionalPass::new(STRIP_PRIVATE, WhenNotDocumentPrivate),
     ConditionalPass::new(STRIP_PRIV_IMPORTS, WhenDocumentPrivate),
     ConditionalPass::always(COLLECT_INTRA_DOC_LINKS),
+    ConditionalPass::always(CHECK_CODE_BLOCK_SYNTAX),
+    ConditionalPass::always(CHECK_INVALID_HTML_TAGS),
     ConditionalPass::always(PROPAGATE_DOC_CFG),
-    ConditionalPass::always(RUN_LINTS),
+    ConditionalPass::always(CHECK_BARE_URLS),
 ];
 
 /// The list of default passes run when `--doc-coverage` is passed to rustdoc.

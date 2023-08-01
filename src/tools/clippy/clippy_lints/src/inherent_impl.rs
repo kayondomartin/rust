@@ -52,22 +52,23 @@ impl<'tcx> LateLintPass<'tcx> for MultipleInherentImpl {
         // List of spans to lint. (lint_span, first_span)
         let mut lint_spans = Vec::new();
 
-        let inherent_impls = cx
+        for (_, impl_ids) in cx
             .tcx
-            .with_stable_hashing_context(|hcx| cx.tcx.crate_inherent_impls(()).inherent_impls.to_sorted(&hcx, true));
-
-        for (_, impl_ids) in inherent_impls.into_iter().filter(|(&id, impls)| {
-            impls.len() > 1
-            // Check for `#[allow]` on the type definition
-            && !is_lint_allowed(
-                cx,
-                MULTIPLE_INHERENT_IMPL,
-                cx.tcx.hir().local_def_id_to_hir_id(id),
-            )
-        }) {
+            .crate_inherent_impls(())
+            .inherent_impls
+            .iter()
+            .filter(|(&id, impls)| {
+                impls.len() > 1
+                    // Check for `#[allow]` on the type definition
+                    && !is_lint_allowed(
+                        cx,
+                        MULTIPLE_INHERENT_IMPL,
+                        cx.tcx.hir().local_def_id_to_hir_id(id),
+                    )
+            })
+        {
             for impl_id in impl_ids.iter().map(|id| id.expect_local()) {
-                let impl_ty = cx.tcx.type_of(impl_id).subst_identity();
-                match type_map.entry(impl_ty) {
+                match type_map.entry(cx.tcx.type_of(impl_id)) {
                     Entry::Vacant(e) => {
                         // Store the id for the first impl block of this type. The span is retrieved lazily.
                         e.insert(IdOrSpan::Id(impl_id));

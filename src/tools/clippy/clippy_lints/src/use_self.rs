@@ -1,7 +1,6 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::is_from_proc_macro;
-use clippy_utils::msrvs::{self, Msrv};
 use clippy_utils::ty::same_type_and_consts;
+use clippy_utils::{is_from_proc_macro, meets_msrv, msrvs};
 use if_chain::if_chain;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
@@ -10,11 +9,12 @@ use rustc_hir::{
     def::{CtorOf, DefKind, Res},
     def_id::LocalDefId,
     intravisit::{walk_inf, walk_ty, Visitor},
-    Expr, ExprKind, FnRetTy, FnSig, GenericArg, GenericArgsParentheses, GenericParam, GenericParamKind, HirId, Impl,
-    ImplItemKind, Item, ItemKind, Pat, PatKind, Path, QPath, Ty, TyKind,
+    Expr, ExprKind, FnRetTy, FnSig, GenericArg, HirId, Impl, ImplItemKind, Item, ItemKind, Pat, PatKind, Path, QPath,
+    TyKind,
 };
 use rustc_hir_analysis::hir_ty_to_ty;
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::Span;
 
@@ -30,6 +30,7 @@ declare_clippy_lint! {
     ///
     /// ### Known problems
     /// - Unaddressed false negative in fn bodies of trait implementations
+    /// - False positive with associated types in traits (#4140)
     ///
     /// ### Example
     /// ```rust
@@ -57,13 +58,13 @@ declare_clippy_lint! {
 
 #[derive(Default)]
 pub struct UseSelf {
-    msrv: Msrv,
+    msrv: Option<RustcVersion>,
     stack: Vec<StackItem>,
 }
 
 impl UseSelf {
     #[must_use]
-    pub fn new(msrv: Msrv) -> Self {
+    pub fn new(msrv: Option<RustcVersion>) -> Self {
         Self {
             msrv,
             ..Self::default()
@@ -96,27 +97,18 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
         // avoid linting on nested items, we push `StackItem::NoCheck` on the stack to signal, that
         // we're in an `impl` or nested item, that we don't want to lint
         let stack_item = if_chain! {
-            if let ItemKind::Impl(Impl { self_ty, generics,.. }) = item.kind;
+            if let ItemKind::Impl(Impl { self_ty, .. }) = item.kind;
             if let TyKind::Path(QPath::Resolved(_, item_path)) = self_ty.kind;
             let parameters = &item_path.segments.last().expect(SEGMENTS_MSG).args;
             if parameters.as_ref().map_or(true, |params| {
-                params.parenthesized  == GenericArgsParentheses::No
-                    && !params.args.iter().any(|arg| matches!(arg, GenericArg::Lifetime(_)))
+                !params.parenthesized && !params.args.iter().any(|arg| matches!(arg, GenericArg::Lifetime(_)))
             });
-            if !item.span.from_expansion();
             if !is_from_proc_macro(cx, item); // expensive, should be last check
             then {
-                // Self cannot be used inside const generic parameters
-                let types_to_skip = generics.params.iter().filter_map(|param| {
-                    match param {
-                        GenericParam { kind: GenericParamKind::Const { ty: Ty { hir_id, ..}, ..}, ..} => Some(*hir_id),
-                        _ => None,
-                    }
-                }).chain(std::iter::once(self_ty.hir_id)).collect();
                 StackItem::Check {
                     impl_id: item.owner_id.def_id,
                     in_body: 0,
-                    types_to_skip,
+                    types_to_skip: std::iter::once(self_ty.hir_id).collect(),
                 }
             } else {
                 StackItem::NoCheck
@@ -145,7 +137,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
             then {
                 // `self_ty` is the semantic self type of `impl <trait> for <type>`. This cannot be
                 // `Self`.
-                let self_ty = impl_trait_ref.subst_identity().self_ty();
+                let self_ty = impl_trait_ref.self_ty();
 
                 // `trait_method_sig` is the signature of the function, how it is declared in the
                 // trait, not in the impl of the trait.
@@ -154,7 +146,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
                     .associated_item(impl_item.owner_id)
                     .trait_item_def_id
                     .expect("impl method matches a trait method");
-                let trait_method_sig = cx.tcx.fn_sig(trait_method).subst_identity();
+                let trait_method_sig = cx.tcx.fn_sig(trait_method);
                 let trait_method_sig = cx.tcx.erase_late_bound_regions(trait_method_sig);
 
                 // `impl_inputs_outputs` is an iterator over the types (`hir::Ty`) declared in the
@@ -207,7 +199,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
     fn check_ty(&mut self, cx: &LateContext<'_>, hir_ty: &hir::Ty<'_>) {
         if_chain! {
             if !hir_ty.span.from_expansion();
-            if self.msrv.meets(msrvs::TYPE_ALIAS_ENUM_VARIANTS);
+            if meets_msrv(self.msrv, msrvs::TYPE_ALIAS_ENUM_VARIANTS);
             if let Some(&StackItem::Check {
                 impl_id,
                 in_body,
@@ -226,7 +218,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
             } else {
                 hir_ty_to_ty(cx.tcx, hir_ty)
             };
-            if same_type_and_consts(ty, cx.tcx.type_of(impl_id).subst_identity());
+            if same_type_and_consts(ty, cx.tcx.type_of(impl_id));
             then {
                 span_lint(cx, hir_ty.span);
             }
@@ -236,19 +228,30 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
     fn check_expr(&mut self, cx: &LateContext<'_>, expr: &Expr<'_>) {
         if_chain! {
             if !expr.span.from_expansion();
-            if self.msrv.meets(msrvs::TYPE_ALIAS_ENUM_VARIANTS);
+            if meets_msrv(self.msrv, msrvs::TYPE_ALIAS_ENUM_VARIANTS);
             if let Some(&StackItem::Check { impl_id, .. }) = self.stack.last();
-            if cx.typeck_results().expr_ty(expr) == cx.tcx.type_of(impl_id).subst_identity();
+            if cx.typeck_results().expr_ty(expr) == cx.tcx.type_of(impl_id);
             then {} else { return; }
         }
         match expr.kind {
-            ExprKind::Struct(QPath::Resolved(_, path), ..) => check_path(cx, path),
+            ExprKind::Struct(QPath::Resolved(_, path), ..) => match path.res {
+                Res::SelfTyParam { .. } | Res::SelfTyAlias { .. } => (),
+                Res::Def(DefKind::Variant, _) => lint_path_to_variant(cx, path),
+                _ => span_lint(cx, path.span),
+            },
+            // tuple struct instantiation (`Foo(arg)` or `Enum::Foo(arg)`)
             ExprKind::Call(fun, _) => {
                 if let ExprKind::Path(QPath::Resolved(_, path)) = fun.kind {
-                    check_path(cx, path);
+                    if let Res::Def(DefKind::Ctor(ctor_of, _), ..) = path.res {
+                        match ctor_of {
+                            CtorOf::Variant => lint_path_to_variant(cx, path),
+                            CtorOf::Struct => span_lint(cx, path.span),
+                        }
+                    }
                 }
             },
-            ExprKind::Path(QPath::Resolved(_, path)) => check_path(cx, path),
+            // unit enum variants (`Enum::A`)
+            ExprKind::Path(QPath::Resolved(_, path)) => lint_path_to_variant(cx, path),
             _ => (),
         }
     }
@@ -256,15 +259,23 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
     fn check_pat(&mut self, cx: &LateContext<'_>, pat: &Pat<'_>) {
         if_chain! {
             if !pat.span.from_expansion();
-            if self.msrv.meets(msrvs::TYPE_ALIAS_ENUM_VARIANTS);
+            if meets_msrv(self.msrv, msrvs::TYPE_ALIAS_ENUM_VARIANTS);
             if let Some(&StackItem::Check { impl_id, .. }) = self.stack.last();
             // get the path from the pattern
             if let PatKind::Path(QPath::Resolved(_, path))
                  | PatKind::TupleStruct(QPath::Resolved(_, path), _, _)
                  | PatKind::Struct(QPath::Resolved(_, path), _, _) = pat.kind;
-            if cx.typeck_results().pat_ty(pat) == cx.tcx.type_of(impl_id).subst_identity();
+            if cx.typeck_results().pat_ty(pat) == cx.tcx.type_of(impl_id);
             then {
-                check_path(cx, path);
+                match path.res {
+                    Res::Def(DefKind::Ctor(ctor_of, _), ..) => match ctor_of {
+                            CtorOf::Variant => lint_path_to_variant(cx, path),
+                            CtorOf::Struct => span_lint(cx, path.span),
+                    },
+                    Res::Def(DefKind::Variant, ..) => lint_path_to_variant(cx, path),
+                    Res::Def(DefKind::Struct, ..) => span_lint(cx, path.span),
+                    _ => ()
+                }
             }
         }
     }
@@ -300,16 +311,6 @@ fn span_lint(cx: &LateContext<'_>, span: Span) {
         "Self".to_owned(),
         Applicability::MachineApplicable,
     );
-}
-
-fn check_path(cx: &LateContext<'_>, path: &Path<'_>) {
-    match path.res {
-        Res::Def(DefKind::Ctor(CtorOf::Variant, _) | DefKind::Variant, ..) => {
-            lint_path_to_variant(cx, path);
-        },
-        Res::Def(DefKind::Ctor(CtorOf::Struct, _) | DefKind::Struct, ..) => span_lint(cx, path.span),
-        _ => (),
-    }
 }
 
 fn lint_path_to_variant(cx: &LateContext<'_>, path: &Path<'_>) {

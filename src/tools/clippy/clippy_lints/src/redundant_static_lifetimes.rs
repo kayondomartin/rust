@@ -1,9 +1,10 @@
 use clippy_utils::diagnostics::span_lint_and_then;
-use clippy_utils::msrvs::{self, Msrv};
 use clippy_utils::source::snippet;
-use rustc_ast::ast::{ConstItem, Item, ItemKind, StaticItem, Ty, TyKind};
+use clippy_utils::{meets_msrv, msrvs};
+use rustc_ast::ast::{Item, ItemKind, Ty, TyKind};
 use rustc_errors::Applicability;
 use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 declare_clippy_lint! {
@@ -33,12 +34,12 @@ declare_clippy_lint! {
 }
 
 pub struct RedundantStaticLifetimes {
-    msrv: Msrv,
+    msrv: Option<RustcVersion>,
 }
 
 impl RedundantStaticLifetimes {
     #[must_use]
-    pub fn new(msrv: Msrv) -> Self {
+    pub fn new(msrv: Option<RustcVersion>) -> Self {
         Self { msrv }
     }
 }
@@ -59,14 +60,14 @@ impl RedundantStaticLifetimes {
                 }
             },
             // This is what we are looking for !
-            TyKind::Ref(ref optional_lifetime, ref borrow_type) => {
+            TyKind::Rptr(ref optional_lifetime, ref borrow_type) => {
                 // Match the 'static lifetime
                 if let Some(lifetime) = *optional_lifetime {
                     match borrow_type.ty.kind {
                         TyKind::Path(..) | TyKind::Slice(..) | TyKind::Array(..) | TyKind::Tup(..) => {
                             if lifetime.ident.name == rustc_span::symbol::kw::StaticLifetime {
                                 let snip = snippet(cx, borrow_type.ty.span, "<type>");
-                                let sugg = format!("&{}{snip}", borrow_type.mutbl.prefix_str());
+                                let sugg = format!("&{snip}");
                                 span_lint_and_then(
                                     cx,
                                     REDUNDANT_STATIC_LIFETIMES,
@@ -95,18 +96,18 @@ impl RedundantStaticLifetimes {
 
 impl EarlyLintPass for RedundantStaticLifetimes {
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &Item) {
-        if !self.msrv.meets(msrvs::STATIC_IN_CONST) {
+        if !meets_msrv(self.msrv, msrvs::STATIC_IN_CONST) {
             return;
         }
 
         if !item.span.from_expansion() {
-            if let ItemKind::Const(box ConstItem { ty: ref var_type, .. }) = item.kind {
+            if let ItemKind::Const(_, ref var_type, _) = item.kind {
                 Self::visit_type(var_type, cx, "constants have by default a `'static` lifetime");
                 // Don't check associated consts because `'static` cannot be elided on those (issue
                 // #2438)
             }
 
-            if let ItemKind::Static(box StaticItem { ty: ref var_type, .. }) = item.kind {
+            if let ItemKind::Static(ref var_type, _, _) = item.kind {
                 Self::visit_type(var_type, cx, "statics have by default a `'static` lifetime");
             }
         }

@@ -2,86 +2,34 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use rustc_data_structures::sync::Lrc;
+use crate::line_span;
 use rustc_errors::Applicability;
-use rustc_hir::{BlockCheckMode, Expr, ExprKind, UnsafeSource};
+use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LintContext};
-use rustc_session::Session;
-use rustc_span::source_map::{original_sp, SourceMap};
-use rustc_span::{hygiene, SourceFile};
-use rustc_span::{BytePos, Pos, Span, SpanData, SyntaxContext, DUMMY_SP};
+use rustc_span::hygiene;
+use rustc_span::source_map::SourceMap;
+use rustc_span::{BytePos, Pos, Span, SpanData, SyntaxContext};
 use std::borrow::Cow;
-use std::ops::Range;
-
-/// A type which can be converted to the range portion of a `Span`.
-pub trait SpanRange {
-    fn into_range(self) -> Range<BytePos>;
-}
-impl SpanRange for Span {
-    fn into_range(self) -> Range<BytePos> {
-        let data = self.data();
-        data.lo..data.hi
-    }
-}
-impl SpanRange for SpanData {
-    fn into_range(self) -> Range<BytePos> {
-        self.lo..self.hi
-    }
-}
-impl SpanRange for Range<BytePos> {
-    fn into_range(self) -> Range<BytePos> {
-        self
-    }
-}
-
-pub struct SourceFileRange {
-    pub sf: Lrc<SourceFile>,
-    pub range: Range<usize>,
-}
-impl SourceFileRange {
-    /// Attempts to get the text from the source file. This can fail if the source text isn't
-    /// loaded.
-    pub fn as_str(&self) -> Option<&str> {
-        self.sf.src.as_ref().and_then(|x| x.get(self.range.clone()))
-    }
-}
-
-/// Gets the source file, and range in the file, of the given span. Returns `None` if the span
-/// extends through multiple files, or is malformed.
-pub fn get_source_text(cx: &impl LintContext, sp: impl SpanRange) -> Option<SourceFileRange> {
-    fn f(sm: &SourceMap, sp: Range<BytePos>) -> Option<SourceFileRange> {
-        let start = sm.lookup_byte_offset(sp.start);
-        let end = sm.lookup_byte_offset(sp.end);
-        if !Lrc::ptr_eq(&start.sf, &end.sf) || start.pos > end.pos {
-            return None;
-        }
-        let range = start.pos.to_usize()..end.pos.to_usize();
-        Some(SourceFileRange { sf: start.sf, range })
-    }
-    f(cx.sess().source_map(), sp.into_range())
-}
 
 /// Like `snippet_block`, but add braces if the expr is not an `ExprKind::Block`.
-pub fn expr_block<T: LintContext>(
+/// Also takes an `Option<String>` which can be put inside the braces.
+pub fn expr_block<'a, T: LintContext>(
     cx: &T,
     expr: &Expr<'_>,
-    outer: SyntaxContext,
-    default: &str,
+    option: Option<String>,
+    default: &'a str,
     indent_relative_to: Option<Span>,
-    app: &mut Applicability,
-) -> String {
-    let (code, from_macro) = snippet_block_with_context(cx, expr.span, outer, default, indent_relative_to, app);
-    if !from_macro &&
-        let ExprKind::Block(block, _) = expr.kind &&
-        block.rules != BlockCheckMode::UnsafeBlock(UnsafeSource::UserProvided)
-    {
-        format!("{code}")
+) -> Cow<'a, str> {
+    let code = snippet_block(cx, expr.span, default, indent_relative_to);
+    let string = option.unwrap_or_default();
+    if expr.span.from_expansion() {
+        Cow::Owned(format!("{{ {} }}", snippet_with_macro_callsite(cx, expr.span, default)))
+    } else if let ExprKind::Block(_, _) = expr.kind {
+        Cow::Owned(format!("{code}{string}"))
+    } else if string.is_empty() {
+        Cow::Owned(format!("{{ {code} }}"))
     } else {
-        // FIXME: add extra indent for the unsafe blocks:
-        //     original code:   unsafe { ... }
-        //     result code:     { unsafe { ... } }
-        //     desired code:    {\n  unsafe { ... }\n}
-        format!("{{ {code} }}")
+        Cow::Owned(format!("{{\n{code};\n{string}\n}}"))
     }
 }
 
@@ -105,23 +53,6 @@ fn first_char_in_first_line<T: LintContext>(cx: &T, span: Span) -> Option<BytePo
         snip.find(|c: char| !c.is_whitespace())
             .map(|pos| line_span.lo() + BytePos::from_usize(pos))
     })
-}
-
-/// Extends the span to the beginning of the spans line, incl. whitespaces.
-///
-/// ```rust
-///        let x = ();
-/// //             ^^
-/// // will be converted to
-///        let x = ();
-/// // ^^^^^^^^^^^^^^
-/// ```
-fn line_span<T: LintContext>(cx: &T, span: Span) -> Span {
-    let span = original_sp(span, DUMMY_SP);
-    let source_map_and_line = cx.sess().source_map().lookup_line(span.lo()).unwrap();
-    let line_no = source_map_and_line.line;
-    let line_start = source_map_and_line.sf.lines(|lines| lines[line_no]);
-    span.with_lo(line_start)
 }
 
 /// Returns the indentation of the line of a span
@@ -258,19 +189,10 @@ pub fn snippet_with_applicability<'a, T: LintContext>(
     default: &'a str,
     applicability: &mut Applicability,
 ) -> Cow<'a, str> {
-    snippet_with_applicability_sess(cx.sess(), span, default, applicability)
-}
-
-fn snippet_with_applicability_sess<'a>(
-    sess: &Session,
-    span: Span,
-    default: &'a str,
-    applicability: &mut Applicability,
-) -> Cow<'a, str> {
     if *applicability != Applicability::Unspecified && span.from_expansion() {
         *applicability = Applicability::MaybeIncorrect;
     }
-    snippet_opt_sess(sess, span).map_or_else(
+    snippet_opt(cx, span).map_or_else(
         || {
             if *applicability == Applicability::MachineApplicable {
                 *applicability = Applicability::HasPlaceholders;
@@ -281,13 +203,15 @@ fn snippet_with_applicability_sess<'a>(
     )
 }
 
-/// Converts a span to a code snippet. Returns `None` if not available.
-pub fn snippet_opt(cx: &impl LintContext, span: Span) -> Option<String> {
-    snippet_opt_sess(cx.sess(), span)
+/// Same as `snippet`, but should only be used when it's clear that the input span is
+/// not a macro argument.
+pub fn snippet_with_macro_callsite<'a, T: LintContext>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
+    snippet(cx, span.source_callsite(), default)
 }
 
-fn snippet_opt_sess(sess: &Session, span: Span) -> Option<String> {
-    sess.source_map().span_to_snippet(span).ok()
+/// Converts a span to a code snippet. Returns `None` if not available.
+pub fn snippet_opt<T: LintContext>(cx: &T, span: Span) -> Option<String> {
+    cx.sess().source_map().span_to_snippet(span).ok()
 }
 
 /// Converts a span (from a block) to a code snippet if available, otherwise use default.
@@ -337,8 +261,8 @@ pub fn snippet_block<'a, T: LintContext>(
 
 /// Same as `snippet_block`, but adapts the applicability level by the rules of
 /// `snippet_with_applicability`.
-pub fn snippet_block_with_applicability<'a>(
-    cx: &impl LintContext,
+pub fn snippet_block_with_applicability<'a, T: LintContext>(
+    cx: &T,
     span: Span,
     default: &'a str,
     indent_relative_to: Option<Span>,
@@ -347,19 +271,6 @@ pub fn snippet_block_with_applicability<'a>(
     let snip = snippet_with_applicability(cx, span, default, applicability);
     let indent = indent_relative_to.and_then(|s| indent_of(cx, s));
     reindent_multiline(snip, true, indent)
-}
-
-pub fn snippet_block_with_context<'a>(
-    cx: &impl LintContext,
-    span: Span,
-    outer: SyntaxContext,
-    default: &'a str,
-    indent_relative_to: Option<Span>,
-    app: &mut Applicability,
-) -> (Cow<'a, str>, bool) {
-    let (snip, from_macro) = snippet_with_context(cx, span, outer, default, app);
-    let indent = indent_relative_to.and_then(|s| indent_of(cx, s));
-    (reindent_multiline(snip, true, indent), from_macro)
 }
 
 /// Same as `snippet_with_applicability`, but first walks the span up to the given context. This
@@ -372,17 +283,7 @@ pub fn snippet_block_with_context<'a>(
 ///
 /// This will also return whether or not the snippet is a macro call.
 pub fn snippet_with_context<'a>(
-    cx: &impl LintContext,
-    span: Span,
-    outer: SyntaxContext,
-    default: &'a str,
-    applicability: &mut Applicability,
-) -> (Cow<'a, str>, bool) {
-    snippet_with_context_sess(cx.sess(), span, outer, default, applicability)
-}
-
-fn snippet_with_context_sess<'a>(
-    sess: &Session,
+    cx: &LateContext<'_>,
     span: Span,
     outer: SyntaxContext,
     default: &'a str,
@@ -401,7 +302,7 @@ fn snippet_with_context_sess<'a>(
     );
 
     (
-        snippet_with_applicability_sess(sess, span, default, applicability),
+        snippet_with_applicability(cx, span, default, applicability),
         is_macro_call,
     )
 }

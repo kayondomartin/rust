@@ -10,7 +10,7 @@
 /// ```
 fn foo() {}
 
-/// A long comment for wrapping
+/// A long commment for wrapping
 /// This is a long long long long long long long long long long long long long
 /// long long long long long long long sentence.
 fn bar() {}

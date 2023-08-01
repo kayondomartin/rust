@@ -31,12 +31,11 @@ fn get_path_for_executable(executable_name: &'static str) -> PathBuf {
     //      example: for cargo, this checks $CARGO environment variable; for rustc, $RUSTC; etc
     // 2) `<executable_name>`
     //      example: for cargo, this tries just `cargo`, which will succeed if `cargo` is on the $PATH
-    // 3) `$CARGO_HOME/bin/<executable_name>`
-    //      where $CARGO_HOME defaults to ~/.cargo (see https://doc.rust-lang.org/cargo/guide/cargo-home.html)
-    //      example: for cargo, this tries $CARGO_HOME/bin/cargo, or ~/.cargo/bin/cargo if $CARGO_HOME is unset.
+    // 3) `~/.cargo/bin/<executable_name>`
+    //      example: for cargo, this tries ~/.cargo/bin/cargo
     //      It seems that this is a reasonable place to try for cargo, rustc, and rustup
     let env_var = executable_name.to_ascii_uppercase();
-    if let Some(path) = env::var_os(env_var) {
+    if let Some(path) = env::var_os(&env_var) {
         return path.into();
     }
 
@@ -44,7 +43,8 @@ fn get_path_for_executable(executable_name: &'static str) -> PathBuf {
         return executable_name.into();
     }
 
-    if let Some(mut path) = get_cargo_home() {
+    if let Some(mut path) = home::home_dir() {
+        path.push(".cargo");
         path.push("bin");
         path.push(executable_name);
         if let Some(path) = probe(path) {
@@ -58,19 +58,6 @@ fn get_path_for_executable(executable_name: &'static str) -> PathBuf {
 fn lookup_in_path(exec: &str) -> bool {
     let paths = env::var_os("PATH").unwrap_or_default();
     env::split_paths(&paths).map(|path| path.join(exec)).find_map(probe).is_some()
-}
-
-fn get_cargo_home() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("CARGO_HOME") {
-        return Some(path.into());
-    }
-
-    if let Some(mut path) = home::home_dir() {
-        path.push(".cargo");
-        return Some(path);
-    }
-
-    None
 }
 
 fn probe(path: PathBuf) -> Option<PathBuf> {

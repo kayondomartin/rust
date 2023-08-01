@@ -7,7 +7,7 @@ use rustc_hir::{self as hir, def_id::DefId, GenericArg, QPath, TyKind};
 use rustc_hir_analysis::hir_ty_to_ty;
 use rustc_lint::LateContext;
 use rustc_middle::ty::layout::LayoutOf;
-use rustc_middle::ty::TypeVisitableExt;
+use rustc_middle::ty::TypeVisitable;
 use rustc_span::symbol::sym;
 
 use super::VEC_BOX;
@@ -42,7 +42,7 @@ pub(super) fn check(
             if !ty_ty.has_escaping_bound_vars();
             if ty_ty.is_sized(cx.tcx, cx.param_env);
             if let Ok(ty_ty_size) = cx.layout_of(ty_ty).map(|l| l.size.bytes());
-            if ty_ty_size < box_size_threshold;
+            if ty_ty_size <= box_size_threshold;
             then {
                 span_lint_and_sugg(
                     cx,

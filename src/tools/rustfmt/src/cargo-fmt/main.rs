@@ -14,8 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
 
-use cargo_metadata::Edition;
-use clap::{CommandFactory, Parser};
+use clap::{AppSettings, CommandFactory, Parser};
 
 #[path = "test/mod.rs"]
 #[cfg(test)]
@@ -23,7 +22,7 @@ mod cargo_fmt_tests;
 
 #[derive(Parser)]
 #[clap(
-    disable_version_flag = true,
+    global_setting(AppSettings::NoAutoVersion),
     bin_name = "cargo fmt",
     about = "This utility formats all bin and lib files of \
              the current crate using rustfmt."
@@ -46,7 +45,7 @@ pub struct Opts {
         short = 'p',
         long = "package",
         value_name = "package",
-        num_args = 1..
+        multiple_values = true
     )]
     packages: Vec<String>,
 
@@ -199,10 +198,12 @@ fn convert_message_format_to_rustfmt_args(
             Ok(())
         }
         "human" => Ok(()),
-        _ => Err(format!(
-            "invalid --message-format value: {}. Allowed values are: short|json|human",
-            message_format
-        )),
+        _ => {
+            return Err(format!(
+                "invalid --message-format value: {}. Allowed values are: short|json|human",
+                message_format
+            ));
+        }
     }
 }
 
@@ -214,7 +215,7 @@ fn print_usage_to_stderr(reason: &str) {
         .expect("failed to write to stderr");
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Verbosity {
     Verbose,
     Normal,
@@ -271,7 +272,7 @@ pub struct Target {
     /// A kind of target (e.g., lib, bin, example, ...).
     kind: String,
     /// Rust edition for this target.
-    edition: Edition,
+    edition: String,
 }
 
 impl Target {
@@ -282,7 +283,7 @@ impl Target {
         Target {
             path: canonicalized,
             kind: target.kind[0].clone(),
-            edition: target.edition,
+            edition: target.edition.clone(),
         }
     }
 }
@@ -507,7 +508,7 @@ fn run_rustfmt(
         let mut command = rustfmt_command()
             .stdout(stdout)
             .args(files)
-            .args(&["--edition", edition.as_str()])
+            .args(&["--edition", edition])
             .args(fmt_args)
             .spawn()
             .map_err(|e| match e.kind() {

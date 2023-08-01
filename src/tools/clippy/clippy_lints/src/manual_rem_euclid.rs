@@ -1,12 +1,12 @@
 use clippy_utils::consts::{constant_full_int, FullInt};
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::msrvs::{self, Msrv};
-use clippy_utils::source::snippet_with_context;
-use clippy_utils::{in_constant, path_to_local};
+use clippy_utils::source::snippet_with_applicability;
+use clippy_utils::{in_constant, meets_msrv, msrvs, path_to_local};
 use rustc_errors::Applicability;
 use rustc_hir::{BinOpKind, Expr, ExprKind, Node, TyKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 declare_clippy_lint! {
@@ -34,12 +34,12 @@ declare_clippy_lint! {
 }
 
 pub struct ManualRemEuclid {
-    msrv: Msrv,
+    msrv: Option<RustcVersion>,
 }
 
 impl ManualRemEuclid {
     #[must_use]
-    pub fn new(msrv: Msrv) -> Self {
+    pub fn new(msrv: Option<RustcVersion>) -> Self {
         Self { msrv }
     }
 }
@@ -48,11 +48,11 @@ impl_lint_pass!(ManualRemEuclid => [MANUAL_REM_EUCLID]);
 
 impl<'tcx> LateLintPass<'tcx> for ManualRemEuclid {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
-        if !self.msrv.meets(msrvs::REM_EUCLID) {
+        if !meets_msrv(self.msrv, msrvs::REM_EUCLID) {
             return;
         }
 
-        if in_constant(cx, expr.hir_id) && !self.msrv.meets(msrvs::REM_EUCLID_CONST) {
+        if in_constant(cx, expr.hir_id) && !meets_msrv(self.msrv, msrvs::REM_EUCLID_CONST) {
             return;
         }
 
@@ -60,16 +60,12 @@ impl<'tcx> LateLintPass<'tcx> for ManualRemEuclid {
             return;
         }
 
-        // (x % c + c) % c
         if let ExprKind::Binary(op1, expr1, right) = expr.kind
             && op1.node == BinOpKind::Rem
-            && let ctxt = expr.span.ctxt()
-            && expr1.span.ctxt() == ctxt
             && let Some(const1) = check_for_unsigned_int_constant(cx, right)
             && let ExprKind::Binary(op2, left, right) = expr1.kind
             && op2.node == BinOpKind::Add
             && let Some((const2, expr2)) = check_for_either_unsigned_int_constant(cx, left, right)
-            && expr2.span.ctxt() == ctxt
             && let ExprKind::Binary(op3, expr3, right) = expr2.kind
             && op3.node == BinOpKind::Rem
             && let Some(const3) = check_for_unsigned_int_constant(cx, right)
@@ -78,7 +74,7 @@ impl<'tcx> LateLintPass<'tcx> for ManualRemEuclid {
             && let Some(hir_id) = path_to_local(expr3)
             && let Some(Node::Pat(_)) = cx.tcx.hir().find(hir_id) {
                 // Apply only to params or locals with annotated types
-                match cx.tcx.hir().find_parent(hir_id) {
+                match cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
                     Some(Node::Param(..)) => (),
                     Some(Node::Local(local)) => {
                         let Some(ty) = local.ty else { return };
@@ -90,7 +86,7 @@ impl<'tcx> LateLintPass<'tcx> for ManualRemEuclid {
                 };
 
                 let mut app = Applicability::MachineApplicable;
-                let rem_of = snippet_with_context(cx, expr3.span, ctxt, "_", &mut app).0;
+                let rem_of = snippet_with_applicability(cx, expr3.span, "_", &mut app);
                 span_lint_and_sugg(
                     cx,
                     MANUAL_REM_EUCLID,

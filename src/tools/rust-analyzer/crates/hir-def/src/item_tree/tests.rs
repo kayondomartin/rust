@@ -6,7 +6,7 @@ use crate::{db::DefDatabase, test_db::TestDB};
 fn check(ra_fixture: &str, expect: Expect) {
     let (db, file_id) = TestDB::with_single_file(ra_fixture);
     let item_tree = db.file_item_tree(file_id.into());
-    let pretty = item_tree.pretty_print(&db);
+    let pretty = item_tree.pretty_print();
     expect.assert_eq(&pretty);
 }
 
@@ -165,7 +165,7 @@ trait Tr: SuperTrait + 'lifetime {
     fn method(&self);
 }
         "#,
-        expect![[r#"
+        expect![[r##"
             pub static mut ST: () = _;
 
             pub(self) const _: Anon = _;
@@ -174,8 +174,8 @@ trait Tr: SuperTrait + 'lifetime {
             #[inner_attr_in_fn]
             pub(self) fn f(
                 #[attr]
-                u8,
-                (),
+                arg: u8,
+                _: (),
             ) -> () { ... }
 
             pub(self) trait Tr<Self>
@@ -186,10 +186,10 @@ trait Tr: SuperTrait + 'lifetime {
                 pub(self) type Assoc: AssocBound = Default;
 
                 pub(self) fn method(
-                    self: &Self,
+                    _: &Self,  // self
                 ) -> ();
             }
-        "#]],
+        "##]],
     );
 }
 
@@ -336,7 +336,7 @@ trait Tr<'a, T: 'a>: Super where Self: for<'a> Tr<'a, T> {}
                 T: 'b
             {
                 pub(self) fn f<G>(
-                    impl Copy,
+                    arg: impl Copy,
                 ) -> impl Copy
                 where
                     G: 'a { ... }

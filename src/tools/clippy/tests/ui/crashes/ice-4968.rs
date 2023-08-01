@@ -1,3 +1,5 @@
+// check-pass
+
 // Test for https://github.com/rust-lang/rust-clippy/issues/4968
 
 #![warn(clippy::unsound_collection_transmute)]

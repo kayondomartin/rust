@@ -10,6 +10,8 @@ use shims::windows::handle::{EvalContextExt as _, Handle, PseudoHandle};
 use shims::windows::sync::EvalContextExt as _;
 use shims::windows::thread::EvalContextExt as _;
 
+use smallvec::SmallVec;
+
 impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriInterpCx<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
     fn emulate_foreign_item_by_name(
@@ -67,91 +69,21 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 this.write_scalar(result, dest)?;
             }
 
-            // File related shims
-            "NtWriteFile" => {
-                if !this.frame_in_std() {
-                    throw_unsup_format!(
-                        "`NtWriteFile` support is crude and just enough for stdout to work"
-                    );
-                }
-
-                let [
-                    handle,
-                    _event,
-                    _apc_routine,
-                    _apc_context,
-                    io_status_block,
-                    buf,
-                    n,
-                    byte_offset,
-                    _key,
-                ] = this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                let handle = this.read_target_isize(handle)?;
-                let buf = this.read_pointer(buf)?;
-                let n = this.read_scalar(n)?.to_u32()?;
-                let byte_offset = this.read_target_usize(byte_offset)?; // is actually a pointer
-                let io_status_block = this
-                    .deref_operand_as(io_status_block, this.windows_ty_layout("IO_STATUS_BLOCK"))?;
-
-                if byte_offset != 0 {
-                    throw_unsup_format!(
-                        "`NtWriteFile` `ByteOffset` parameter is non-null, which is unsupported"
-                    );
-                }
-
-                let written = if handle == -11 || handle == -12 {
-                    // stdout/stderr
-                    use std::io::{self, Write};
-
-                    let buf_cont =
-                        this.read_bytes_ptr_strip_provenance(buf, Size::from_bytes(u64::from(n)))?;
-                    let res = if this.machine.mute_stdout_stderr {
-                        Ok(buf_cont.len())
-                    } else if handle == -11 {
-                        io::stdout().write(buf_cont)
-                    } else {
-                        io::stderr().write(buf_cont)
-                    };
-                    // We write at most `n` bytes, which is a `u32`, so we cannot have written more than that.
-                    res.ok().map(|n| u32::try_from(n).unwrap())
-                } else {
-                    throw_unsup_format!(
-                        "on Windows, writing to anything except stdout/stderr is not supported"
-                    )
-                };
-                // We have to put the result into io_status_block.
-                if let Some(n) = written {
-                    let io_status_information =
-                        this.mplace_field_named(&io_status_block, "Information")?;
-                    this.write_scalar(
-                        Scalar::from_target_usize(n.into(), this),
-                        &io_status_information.into(),
-                    )?;
-                }
-                // Return whether this was a success. >= 0 is success.
-                // For the error code we arbitrarily pick 0xC0000185, STATUS_IO_DEVICE_ERROR.
-                this.write_scalar(
-                    Scalar::from_u32(if written.is_some() { 0 } else { 0xC0000185u32 }),
-                    dest,
-                )?;
-            }
-
             // Allocation
             "HeapAlloc" => {
                 let [handle, flags, size] =
                     this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                this.read_target_isize(handle)?;
+                this.read_scalar(handle)?.to_machine_isize(this)?;
                 let flags = this.read_scalar(flags)?.to_u32()?;
-                let size = this.read_target_usize(size)?;
-                let heap_zero_memory = 0x00000008; // HEAP_ZERO_MEMORY
-                let zero_init = (flags & heap_zero_memory) == heap_zero_memory;
+                let size = this.read_scalar(size)?.to_machine_usize(this)?;
+                let zero_init = (flags & 0x00000008) != 0; // HEAP_ZERO_MEMORY
                 let res = this.malloc(size, zero_init, MiriMemoryKind::WinHeap)?;
                 this.write_pointer(res, dest)?;
             }
             "HeapFree" => {
                 let [handle, flags, ptr] =
                     this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                this.read_target_isize(handle)?;
+                this.read_scalar(handle)?.to_machine_isize(this)?;
                 this.read_scalar(flags)?.to_u32()?;
                 let ptr = this.read_pointer(ptr)?;
                 this.free(ptr, MiriMemoryKind::WinHeap)?;
@@ -160,10 +92,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             "HeapReAlloc" => {
                 let [handle, flags, ptr, size] =
                     this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                this.read_target_isize(handle)?;
+                this.read_scalar(handle)?.to_machine_isize(this)?;
                 this.read_scalar(flags)?.to_u32()?;
                 let ptr = this.read_pointer(ptr)?;
-                let size = this.read_target_usize(size)?;
+                let size = this.read_scalar(size)?.to_machine_usize(this)?;
                 let res = this.realloc(ptr, size, MiriMemoryKind::WinHeap)?;
                 this.write_pointer(res, dest)?;
             }
@@ -186,20 +118,54 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 // Also called from `page_size` crate.
                 let [system_info] =
                     this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                let system_info =
-                    this.deref_operand_as(system_info, this.windows_ty_layout("SYSTEM_INFO"))?;
+                let system_info = this.deref_operand(system_info)?;
                 // Initialize with `0`.
                 this.write_bytes_ptr(
                     system_info.ptr,
                     iter::repeat(0u8).take(system_info.layout.size.bytes_usize()),
                 )?;
                 // Set selected fields.
-                this.write_int_fields_named(
-                    &[
-                        ("dwPageSize", this.machine.page_size.into()),
-                        ("dwNumberOfProcessors", this.machine.num_cpus.into()),
-                    ],
-                    &system_info,
+                let word_layout = this.machine.layouts.u16;
+                let dword_layout = this.machine.layouts.u32;
+                let usize_layout = this.machine.layouts.usize;
+
+                // Using `mplace_field` is error-prone, see: https://github.com/rust-lang/miri/issues/2136.
+                // Pointer fields have different sizes on different targets.
+                // To avoid all these issue we calculate the offsets ourselves.
+                let field_sizes = [
+                    word_layout.size,  // 0,  wProcessorArchitecture      : WORD
+                    word_layout.size,  // 1,  wReserved                   : WORD
+                    dword_layout.size, // 2,  dwPageSize                  : DWORD
+                    usize_layout.size, // 3,  lpMinimumApplicationAddress : LPVOID
+                    usize_layout.size, // 4,  lpMaximumApplicationAddress : LPVOID
+                    usize_layout.size, // 5,  dwActiveProcessorMask       : DWORD_PTR
+                    dword_layout.size, // 6,  dwNumberOfProcessors        : DWORD
+                    dword_layout.size, // 7,  dwProcessorType             : DWORD
+                    dword_layout.size, // 8,  dwAllocationGranularity     : DWORD
+                    word_layout.size,  // 9,  wProcessorLevel             : WORD
+                    word_layout.size,  // 10, wProcessorRevision          : WORD
+                ];
+                let field_offsets: SmallVec<[Size; 11]> = field_sizes
+                    .iter()
+                    .copied()
+                    .scan(Size::ZERO, |a, x| {
+                        let res = Some(*a);
+                        *a += x;
+                        res
+                    })
+                    .collect();
+
+                // Set page size.
+                let page_size = system_info.offset(field_offsets[2], dword_layout, &this.tcx)?;
+                this.write_scalar(
+                    Scalar::from_int(PAGE_SIZE, dword_layout.size),
+                    &page_size.into(),
+                )?;
+                // Set number of processors.
+                let num_cpus = system_info.offset(field_offsets[6], dword_layout, &this.tcx)?;
+                this.write_scalar(
+                    Scalar::from_int(this.machine.num_cpus, dword_layout.size),
+                    &num_cpus.into(),
                 )?;
             }
 
@@ -307,32 +273,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let result = this.InitOnceComplete(ptr, flags, context)?;
                 this.write_scalar(result, dest)?;
             }
-            "SleepConditionVariableSRW" => {
-                let [condvar, lock, timeout, flags] =
-                    this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-
-                let result = this.SleepConditionVariableSRW(condvar, lock, timeout, flags, dest)?;
-                this.write_scalar(result, dest)?;
-            }
-            "WakeConditionVariable" => {
-                let [condvar] =
-                    this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-
-                this.WakeConditionVariable(condvar)?;
-            }
-            "WakeAllConditionVariable" => {
-                let [condvar] =
-                    this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-
-                this.WakeAllConditionVariable(condvar)?;
-            }
 
             // Dynamic symbol loading
             "GetProcAddress" => {
                 #[allow(non_snake_case)]
                 let [hModule, lpProcName] =
                     this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                this.read_target_isize(hModule)?;
+                this.read_scalar(hModule)?.to_machine_isize(this)?;
                 let name = this.read_c_str(this.read_pointer(lpProcName)?)?;
                 if let Some(dlsym) = Dlsym::from_str(name, &this.tcx.sess.target.os)? {
                     let ptr = this.create_fn_alloc_ptr(FnVal::Other(dlsym));
@@ -356,7 +303,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let [algorithm, ptr, len, flags] =
                     this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
                 let algorithm = this.read_scalar(algorithm)?;
-                let algorithm = algorithm.to_target_usize(this)?;
+                let algorithm = algorithm.to_machine_usize(this)?;
                 let ptr = this.read_pointer(ptr)?;
                 let len = this.read_scalar(len)?.to_u32()?;
                 let flags = this.read_scalar(flags)?.to_u32()?;
@@ -390,8 +337,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 // `term` needs this, so we fake it.
                 let [console, buffer_info] =
                     this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                this.read_target_isize(console)?;
-                // FIXME: this should use deref_operand_as, but CONSOLE_SCREEN_BUFFER_INFO is not in std
+                this.read_scalar(console)?.to_machine_isize(this)?;
                 this.deref_operand(buffer_info)?;
                 // Indicate an error.
                 // FIXME: we should set last_error, but to what?
@@ -405,7 +351,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 // one it is. This is very fake, but libtest needs it so we cannot make it a
                 // std-only shim.
                 // FIXME: this should return real HANDLEs when io support is added
-                this.write_scalar(Scalar::from_target_isize(which.into(), this), dest)?;
+                this.write_scalar(Scalar::from_machine_isize(which.into(), this), dest)?;
             }
             "CloseHandle" => {
                 let [handle] =
@@ -414,46 +360,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 this.CloseHandle(handle)?;
 
                 this.write_scalar(Scalar::from_u32(1), dest)?;
-            }
-            "GetModuleFileNameW" => {
-                let [handle, filename, size] =
-                    this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                this.check_no_isolation("`GetModuleFileNameW`")?;
-
-                let handle = this.read_target_usize(handle)?;
-                let filename = this.read_pointer(filename)?;
-                let size = this.read_scalar(size)?.to_u32()?;
-
-                if handle != 0 {
-                    throw_unsup_format!("`GetModuleFileNameW` only supports the NULL handle");
-                }
-
-                // Using the host current_exe is a bit off, but consistent with Linux
-                // (where stdlib reads /proc/self/exe).
-                // Unfortunately this Windows function has a crazy behavior so we can't just use
-                // `write_path_to_wide_str`...
-                let path = std::env::current_exe().unwrap();
-                let (all_written, size_needed) = this.write_path_to_wide_str(
-                    &path,
-                    filename,
-                    size.into(),
-                    /*truncate*/ true,
-                )?;
-
-                if all_written {
-                    // If the function succeeds, the return value is the length of the string that
-                    // is copied to the buffer, in characters, not including the terminating null
-                    // character.
-                    this.write_int(size_needed.checked_sub(1).unwrap(), dest)?;
-                } else {
-                    // If the buffer is too small to hold the module name, the string is truncated
-                    // to nSize characters including the terminating null character, the function
-                    // returns nSize, and the function sets the last error to
-                    // ERROR_INSUFFICIENT_BUFFER.
-                    this.write_int(size, dest)?;
-                    let insufficient_buffer = this.eval_windows("c", "ERROR_INSUFFICIENT_BUFFER");
-                    this.set_last_error(insufficient_buffer)?;
-                }
             }
 
             // Threading
@@ -507,7 +413,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             "GetConsoleMode" if this.frame_in_std() => {
                 let [console, mode] =
                     this.check_shim(abi, Abi::System { unwind: false }, link_name, args)?;
-                this.read_target_isize(console)?;
+                this.read_scalar(console)?.to_machine_isize(this)?;
                 this.deref_operand(mode)?;
                 // Indicate an error.
                 this.write_null(dest)?;

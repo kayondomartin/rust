@@ -1,4 +1,4 @@
-use hir::{db::HirDatabase, HasSource, HasVisibility, ModuleDef, PathResolution, ScopeDef};
+use hir::{db::HirDatabase, HasSource, HasVisibility, PathResolution};
 use ide_db::base_db::FileId;
 use syntax::{
     ast::{self, HasVisibility as _},
@@ -18,7 +18,7 @@ use crate::{utils::vis_offset, AssistContext, AssistId, AssistKind, Assists};
 //     fn frobnicate() {}
 // }
 // fn main() {
-//     m::frobnicate$0();
+//     m::frobnicate$0() {}
 // }
 // ```
 // ->
@@ -27,7 +27,7 @@ use crate::{utils::vis_offset, AssistContext, AssistId, AssistKind, Assists};
 //     $0pub(crate) fn frobnicate() {}
 // }
 // fn main() {
-//     m::frobnicate();
+//     m::frobnicate() {}
 // }
 // ```
 pub(crate) fn fix_visibility(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
@@ -37,15 +37,11 @@ pub(crate) fn fix_visibility(acc: &mut Assists, ctx: &AssistContext<'_>) -> Opti
 
 fn add_vis_to_referenced_module_def(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
     let path: ast::Path = ctx.find_node_at_offset()?;
-    let qualifier = path.qualifier()?;
-    let name_ref = path.segment()?.name_ref()?;
-    let qualifier_res = ctx.sema.resolve_path(&qualifier)?;
-    let PathResolution::Def(ModuleDef::Module(module)) = qualifier_res else { return None; };
-    let (_, def) = module
-        .scope(ctx.db(), None)
-        .into_iter()
-        .find(|(name, _)| name.to_smol_str() == name_ref.text().as_str())?;
-    let ScopeDef::ModuleDef(def) = def else { return None; };
+    let path_res = ctx.sema.resolve_path(&path)?;
+    let def = match path_res {
+        PathResolution::Def(def) => def,
+        _ => return None,
+    };
 
     let current_module = ctx.sema.scope(path.syntax())?.module();
     let target_module = def.module(ctx.db())?;
@@ -61,10 +57,8 @@ fn add_vis_to_referenced_module_def(acc: &mut Assists, ctx: &AssistContext<'_>) 
         if current_module.krate() == target_module.krate() { "pub(crate)" } else { "pub" };
 
     let assist_label = match target_name {
-        None => format!("Change visibility to {missing_visibility}"),
-        Some(name) => {
-            format!("Change visibility of {} to {missing_visibility}", name.display(ctx.db()))
-        }
+        None => format!("Change visibility to {}", missing_visibility),
+        Some(name) => format!("Change visibility of {} to {}", name, missing_visibility),
     };
 
     acc.add(AssistId("fix_visibility", AssistKind::QuickFix), assist_label, target, |builder| {
@@ -74,15 +68,15 @@ fn add_vis_to_referenced_module_def(acc: &mut Assists, ctx: &AssistContext<'_>) 
                 Some(current_visibility) => builder.replace_snippet(
                     cap,
                     current_visibility.syntax().text_range(),
-                    format!("$0{missing_visibility}"),
+                    format!("$0{}", missing_visibility),
                 ),
-                None => builder.insert_snippet(cap, offset, format!("$0{missing_visibility} ")),
+                None => builder.insert_snippet(cap, offset, format!("$0{} ", missing_visibility)),
             },
             None => match current_visibility {
                 Some(current_visibility) => {
                     builder.replace(current_visibility.syntax().text_range(), missing_visibility)
                 }
-                None => builder.insert(offset, format!("{missing_visibility} ")),
+                None => builder.insert(offset, format!("{} ", missing_visibility)),
             },
         }
     })
@@ -119,11 +113,8 @@ fn add_vis_to_referenced_record_field(acc: &mut Assists, ctx: &AssistContext<'_>
     let target_file = in_file_source.file_id.original_file(ctx.db());
 
     let target_name = record_field_def.name(ctx.db());
-    let assist_label = format!(
-        "Change visibility of {}.{} to {missing_visibility}",
-        parent_name.display(ctx.db()),
-        target_name.display(ctx.db())
-    );
+    let assist_label =
+        format!("Change visibility of {}.{} to {}", parent_name, target_name, missing_visibility);
 
     acc.add(AssistId("fix_visibility", AssistKind::QuickFix), assist_label, target, |builder| {
         builder.edit_file(target_file);
@@ -132,15 +123,15 @@ fn add_vis_to_referenced_record_field(acc: &mut Assists, ctx: &AssistContext<'_>
                 Some(current_visibility) => builder.replace_snippet(
                     cap,
                     current_visibility.syntax().text_range(),
-                    format!("$0{missing_visibility}"),
+                    format!("$0{}", missing_visibility),
                 ),
-                None => builder.insert_snippet(cap, offset, format!("$0{missing_visibility} ")),
+                None => builder.insert_snippet(cap, offset, format!("$0{} ", missing_visibility)),
             },
             None => match current_visibility {
                 Some(current_visibility) => {
                     builder.replace(current_visibility.syntax().text_range(), missing_visibility)
                 }
-                None => builder.insert(offset, format!("{missing_visibility} ")),
+                None => builder.insert(offset, format!("{} ", missing_visibility)),
             },
         }
     })
@@ -194,10 +185,6 @@ fn target_data_for_def(
             offset_target_and_file_id(db, s)?
         }
         hir::ModuleDef::Trait(t) => {
-            target_name = Some(t.name(db));
-            offset_target_and_file_id(db, t)?
-        }
-        hir::ModuleDef::TraitAlias(t) => {
             target_name = Some(t.name(db));
             offset_target_and_file_id(db, t)?
         }

@@ -20,7 +20,7 @@ pub(super) fn check(cx: &LateContext<'_>, hir_ty: &hir::Ty<'_>, lt: &Lifetime, m
                 if let QPath::Resolved(None, path) = *qpath;
                 if let [ref bx] = *path.segments;
                 if let Some(params) = bx.args;
-                if params.parenthesized == hir::GenericArgsParentheses::No;
+                if !params.parenthesized;
                 if let Some(inner) = params.args.iter().find_map(|arg| match arg {
                     GenericArg::Type(ty) => Some(ty),
                     _ => None,
@@ -31,10 +31,10 @@ pub(super) fn check(cx: &LateContext<'_>, hir_ty: &hir::Ty<'_>, lt: &Lifetime, m
                         return false;
                     }
 
-                    let ltopt = if lt.is_anonymous() {
+                    let ltopt = if lt.name.is_anonymous() {
                         String::new()
                     } else {
-                        format!("{} ", lt.ident.as_str())
+                        format!("{} ", lt.name.ident().as_str())
                     };
 
                     if mut_ty.mutbl == Mutability::Mut {

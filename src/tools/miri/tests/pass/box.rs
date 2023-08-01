@@ -1,5 +1,3 @@
-//@revisions: stack tree
-//@[tree]compile-flags: -Zmiri-tree-borrows -Zmiri-permissive-provenance
 #![feature(ptr_internals)]
 
 fn main() {

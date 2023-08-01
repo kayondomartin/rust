@@ -22,7 +22,7 @@ via a declaration like
 extern "rust-intrinsic" {
     fn transmute<T, U>(x: T) -> U;
 
-    fn arith_offset<T>(dst: *const T, offset: isize) -> *const T;
+    fn offset<T>(dst: *const T, offset: isize) -> *const T;
 }
 ```
 

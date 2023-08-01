@@ -20,7 +20,7 @@ use crate::assist_context::{AssistContext, Assists};
 // Replaces a `try` expression with a `match` expression.
 //
 // ```
-// # //- minicore: try, option
+// # //- minicore:option
 // fn handle() {
 //     let pat = Some(true)$0?;
 // }
@@ -111,7 +111,7 @@ mod tests {
         check_assist(
             replace_try_expr_with_match,
             r#"
-//- minicore: try, option
+//- minicore:option
 fn test() {
     let pat = Some(true)$0?;
 }
@@ -132,7 +132,7 @@ fn test() {
         check_assist(
             replace_try_expr_with_match,
             r#"
-//- minicore: try, from, result
+//- minicore:result
 fn test() {
     let pat = Ok(true)$0?;
 }

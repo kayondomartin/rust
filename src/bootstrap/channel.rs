@@ -13,21 +13,18 @@ use crate::util::output;
 use crate::util::t;
 use crate::Build;
 
-#[derive(Clone, Default)]
 pub enum GitInfo {
     /// This is not a git repository.
-    #[default]
     Absent,
     /// This is a git repository.
-    /// If the info should be used (`omit_git_hash` is false), this will be
+    /// If the info should be used (`ignore_git` is false), this will be
     /// `Some`, otherwise it will be `None`.
     Present(Option<Info>),
-    /// This is not a git repository, but the info can be fetched from the
+    /// This is not a git repostory, but the info can be fetched from the
     /// `git-commit-info` file.
     RecordedForTarball(Info),
 }
 
-#[derive(Clone)]
 pub struct Info {
     pub commit_date: String,
     pub sha: String,
@@ -35,7 +32,7 @@ pub struct Info {
 }
 
 impl GitInfo {
-    pub fn new(omit_git_hash: bool, dir: &Path) -> GitInfo {
+    pub fn new(ignore_git: bool, dir: &Path) -> GitInfo {
         // See if this even begins to look like a git dir
         if !dir.join(".git").exists() {
             match read_commit_info_file(dir) {
@@ -52,7 +49,7 @@ impl GitInfo {
 
         // If we're ignoring the git info, we don't actually need to collect it, just make sure this
         // was a git repo in the first place.
-        if omit_git_hash {
+        if ignore_git {
             return GitInfo::Present(None);
         }
 
@@ -139,7 +136,7 @@ pub fn read_commit_info_file(root: &Path) -> Option<Info> {
                 sha: sha.to_owned(),
                 short_sha: short_sha.to_owned(),
             },
-            _ => panic!("the `git-commit-info` file is malformed"),
+            _ => panic!("the `git-comit-info` file is malformed"),
         };
         Some(info)
     } else {

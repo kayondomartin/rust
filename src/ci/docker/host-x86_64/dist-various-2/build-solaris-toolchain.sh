@@ -32,22 +32,24 @@ cd solaris
 
 dpkg --add-architecture $APT_ARCH
 apt-get update
-apt-get install -y --download-only                           \
+apt-get download $(apt-cache depends --recurse --no-replaces \
   libc:$APT_ARCH                                             \
+  liblgrp-dev:$APT_ARCH                                      \
   liblgrp:$APT_ARCH                                          \
   libm-dev:$APT_ARCH                                         \
   libpthread:$APT_ARCH                                       \
   libresolv:$APT_ARCH                                        \
   librt:$APT_ARCH                                            \
+  libsendfile-dev:$APT_ARCH                                  \
   libsendfile:$APT_ARCH                                      \
   libsocket:$APT_ARCH                                        \
   system-crt:$APT_ARCH                                       \
-  system-header:$APT_ARCH
+  system-header:$APT_ARCH                                    \
+  | grep "^\w")
 
-for deb in /var/cache/apt/archives/*$APT_ARCH.deb; do
+for deb in *$APT_ARCH.deb; do
   dpkg -x $deb .
 done
-apt-get clean
 
 # The -dev packages are not available from the apt repository we're using.
 # However, those packages are just symlinks from *.so to *.so.<version>.

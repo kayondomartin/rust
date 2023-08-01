@@ -1,25 +1,7 @@
-use std::io::Read;
 use std::path::Path;
 
 use crate::common::{Config, Debugger};
-use crate::header::{parse_normalization_string, EarlyProps, HeadersCache};
-
-fn make_test_description<R: Read>(
-    config: &Config,
-    name: test::TestName,
-    path: &Path,
-    src: R,
-    cfg: Option<&str>,
-) -> test::TestDesc {
-    let cache = HeadersCache::load(config);
-    let mut poisoned = false;
-    let test =
-        crate::header::make_test_description(config, &cache, name, path, src, cfg, &mut poisoned);
-    if poisoned {
-        panic!("poisoned!");
-    }
-    test
-}
+use crate::header::{make_test_description, parse_normalization_string, EarlyProps};
 
 #[test]
 fn test_parse_normalization_string() {
@@ -64,8 +46,7 @@ fn config() -> Config {
         "--jsondocck-path=",
         "--src-base=",
         "--build-base=",
-        "--sysroot-base=",
-        "--stage-id=stage2-x86_64-unknown-linux-gnu",
+        "--stage-id=stage2",
         "--cc=c",
         "--cxx=c++",
         "--cflags=",
@@ -192,7 +173,7 @@ fn ignore_target() {
     assert!(check_ignore(&config, "// ignore-gnu"));
     assert!(check_ignore(&config, "// ignore-64bit"));
 
-    assert!(!check_ignore(&config, "// ignore-x86"));
+    assert!(!check_ignore(&config, "// ignore-i686"));
     assert!(!check_ignore(&config, "// ignore-windows"));
     assert!(!check_ignore(&config, "// ignore-msvc"));
     assert!(!check_ignore(&config, "// ignore-32bit"));
@@ -218,7 +199,7 @@ fn only_target() {
 #[test]
 fn stage() {
     let mut config = config();
-    config.stage_id = "stage1-x86_64-unknown-linux-gnu".to_owned();
+    config.stage_id = "stage1".to_owned();
 
     assert!(check_ignore(&config, "// ignore-stage1"));
     assert!(!check_ignore(&config, "// ignore-stage2"));
@@ -249,16 +230,6 @@ fn debugger() {
 
     config.debugger = Some(Debugger::Lldb);
     assert!(check_ignore(&config, "// ignore-lldb"));
-}
-
-#[test]
-fn git_hash() {
-    let mut config = config();
-    config.git_hash = false;
-    assert!(check_ignore(&config, "// needs-git-hash"));
-
-    config.git_hash = true;
-    assert!(!check_ignore(&config, "// needs-git-hash"));
 }
 
 #[test]

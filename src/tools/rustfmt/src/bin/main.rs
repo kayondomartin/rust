@@ -1,5 +1,3 @@
-#![feature(rustc_private)]
-
 use anyhow::{format_err, Result};
 
 use io::Error as IoError;
@@ -21,14 +19,7 @@ use crate::rustfmt::{
     FormatReportFormatterBuilder, Input, Session, Verbosity,
 };
 
-const BUG_REPORT_URL: &str = "https://github.com/rust-lang/rustfmt/issues/new?labels=bug";
-
-// N.B. these crates are loaded from the sysroot, so they need extern crate.
-extern crate rustc_driver;
-
 fn main() {
-    rustc_driver::install_ice_hook(BUG_REPORT_URL, |_| ());
-
     env_logger::Builder::from_env("RUSTFMT_LOG").init();
     let opts = make_opts();
 
@@ -84,7 +75,7 @@ pub enum OperationError {
     #[error("{0}")]
     IoError(IoError),
     /// Attempt to use --emit with a mode which is not currently
-    /// supported with standard input.
+    /// supported with stdandard input.
     #[error("Emit mode {0} not supported with standard output.")]
     StdinBadEmit(EmitMode),
 }
@@ -145,7 +136,7 @@ fn make_opts() -> Options {
         "l",
         "files-with-diff",
         "Prints the names of mismatched files that were formatted. Prints the names of \
-         files that would be formatted when used with `--check` mode. ",
+         files that would be formated when used with `--check` mode. ",
     );
     opts.optmulti(
         "",

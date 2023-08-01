@@ -124,7 +124,7 @@ def start_breakpoint_listener(target):
                         breakpoint = lldb.SBBreakpoint.GetBreakpointFromEvent(event)
                         print_debug("breakpoint added, id = " + str(breakpoint.id))
                         new_breakpoints.append(breakpoint.id)
-        except BaseException: # explicitly catch ctrl+c/sysexit
+        except:
             print_debug("breakpoint listener shutting down")
 
     # Start the listener and let it run as a daemon

@@ -1,5 +1,3 @@
-//@revisions: stack tree
-//@[tree]compile-flags: -Zmiri-tree-borrows
 // Make sure validation can handle many overlapping shared borrows for different parts of a data structure
 use std::cell::RefCell;
 

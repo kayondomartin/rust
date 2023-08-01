@@ -7,9 +7,10 @@ use std::fs;
 use std::io::{Error, ErrorKind};
 
 fn main() {
-    // test `fcntl(F_DUPFD): should work even with isolation.`
+    // test `fcntl`
     unsafe {
-        assert!(libc::fcntl(1, libc::F_DUPFD, 0) >= 0);
+        assert_eq!(libc::fcntl(1, libc::F_DUPFD, 0), -1);
+        assert_eq!(Error::last_os_error().raw_os_error(), Some(libc::EPERM));
     }
 
     // test `readlink`
@@ -21,8 +22,7 @@ fn main() {
     }
 
     // test `stat`
-    let err = fs::metadata("foo.txt").unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::PermissionDenied);
+    assert_eq!(fs::metadata("foo.txt").unwrap_err().kind(), ErrorKind::PermissionDenied);
     // check that it is the right kind of `PermissionDenied`
-    assert_eq!(err.raw_os_error(), Some(libc::EACCES));
+    assert_eq!(Error::last_os_error().raw_os_error(), Some(libc::EACCES));
 }

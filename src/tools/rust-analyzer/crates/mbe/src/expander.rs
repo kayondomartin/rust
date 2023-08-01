@@ -8,16 +8,15 @@ mod transcriber;
 use rustc_hash::FxHashMap;
 use syntax::SmolStr;
 
-use crate::{parser::MetaVarKind, tt, ExpandError, ExpandResult};
+use crate::{parser::MetaVarKind, ExpandError, ExpandResult};
 
 pub(crate) fn expand_rules(
     rules: &[crate::Rule],
     input: &tt::Subtree,
-    is_2021: bool,
 ) -> ExpandResult<tt::Subtree> {
     let mut match_: Option<(matcher::Match, &crate::Rule)> = None;
     for rule in rules {
-        let new_match = matcher::match_(&rule.lhs, input, is_2021);
+        let new_match = matcher::match_(&rule.lhs, input);
 
         if new_match.err.is_none() {
             // If we find a rule that applies without errors, we're done.
@@ -46,10 +45,7 @@ pub(crate) fn expand_rules(
             transcriber::transcribe(&rule.rhs, &match_.bindings);
         ExpandResult { value, err: match_.err.or(transcribe_err) }
     } else {
-        ExpandResult::new(
-            tt::Subtree { delimiter: tt::Delimiter::unspecified(), token_trees: vec![] },
-            ExpandError::NoMatchingRule,
-        )
+        ExpandResult::only_err(ExpandError::NoMatchingRule)
     }
 }
 

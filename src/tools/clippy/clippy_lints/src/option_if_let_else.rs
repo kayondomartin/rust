@@ -12,7 +12,6 @@ use rustc_hir::{
 };
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
-use rustc_span::SyntaxContext;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -26,11 +25,11 @@ declare_clippy_lint! {
     /// Using the dedicated functions of the `Option` type is clearer and
     /// more concise than an `if let` expression.
     ///
-    /// ### Notes
-    /// This lint uses a deliberately conservative metric for checking if the
-    /// inside of either body contains loop control expressions `break` or
-    /// `continue` (which cannot be used within closures). If these are found,
-    /// this lint will not be raised.
+    /// ### Known problems
+    /// This lint uses a deliberately conservative metric for checking
+    /// if the inside of either body contains breaks or continues which will
+    /// cause it to not suggest a fix if either block contains a loop with
+    /// continues or breaks contained within the loop.
     ///
     /// ### Example
     /// ```rust
@@ -96,10 +95,10 @@ struct OptionOccurrence {
     none_expr: String,
 }
 
-fn format_option_in_sugg(cond_sugg: Sugg<'_>, as_ref: bool, as_mut: bool) -> String {
+fn format_option_in_sugg(cx: &LateContext<'_>, cond_expr: &Expr<'_>, as_ref: bool, as_mut: bool) -> String {
     format!(
         "{}{}",
-        cond_sugg.maybe_par(),
+        Sugg::hir_with_macro_callsite(cx, cond_expr, "..").maybe_par(),
         if as_mut {
             ".as_mut()"
         } else if as_ref {
@@ -112,7 +111,6 @@ fn format_option_in_sugg(cond_sugg: Sugg<'_>, as_ref: bool, as_mut: bool) -> Str
 
 fn try_get_option_occurrence<'tcx>(
     cx: &LateContext<'tcx>,
-    ctxt: SyntaxContext,
     pat: &Pat<'tcx>,
     expr: &Expr<'_>,
     if_then: &'tcx Expr<'_>,
@@ -122,7 +120,7 @@ fn try_get_option_occurrence<'tcx>(
         ExprKind::Unary(UnOp::Deref, inner_expr) | ExprKind::AddrOf(_, _, inner_expr) => inner_expr,
         _ => expr,
     };
-    let (inner_pat, is_result) = try_get_inner_pat_and_is_result(cx, pat)?;
+    let inner_pat = try_get_inner_pat(cx, pat)?;
     if_chain! {
         if let PatKind::Binding(bind_annotation, _, id, None) = inner_pat.kind;
         if let Some(some_captures) = can_move_expr_to_closure(cx, if_then);
@@ -140,9 +138,6 @@ fn try_get_option_occurrence<'tcx>(
             let (as_ref, as_mut) = match &expr.kind {
                 ExprKind::AddrOf(_, Mutability::Not, _) => (true, false),
                 ExprKind::AddrOf(_, Mutability::Mut, _) => (false, true),
-                _ if let Some(mutb) = cx.typeck_results().expr_ty(expr).ref_mutability() => {
-                    (mutb == Mutability::Not, mutb == Mutability::Mut)
-                }
                 _ => (bind_annotation == BindingAnnotation::REF, bind_annotation == BindingAnnotation::REF_MUT),
             };
 
@@ -165,23 +160,11 @@ fn try_get_option_occurrence<'tcx>(
                 }
             }
 
-            let mut app = Applicability::Unspecified;
             return Some(OptionOccurrence {
-                option: format_option_in_sugg(
-                    Sugg::hir_with_context(cx, cond_expr, ctxt, "..", &mut app),
-                    as_ref,
-                    as_mut,
-                ),
+                option: format_option_in_sugg(cx, cond_expr, as_ref, as_mut),
                 method_sugg: method_sugg.to_string(),
-                some_expr: format!(
-                    "|{capture_mut}{capture_name}| {}",
-                    Sugg::hir_with_context(cx, some_body, ctxt, "..", &mut app),
-                ),
-                none_expr: format!(
-                    "{}{}",
-                    if method_sugg == "map_or" { "" } else if is_result { "|_| " } else { "|| "},
-                    Sugg::hir_with_context(cx, none_body, ctxt, "..", &mut app),
-                ),
+                some_expr: format!("|{capture_mut}{capture_name}| {}", Sugg::hir_with_macro_callsite(cx, some_body, "..")),
+                none_expr: format!("{}{}", if method_sugg == "map_or" { "" } else { "|| " }, Sugg::hir_with_macro_callsite(cx, none_body, "..")),
             });
         }
     }
@@ -189,13 +172,11 @@ fn try_get_option_occurrence<'tcx>(
     None
 }
 
-fn try_get_inner_pat_and_is_result<'tcx>(cx: &LateContext<'tcx>, pat: &Pat<'tcx>) -> Option<(&'tcx Pat<'tcx>, bool)> {
+fn try_get_inner_pat<'tcx>(cx: &LateContext<'tcx>, pat: &Pat<'tcx>) -> Option<&'tcx Pat<'tcx>> {
     if let PatKind::TupleStruct(ref qpath, [inner_pat], ..) = pat.kind {
         let res = cx.qpath_res(qpath, pat.hir_id);
-        if is_res_lang_ctor(cx, res, OptionSome) {
-            return Some((inner_pat, false));
-        } else if is_res_lang_ctor(cx, res, ResultOk) {
-            return Some((inner_pat, true));
+        if is_res_lang_ctor(cx, res, OptionSome) || is_res_lang_ctor(cx, res, ResultOk) {
+            return Some(inner_pat);
         }
     }
     None
@@ -213,7 +194,7 @@ fn detect_option_if_let_else<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'tcx>) ->
     }) = higher::IfLet::hir(cx, expr)
     {
         if !is_else_clause(cx.tcx, expr) {
-            return try_get_option_occurrence(cx, expr.span.ctxt(), let_pat, let_expr, if_then, if_else);
+            return try_get_option_occurrence(cx, let_pat, let_expr, if_then, if_else);
         }
     }
     None
@@ -222,7 +203,7 @@ fn detect_option_if_let_else<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'tcx>) ->
 fn detect_option_match<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'tcx>) -> Option<OptionOccurrence> {
     if let ExprKind::Match(ex, arms, MatchSource::Normal) = expr.kind {
         if let Some((let_pat, if_then, if_else)) = try_convert_match(cx, arms) {
-            return try_get_option_occurrence(cx, expr.span.ctxt(), let_pat, ex, if_then, if_else);
+            return try_get_option_occurrence(cx, let_pat, ex, if_then, if_else);
         }
     }
     None
@@ -232,14 +213,11 @@ fn try_convert_match<'tcx>(
     cx: &LateContext<'tcx>,
     arms: &[Arm<'tcx>],
 ) -> Option<(&'tcx Pat<'tcx>, &'tcx Expr<'tcx>, &'tcx Expr<'tcx>)> {
-    if let [first_arm, second_arm] = arms
-        && first_arm.guard.is_none()
-        && second_arm.guard.is_none()
-        {
-        return if is_none_or_err_arm(cx, second_arm) {
-            Some((first_arm.pat, first_arm.body, second_arm.body))
-        } else if is_none_or_err_arm(cx, first_arm) {
-            Some((second_arm.pat, second_arm.body, first_arm.body))
+    if arms.len() == 2 {
+        return if is_none_or_err_arm(cx, &arms[1]) {
+            Some((arms[0].pat, arms[0].body, arms[1].body))
+        } else if is_none_or_err_arm(cx, &arms[0]) {
+            Some((arms[1].pat, arms[1].body, arms[0].body))
         } else {
             None
         };

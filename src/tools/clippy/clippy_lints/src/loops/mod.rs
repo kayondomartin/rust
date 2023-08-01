@@ -7,9 +7,9 @@ mod iter_next_loop;
 mod manual_find;
 mod manual_flatten;
 mod manual_memcpy;
-mod manual_while_let_some;
 mod missing_spin_loop;
 mod mut_range_bound;
+mod needless_collect;
 mod needless_range_loop;
 mod never_loop;
 mod same_item_push;
@@ -20,10 +20,9 @@ mod while_let_loop;
 mod while_let_on_iterator;
 
 use clippy_utils::higher;
-use clippy_utils::msrvs::Msrv;
 use rustc_hir::{Expr, ExprKind, LoopSource, Pat};
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 use utils::{make_iterator_snippet, IncrementVisitor, InitializeVisitor};
 
@@ -63,8 +62,7 @@ declare_clippy_lint! {
     ///
     /// ### Why is this bad?
     /// Just iterating the collection itself makes the intent
-    /// more clear and is probably faster because it eliminates
-    /// the bounds check that is done when indexing.
+    /// more clear and is probably faster.
     ///
     /// ### Example
     /// ```rust
@@ -205,6 +203,28 @@ declare_clippy_lint! {
     pub WHILE_LET_LOOP,
     complexity,
     "`loop { if let { ... } else break }`, which can be written as a `while let` loop"
+}
+
+declare_clippy_lint! {
+    /// ### What it does
+    /// Checks for functions collecting an iterator when collect
+    /// is not needed.
+    ///
+    /// ### Why is this bad?
+    /// `collect` causes the allocation of a new data structure,
+    /// when this allocation may not be needed.
+    ///
+    /// ### Example
+    /// ```rust
+    /// # let iterator = vec![1].into_iter();
+    /// let len = iterator.clone().collect::<Vec<_>>().len();
+    /// // should be
+    /// let len = iterator.count();
+    /// ```
+    #[clippy::version = "1.30.0"]
+    pub NEEDLESS_COLLECT,
+    perf,
+    "collecting an iterator when collect is not needed"
 }
 
 declare_clippy_lint! {
@@ -480,7 +500,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for unnecessary `if let` usage in a for loop
+    /// Check for unnecessary `if let` usage in a for loop
     /// where only the `Some` or `Ok` variant of the iterator element is used.
     ///
     /// ### Why is this bad?
@@ -512,7 +532,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for empty spin loops
+    /// Check for empty spin loops
     ///
     /// ### Why is this bad?
     /// The loop body should have something like `thread::park()` or at least
@@ -548,7 +568,7 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for manual implementations of Iterator::find
+    /// Check for manual implementations of Iterator::find
     ///
     /// ### Why is this bad?
     /// It doesn't affect performance, but using `find` is shorter and easier to read.
@@ -577,45 +597,7 @@ declare_clippy_lint! {
     "manual implementation of `Iterator::find`"
 }
 
-declare_clippy_lint! {
-    /// ### What it does
-    /// Looks for loops that check for emptiness of a `Vec` in the condition and pop an element
-    /// in the body as a separate operation.
-    ///
-    /// ### Why is this bad?
-    /// Such loops can be written in a more idiomatic way by using a while-let loop and directly
-    /// pattern matching on the return value of `Vec::pop()`.
-    ///
-    /// ### Example
-    /// ```rust
-    /// let mut numbers = vec![1, 2, 3, 4, 5];
-    /// while !numbers.is_empty() {
-    ///     let number = numbers.pop().unwrap();
-    ///     // use `number`
-    /// }
-    /// ```
-    /// Use instead:
-    /// ```rust
-    /// let mut numbers = vec![1, 2, 3, 4, 5];
-    /// while let Some(number) = numbers.pop() {
-    ///     // use `number`
-    /// }
-    /// ```
-    #[clippy::version = "1.70.0"]
-    pub MANUAL_WHILE_LET_SOME,
-    style,
-    "checking for emptiness of a `Vec` in the loop condition and popping an element in the body"
-}
-
-pub struct Loops {
-    msrv: Msrv,
-}
-impl Loops {
-    pub fn new(msrv: Msrv) -> Self {
-        Self { msrv }
-    }
-}
-impl_lint_pass!(Loops => [
+declare_lint_pass!(Loops => [
     MANUAL_MEMCPY,
     MANUAL_FLATTEN,
     NEEDLESS_RANGE_LOOP,
@@ -623,6 +605,7 @@ impl_lint_pass!(Loops => [
     EXPLICIT_INTO_ITER_LOOP,
     ITER_NEXT_LOOP,
     WHILE_LET_LOOP,
+    NEEDLESS_COLLECT,
     EXPLICIT_COUNTER_LOOP,
     EMPTY_LOOP,
     WHILE_LET_ON_ITERATOR,
@@ -634,7 +617,6 @@ impl_lint_pass!(Loops => [
     SINGLE_ELEMENT_LOOP,
     MISSING_SPIN_LOOP,
     MANUAL_FIND,
-    MANUAL_WHILE_LET_SOME
 ]);
 
 impl<'tcx> LateLintPass<'tcx> for Loops {
@@ -654,7 +636,7 @@ impl<'tcx> LateLintPass<'tcx> for Loops {
             if body.span.from_expansion() {
                 return;
             }
-            self.check_for_loop(cx, pat, arg, body, expr, span);
+            check_for_loop(cx, pat, arg, body, expr, span);
             if let ExprKind::Block(block, _) = body.kind {
                 never_loop::check(cx, block, loop_id, span, for_loop.as_ref());
             }
@@ -681,54 +663,53 @@ impl<'tcx> LateLintPass<'tcx> for Loops {
 
         while_let_on_iterator::check(cx, expr);
 
-        if let Some(higher::While { condition, body, span }) = higher::While::hir(expr) {
+        if let Some(higher::While { condition, body }) = higher::While::hir(expr) {
             while_immutable_condition::check(cx, condition, body);
             missing_spin_loop::check(cx, condition, body);
-            manual_while_let_some::check(cx, condition, body, span);
         }
-    }
 
-    extract_msrv_attr!(LateContext);
+        needless_collect::check(expr, cx);
+    }
 }
 
-impl Loops {
-    fn check_for_loop<'tcx>(
-        &self,
-        cx: &LateContext<'tcx>,
-        pat: &'tcx Pat<'_>,
-        arg: &'tcx Expr<'_>,
-        body: &'tcx Expr<'_>,
-        expr: &'tcx Expr<'_>,
-        span: Span,
-    ) {
-        let is_manual_memcpy_triggered = manual_memcpy::check(cx, pat, arg, body, expr);
-        if !is_manual_memcpy_triggered {
-            needless_range_loop::check(cx, pat, arg, body, expr);
-            explicit_counter_loop::check(cx, pat, arg, body, expr);
-        }
-        self.check_for_loop_arg(cx, pat, arg);
-        for_kv_map::check(cx, pat, arg, body);
-        mut_range_bound::check(cx, arg, body);
-        single_element_loop::check(cx, pat, arg, body, expr);
-        same_item_push::check(cx, pat, arg, body, expr);
-        manual_flatten::check(cx, pat, arg, body, span);
-        manual_find::check(cx, pat, arg, body, span, expr);
+fn check_for_loop<'tcx>(
+    cx: &LateContext<'tcx>,
+    pat: &'tcx Pat<'_>,
+    arg: &'tcx Expr<'_>,
+    body: &'tcx Expr<'_>,
+    expr: &'tcx Expr<'_>,
+    span: Span,
+) {
+    let is_manual_memcpy_triggered = manual_memcpy::check(cx, pat, arg, body, expr);
+    if !is_manual_memcpy_triggered {
+        needless_range_loop::check(cx, pat, arg, body, expr);
+        explicit_counter_loop::check(cx, pat, arg, body, expr);
     }
+    check_for_loop_arg(cx, pat, arg);
+    for_kv_map::check(cx, pat, arg, body);
+    mut_range_bound::check(cx, arg, body);
+    single_element_loop::check(cx, pat, arg, body, expr);
+    same_item_push::check(cx, pat, arg, body, expr);
+    manual_flatten::check(cx, pat, arg, body, span);
+    manual_find::check(cx, pat, arg, body, span, expr);
+}
 
-    fn check_for_loop_arg(&self, cx: &LateContext<'_>, _: &Pat<'_>, arg: &Expr<'_>) {
-        if let ExprKind::MethodCall(method, self_arg, [], _) = arg.kind {
-            match method.ident.as_str() {
-                "iter" | "iter_mut" => {
-                    explicit_iter_loop::check(cx, self_arg, arg, &self.msrv);
-                },
-                "into_iter" => {
-                    explicit_into_iter_loop::check(cx, self_arg, arg);
-                },
-                "next" => {
-                    iter_next_loop::check(cx, arg);
-                },
-                _ => {},
-            }
+fn check_for_loop_arg(cx: &LateContext<'_>, _: &Pat<'_>, arg: &Expr<'_>) {
+    if let ExprKind::MethodCall(method, self_arg, [], _) = arg.kind {
+        let method_name = method.ident.as_str();
+        // check for looping over x.iter() or x.iter_mut(), could use &x or &mut x
+        match method_name {
+            "iter" | "iter_mut" => {
+                explicit_iter_loop::check(cx, self_arg, arg, method_name);
+            },
+            "into_iter" => {
+                explicit_iter_loop::check(cx, self_arg, arg, method_name);
+                explicit_into_iter_loop::check(cx, self_arg, arg);
+            },
+            "next" => {
+                iter_next_loop::check(cx, arg);
+            },
+            _ => {},
         }
     }
 }

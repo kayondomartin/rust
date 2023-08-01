@@ -86,7 +86,8 @@ pub(crate) fn unmerge_match_arm(acc: &mut Assists, ctx: &AssistContext<'_>) -> O
                     it.prev_sibling_or_token()
                 })
                 .map(|it| it.kind())
-                .find(|it| !it.is_trivia())
+                .skip_while(|it| it.is_trivia())
+                .next()
                     == Some(T![,]);
             let has_arms_after = neighbor(&match_arm, Direction::Next).is_some();
             if !has_comma_after && !has_arms_after {

@@ -1,4 +1,4 @@
-//@run-rustfix
+// run-rustfix
 #![warn(clippy::identity_op)]
 #![allow(unused)]
 #![allow(
@@ -112,10 +112,6 @@ fn main() {
     2 * (0 + { a });
     1 * ({ a } + 4);
     1 * 1;
-
-    // Issue #9904
-    let x = 0i32;
-    let _: i32 = &x + 0;
 }
 
 pub fn decide(a: bool, b: bool) -> u32 {

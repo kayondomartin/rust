@@ -123,20 +123,20 @@ pub(crate) fn apply_demorgan(acc: &mut Assists, ctx: &AssistContext<'_>) -> Opti
                     let lhs_range = lhs.syntax().text_range();
                     let not_lhs = invert_boolean_expression(lhs);
 
-                    edit.replace(lhs_range, format!("!({not_lhs}"));
+                    edit.replace(lhs_range, format!("!({}", not_lhs.syntax().text()));
                 }
 
                 if let Some(rhs) = terms.pop_back() {
                     let rhs_range = rhs.syntax().text_range();
                     let not_rhs = invert_boolean_expression(rhs);
 
-                    edit.replace(rhs_range, format!("{not_rhs})"));
+                    edit.replace(rhs_range, format!("{})", not_rhs.syntax().text()));
                 }
 
                 for term in terms {
                     let term_range = term.syntax().text_range();
                     let not_term = invert_boolean_expression(term);
-                    edit.replace(term_range, not_term.to_string());
+                    edit.replace(term_range, not_term.syntax().text());
                 }
             }
         },

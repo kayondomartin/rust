@@ -7,27 +7,15 @@ use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 
 fn tmp() -> PathBuf {
-    use std::ffi::{c_char, CStr, CString};
-
-    let path = std::env::var("MIRI_TEMP")
-        .unwrap_or_else(|_| std::env::temp_dir().into_os_string().into_string().unwrap());
-    // These are host paths. We need to convert them to the target.
-    let path = CString::new(path).unwrap();
-    let mut out = Vec::with_capacity(1024);
-
-    unsafe {
-        extern "Rust" {
-            fn miri_host_to_target_path(
-                path: *const c_char,
-                out: *mut c_char,
-                out_size: usize,
-            ) -> usize;
-        }
-        let ret = miri_host_to_target_path(path.as_ptr(), out.as_mut_ptr(), out.capacity());
-        assert_eq!(ret, 0);
-        let out = CStr::from_ptr(out.as_ptr()).to_str().unwrap();
-        PathBuf::from(out)
-    }
+    std::env::var("MIRI_TEMP")
+        .map(|tmp| {
+            // MIRI_TEMP is set outside of our emulated
+            // program, so it may have path separators that don't
+            // correspond to our target platform. We normalize them here
+            // before constructing a `PathBuf`
+            return PathBuf::from(tmp.replace("\\", "/"));
+        })
+        .unwrap_or_else(|_| std::env::temp_dir())
 }
 
 /// Test allocating variant of `realpath`.
@@ -90,7 +78,7 @@ fn test_posix_realpath_errors() {
     use std::ffi::CString;
     use std::io::ErrorKind;
 
-    // Test nonexistent path returns an error.
+    // Test non-existent path returns an error.
     let c_path = CString::new("./nothing_to_see_here").expect("CString::new failed");
     let r = unsafe { libc::realpath(c_path.as_ptr(), std::ptr::null_mut()) };
     assert!(r.is_null());
@@ -101,6 +89,7 @@ fn test_posix_realpath_errors() {
 
 #[cfg(target_os = "linux")]
 fn test_posix_fadvise() {
+    use std::convert::TryInto;
     use std::io::Write;
 
     let path = tmp().join("miri_test_libc_posix_fadvise.txt");
@@ -192,25 +181,17 @@ fn test_thread_local_errno() {
 }
 
 /// Tests whether clock support exists at all
+#[cfg(target_os = "linux")]
 fn test_clocks() {
     let mut tp = std::mem::MaybeUninit::<libc::timespec>::uninit();
     let is_error = unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, tp.as_mut_ptr()) };
     assert_eq!(is_error, 0);
+    let is_error = unsafe { libc::clock_gettime(libc::CLOCK_REALTIME_COARSE, tp.as_mut_ptr()) };
+    assert_eq!(is_error, 0);
     let is_error = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, tp.as_mut_ptr()) };
     assert_eq!(is_error, 0);
-    #[cfg(target_os = "linux")]
-    {
-        let is_error = unsafe { libc::clock_gettime(libc::CLOCK_REALTIME_COARSE, tp.as_mut_ptr()) };
-        assert_eq!(is_error, 0);
-        let is_error =
-            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_COARSE, tp.as_mut_ptr()) };
-        assert_eq!(is_error, 0);
-    }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        let is_error = unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, tp.as_mut_ptr()) };
-        assert_eq!(is_error, 0);
-    }
+    let is_error = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_COARSE, tp.as_mut_ptr()) };
+    assert_eq!(is_error, 0);
 }
 
 fn test_posix_gettimeofday() {
@@ -301,101 +282,6 @@ fn test_posix_mkstemp() {
     }
 }
 
-fn test_memcpy() {
-    unsafe {
-        let src = [1i8, 2, 3];
-        let dest = libc::calloc(3, 1);
-        libc::memcpy(dest, src.as_ptr() as *const libc::c_void, 3);
-        let slc = std::slice::from_raw_parts(dest as *const i8, 3);
-        assert_eq!(*slc, [1i8, 2, 3]);
-        libc::free(dest);
-    }
-
-    unsafe {
-        let src = [1i8, 2, 3];
-        let dest = libc::calloc(4, 1);
-        libc::memcpy(dest, src.as_ptr() as *const libc::c_void, 3);
-        let slc = std::slice::from_raw_parts(dest as *const i8, 4);
-        assert_eq!(*slc, [1i8, 2, 3, 0]);
-        libc::free(dest);
-    }
-
-    unsafe {
-        let src = 123_i32;
-        let mut dest = 0_i32;
-        libc::memcpy(
-            &mut dest as *mut i32 as *mut libc::c_void,
-            &src as *const i32 as *const libc::c_void,
-            std::mem::size_of::<i32>(),
-        );
-        assert_eq!(dest, src);
-    }
-
-    unsafe {
-        let src = Some(123);
-        let mut dest: Option<i32> = None;
-        libc::memcpy(
-            &mut dest as *mut Option<i32> as *mut libc::c_void,
-            &src as *const Option<i32> as *const libc::c_void,
-            std::mem::size_of::<Option<i32>>(),
-        );
-        assert_eq!(dest, src);
-    }
-
-    unsafe {
-        let src = &123;
-        let mut dest = &42;
-        libc::memcpy(
-            &mut dest as *mut &'static i32 as *mut libc::c_void,
-            &src as *const &'static i32 as *const libc::c_void,
-            std::mem::size_of::<&'static i32>(),
-        );
-        assert_eq!(*dest, 123);
-    }
-}
-
-fn test_strcpy() {
-    use std::ffi::{CStr, CString};
-
-    // case: src_size equals dest_size
-    unsafe {
-        let src = CString::new("rust").unwrap();
-        let size = src.as_bytes_with_nul().len();
-        let dest = libc::malloc(size);
-        libc::strcpy(dest as *mut libc::c_char, src.as_ptr());
-        assert_eq!(CStr::from_ptr(dest as *const libc::c_char), src.as_ref());
-        libc::free(dest);
-    }
-
-    // case: src_size is less than dest_size
-    unsafe {
-        let src = CString::new("rust").unwrap();
-        let size = src.as_bytes_with_nul().len();
-        let dest = libc::malloc(size + 1);
-        libc::strcpy(dest as *mut libc::c_char, src.as_ptr());
-        assert_eq!(CStr::from_ptr(dest as *const libc::c_char), src.as_ref());
-        libc::free(dest);
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn test_sigrt() {
-    let min = libc::SIGRTMIN();
-    let max = libc::SIGRTMAX();
-
-    // "The Linux kernel supports a range of 33 different real-time
-    // signals, numbered 32 to 64"
-    assert!(min >= 32);
-    assert!(max >= 32);
-    assert!(min <= 64);
-    assert!(max <= 64);
-
-    // "POSIX.1-2001 requires that an implementation support at least
-    // _POSIX_RTSIG_MAX (8) real-time signals."
-    assert!(min < max);
-    assert!(max - min >= 8)
-}
-
 fn main() {
     test_posix_gettimeofday();
     test_posix_mkstemp();
@@ -407,15 +293,11 @@ fn main() {
     test_thread_local_errno();
 
     test_isatty();
-    test_clocks();
-
-    test_memcpy();
-    test_strcpy();
 
     #[cfg(target_os = "linux")]
     {
         test_posix_fadvise();
         test_sync_file_range();
-        test_sigrt();
+        test_clocks();
     }
 }

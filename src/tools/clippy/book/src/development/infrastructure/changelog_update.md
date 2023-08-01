@@ -56,28 +56,6 @@ and open that file in your editor of choice.
 When updating the changelog it's also a good idea to make sure that `commit1` is
 already correct in the current changelog.
 
-#### PR ranges
-
-We developed the concept of PR ranges to help the user understand the size of a new update. To create a PR range,
-get the current release date and the date that the last version was released (YYYY-MM-DD) and use the following link:
-
-```
-[**View <NUMBER OF PRs> PRs merged since 1.<LAST VERSION NUM>**](https://github.com/rust-lang/rust-clippy/pulls?q=is%3Apr+is%3Aclosed+merged%3A<LAST VERSION DATE>..<CURRENT VERSION DATE>+base%3Amaster+sort%3Amerged-desc+)
-```
-
-> Note: Be sure to check click the link and check how many PRs got merged between
-
-Example:
-
-```
-[**View 85 PRs merged since 1.69**](https://github.com/rust-lang/rust-clippy/pulls?q=is%3Apr+is%3Aclosed+merged%3A2023-04-20..2023-06-01+base%3Amaster+sort%3Amerged-desc+)
-```
-
-Which renders to:
-[**View 85 PRs merged since 1.69**](https://github.com/rust-lang/rust-clippy/pulls?q=is%3Apr+is%3Aclosed+merged%3A2023-04-20..2023-06-01+base%3Amaster+sort%3Amerged-desc+)
-
-Note that **commit ranges should not be included**, only PR ranges.
-
 ### 3. Authoring the final changelog
 
 The above script should have dumped all the relevant PRs to the file you
@@ -117,23 +95,11 @@ As section headers, we use:
 Please also be sure to update the Beta/Unreleased sections at the top with the
 relevant commit ranges.
 
-#### 3.1 Include `beta-accepted` PRs
-
-Look for the [`beta-accepted`] label and make sure to also include the PRs with
-that label in the changelog. If you can, remove the `beta-accepted` labels
-**after** the changelog PR was merged.
-
-> _Note:_ Some of those PRs might even get backported to the previous `beta`.
-> Those have to be included in the changelog of the _previous_ release.
-
-### 4. Update `clippy::version` attributes
-
-Next, make sure to check that the `#[clippy::version]` attributes for the added
-lints contain the correct version.
+If you have the time, it would be appreciated if you double-check, that the
+`#[clippy::version]` attributes for the added lints contains the correct version.
 
 [changelog]: https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md
 [forge]: https://forge.rust-lang.org/
 [rust_master_tools]: https://github.com/rust-lang/rust/tree/master/src/tools/clippy
 [rust_beta_tools]: https://github.com/rust-lang/rust/tree/beta/src/tools/clippy
 [rust_stable_tools]: https://github.com/rust-lang/rust/releases
-[`beta-accepted`]: https://github.com/rust-lang/rust-clippy/issues?q=label%3Abeta-accepted+

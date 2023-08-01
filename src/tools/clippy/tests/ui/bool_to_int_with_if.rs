@@ -1,6 +1,5 @@
-//@run-rustfix
+// run-rustfix
 
-#![feature(let_chains, inline_const)]
 #![warn(clippy::bool_to_int_with_if)]
 #![allow(unused, dead_code, clippy::unnecessary_operation, clippy::no_effect)]
 
@@ -109,15 +108,6 @@ fn main() {
         123
     };
 
-    pub const SHOULD_NOT_LINT: usize = if true { 1 } else { 0 };
-
-    // https://github.com/rust-lang/rust-clippy/issues/10452
-    let should_not_lint = [(); if true { 1 } else { 0 }];
-
-    let should_not_lint = const {
-        if true { 1 } else { 0 }
-    };
-
     some_fn(a);
 }
 
@@ -130,23 +120,4 @@ fn side_effect() {}
 
 fn cond(a: bool, b: bool) -> bool {
     a || b
-}
-
-enum Enum {
-    A,
-    B,
-}
-
-fn if_let(a: Enum, b: Enum) {
-    if let Enum::A = a {
-        1
-    } else {
-        0
-    };
-
-    if let Enum::A = a && let Enum::B = b {
-        1
-    } else {
-        0
-    };
 }

@@ -1,5 +1,3 @@
-//@revisions: stack tree
-//@[tree]compile-flags: -Zmiri-tree-borrows
 #![feature(strict_provenance)]
 use std::{mem, ptr};
 

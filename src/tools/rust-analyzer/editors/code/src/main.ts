@@ -3,7 +3,6 @@ import * as lc from "vscode-languageclient/node";
 
 import * as commands from "./commands";
 import { CommandFactory, Ctx, fetchWorkspace } from "./ctx";
-import * as diagnostics from "./diagnostics";
 import { activateTaskProvider } from "./tasks";
 import { setContextValue } from "./util";
 
@@ -49,52 +48,6 @@ async function activateServer(ctx: Ctx): Promise<RustAnalyzerExtensionApi> {
         ctx.pushExtCleanup(activateTaskProvider(ctx.config));
     }
 
-    const diagnosticProvider = new diagnostics.TextDocumentProvider(ctx);
-    ctx.pushExtCleanup(
-        vscode.workspace.registerTextDocumentContentProvider(
-            diagnostics.URI_SCHEME,
-            diagnosticProvider
-        )
-    );
-
-    const decorationProvider = new diagnostics.AnsiDecorationProvider(ctx);
-    ctx.pushExtCleanup(decorationProvider);
-
-    async function decorateVisibleEditors(document: vscode.TextDocument) {
-        for (const editor of vscode.window.visibleTextEditors) {
-            if (document === editor.document) {
-                await decorationProvider.provideDecorations(editor);
-            }
-        }
-    }
-
-    vscode.workspace.onDidChangeTextDocument(
-        async (event) => await decorateVisibleEditors(event.document),
-        null,
-        ctx.subscriptions
-    );
-    vscode.workspace.onDidOpenTextDocument(decorateVisibleEditors, null, ctx.subscriptions);
-    vscode.window.onDidChangeActiveTextEditor(
-        async (editor) => {
-            if (editor) {
-                diagnosticProvider.triggerUpdate(editor.document.uri);
-                await decorateVisibleEditors(editor.document);
-            }
-        },
-        null,
-        ctx.subscriptions
-    );
-    vscode.window.onDidChangeVisibleTextEditors(
-        async (visibleEditors) => {
-            for (const editor of visibleEditors) {
-                diagnosticProvider.triggerUpdate(editor.document.uri);
-                await decorationProvider.provideDecorations(editor);
-            }
-        },
-        null,
-        ctx.subscriptions
-    );
-
     vscode.workspace.onDidChangeWorkspaceFolders(
         async (_) => ctx.onWorkspaceFolderChanges(),
         null,
@@ -102,7 +55,7 @@ async function activateServer(ctx: Ctx): Promise<RustAnalyzerExtensionApi> {
     );
     vscode.workspace.onDidChangeConfiguration(
         async (_) => {
-            await ctx.client?.sendNotification(lc.DidChangeConfigurationNotification.type, {
+            await ctx.client?.sendNotification("workspace/didChangeConfiguration", {
                 settings: "",
             });
         },
@@ -120,11 +73,13 @@ function createCommands(): Record<string, CommandFactory> {
             enabled: commands.onEnter,
             disabled: (_) => () => vscode.commands.executeCommand("default:type", { text: "\n" }),
         },
-        restartServer: {
+        reload: {
             enabled: (ctx) => async () => {
+                void vscode.window.showInformationMessage("Reloading rust-analyzer...");
                 await ctx.restart();
             },
             disabled: (ctx) => async () => {
+                void vscode.window.showInformationMessage("Reloading rust-analyzer...");
                 await ctx.start();
             },
         },
@@ -151,15 +106,11 @@ function createCommands(): Record<string, CommandFactory> {
         memoryUsage: { enabled: commands.memoryUsage },
         shuffleCrateGraph: { enabled: commands.shuffleCrateGraph },
         reloadWorkspace: { enabled: commands.reloadWorkspace },
-        rebuildProcMacros: { enabled: commands.rebuildProcMacros },
-        addProject: { enabled: commands.addProject },
         matchingBrace: { enabled: commands.matchingBrace },
         joinLines: { enabled: commands.joinLines },
         parentModule: { enabled: commands.parentModule },
         syntaxTree: { enabled: commands.syntaxTree },
         viewHir: { enabled: commands.viewHir },
-        viewMir: { enabled: commands.viewMir },
-        interpretFunction: { enabled: commands.interpretFunction },
         viewFileText: { enabled: commands.viewFileText },
         viewItemTree: { enabled: commands.viewItemTree },
         viewCrateGraph: { enabled: commands.viewCrateGraph },
@@ -175,8 +126,6 @@ function createCommands(): Record<string, CommandFactory> {
         moveItemUp: { enabled: commands.moveItemUp },
         moveItemDown: { enabled: commands.moveItemDown },
         cancelFlycheck: { enabled: commands.cancelFlycheck },
-        clearFlycheck: { enabled: commands.clearFlycheck },
-        runFlycheck: { enabled: commands.runFlycheck },
         ssr: { enabled: commands.ssr },
         serverVersion: { enabled: commands.serverVersion },
         // Internal commands which are invoked by the server.
@@ -188,8 +137,5 @@ function createCommands(): Record<string, CommandFactory> {
         resolveCodeAction: { enabled: commands.resolveCodeAction },
         runSingle: { enabled: commands.runSingle },
         showReferences: { enabled: commands.showReferences },
-        triggerParameterHints: { enabled: commands.triggerParameterHints },
-        openLogs: { enabled: commands.openLogs },
-        revealDependency: { enabled: commands.revealDependency },
     };
 }

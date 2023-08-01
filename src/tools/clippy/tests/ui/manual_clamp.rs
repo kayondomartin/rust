@@ -1,3 +1,4 @@
+#![feature(custom_inner_attributes)]
 #![warn(clippy::manual_clamp)]
 #![allow(
     unused,
@@ -303,8 +304,9 @@ fn cmp_min_max(input: i32) -> i32 {
     input * 3
 }
 
-#[clippy::msrv = "1.49"]
 fn msrv_1_49() {
+    #![clippy::msrv = "1.49"]
+
     let (input, min, max) = (0, -1, 2);
     let _ = if input < min {
         min
@@ -315,8 +317,9 @@ fn msrv_1_49() {
     };
 }
 
-#[clippy::msrv = "1.50"]
 fn msrv_1_50() {
+    #![clippy::msrv = "1.50"]
+
     let (input, min, max) = (0, -1, 2);
     let _ = if input < min {
         min
@@ -325,23 +328,4 @@ fn msrv_1_50() {
     } else {
         input
     };
-}
-
-const fn _const() {
-    let (input, min, max) = (0, -1, 2);
-    let _ = if input < min {
-        min
-    } else if input > max {
-        max
-    } else {
-        input
-    };
-
-    let mut x = input;
-    if max < x {
-        let x = max;
-    }
-    if min > x {
-        x = min;
-    }
 }

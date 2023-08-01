@@ -12,8 +12,6 @@ use super::*;
 //     let _ = r"d";
 //     let _ = b"e";
 //     let _ = br"f";
-//     let _ = c"g";
-//     let _ = cr"h";
 // }
 pub(crate) const LITERAL_FIRST: TokenSet = TokenSet::new(&[
     T![true],
@@ -24,7 +22,6 @@ pub(crate) const LITERAL_FIRST: TokenSet = TokenSet::new(&[
     CHAR,
     STRING,
     BYTE_STRING,
-    C_STRING,
 ]);
 
 pub(crate) fn literal(p: &mut Parser<'_>) -> Option<CompletedMarker> {
@@ -43,28 +40,25 @@ pub(super) const ATOM_EXPR_FIRST: TokenSet =
         T!['{'],
         T!['['],
         T![|],
-        T![async],
-        T![box],
-        T![break],
-        T![const],
-        T![continue],
-        T![do],
-        T![for],
-        T![if],
-        T![let],
-        T![loop],
-        T![match],
         T![move],
-        T![return],
-        T![static],
-        T![try],
-        T![unsafe],
+        T![box],
+        T![if],
         T![while],
+        T![match],
+        T![unsafe],
+        T![return],
         T![yield],
+        T![break],
+        T![continue],
+        T![async],
+        T![try],
+        T![const],
+        T![loop],
+        T![for],
         LIFETIME_IDENT,
     ]));
 
-pub(super) const EXPR_RECOVERY_SET: TokenSet = TokenSet::new(&[T![')'], T![']']]);
+const EXPR_RECOVERY_SET: TokenSet = TokenSet::new(&[T![let]]);
 
 pub(super) fn atom_expr(
     p: &mut Parser<'_>,
@@ -99,7 +93,6 @@ pub(super) fn atom_expr(
         T![match] => match_expr(p),
         T![return] => return_expr(p),
         T![yield] => yield_expr(p),
-        T![do] if p.nth_at_contextual_kw(1, T![yeet]) => yeet_expr(p),
         T![continue] => continue_expr(p),
         T![break] => break_expr(p, r),
 
@@ -121,7 +114,7 @@ pub(super) fn atom_expr(
                     // fn main() {
                     //     'loop: impl
                     // }
-                    p.error("expected a loop or block");
+                    p.error("expected a loop");
                     m.complete(p, ERROR);
                     return None;
                 }
@@ -157,17 +150,19 @@ pub(super) fn atom_expr(
             m.complete(p, BLOCK_EXPR)
         }
 
-        T![const] | T![static] | T![async] | T![move] | T![|] => closure_expr(p),
+        T![static] | T![async] | T![move] | T![|] => closure_expr(p),
         T![for] if la == T![<] => closure_expr(p),
         T![for] => for_expr(p, None),
 
         _ => {
-            p.err_and_bump("expected expression");
+            p.err_recover("expected expression", EXPR_RECOVERY_SET);
             return None;
         }
     };
-    let blocklike =
-        if BlockLike::is_blocklike(done.kind()) { BlockLike::Block } else { BlockLike::NotBlock };
+    let blocklike = match done.kind() {
+        IF_EXPR | WHILE_EXPR | FOR_EXPR | LOOP_EXPR | MATCH_EXPR | BLOCK_EXPR => BlockLike::Block,
+        _ => BlockLike::NotBlock,
+    };
     Some((done, blocklike))
 }
 
@@ -184,22 +179,12 @@ fn tuple_expr(p: &mut Parser<'_>) -> CompletedMarker {
 
     let mut saw_comma = false;
     let mut saw_expr = false;
-
-    // test_err tuple_expr_leading_comma
-    // fn foo() {
-    //     (,);
-    // }
-    if p.eat(T![,]) {
-        p.error("expected expression");
-        saw_comma = true;
-    }
-
     while !p.at(EOF) && !p.at(T![')']) {
         saw_expr = true;
 
         // test tuple_attrs
         // const A: (i64, i64) = (1, #[cfg(test)] 2);
-        if expr(p).is_none() {
+        if !expr(p) {
             break;
         }
 
@@ -232,7 +217,7 @@ fn array_expr(p: &mut Parser<'_>) -> CompletedMarker {
 
         // test array_attrs
         // const A: &[i64] = &[1, #[cfg(test)] 2];
-        if expr(p).is_none() {
+        if !expr(p) {
             break;
         }
 
@@ -268,7 +253,7 @@ fn array_expr(p: &mut Parser<'_>) -> CompletedMarker {
 // }
 fn closure_expr(p: &mut Parser<'_>) -> CompletedMarker {
     assert!(match p.current() {
-        T![const] | T![static] | T![async] | T![move] | T![|] => true,
+        T![static] | T![async] | T![move] | T![|] => true,
         T![for] => p.nth(1) == T![<],
         _ => false,
     });
@@ -278,9 +263,7 @@ fn closure_expr(p: &mut Parser<'_>) -> CompletedMarker {
     if p.at(T![for]) {
         types::for_binder(p);
     }
-    // test const_closure
-    // fn main() { let cl = const || _ = 0; }
-    p.eat(T![const]);
+
     p.eat(T![static]);
     p.eat(T![async]);
     p.eat(T![move]);
@@ -295,8 +278,6 @@ fn closure_expr(p: &mut Parser<'_>) -> CompletedMarker {
         // fn main() { || -> i32 { 92 }(); }
         block_expr(p);
     } else if p.at_ts(EXPR_FIRST) {
-        // test closure_body_underscore_assignment
-        // fn main() { || _ = 0; }
         expr(p);
     } else {
         p.error("expected expression");
@@ -550,7 +531,6 @@ fn return_expr(p: &mut Parser<'_>) -> CompletedMarker {
     }
     m.complete(p, RETURN_EXPR)
 }
-
 // test yield_expr
 // fn foo() {
 //     yield;
@@ -564,23 +544,6 @@ fn yield_expr(p: &mut Parser<'_>) -> CompletedMarker {
         expr(p);
     }
     m.complete(p, YIELD_EXPR)
-}
-
-// test yeet_expr
-// fn foo() {
-//     do yeet;
-//     do yeet 1
-// }
-fn yeet_expr(p: &mut Parser<'_>) -> CompletedMarker {
-    assert!(p.at(T![do]));
-    assert!(p.nth_at_contextual_kw(1, T![yeet]));
-    let m = p.start();
-    p.bump(T![do]);
-    p.bump_remap(T![yeet]);
-    if p.at_ts(EXPR_FIRST) {
-        expr(p);
-    }
-    m.complete(p, YEET_EXPR)
 }
 
 // test continue_expr

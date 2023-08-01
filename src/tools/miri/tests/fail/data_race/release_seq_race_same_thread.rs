@@ -1,4 +1,4 @@
-//@compile-flags: -Zmiri-disable-weak-memory-emulation -Zmiri-preemption-rate=0 -Zmiri-disable-stacked-borrows
+//@compile-flags: -Zmiri-disable-isolation -Zmiri-disable-weak-memory-emulation -Zmiri-preemption-rate=0
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::spawn;
@@ -25,7 +25,6 @@ pub fn main() {
     //  3. load acquire : 2
     unsafe {
         let j1 = spawn(move || {
-            let c = c; // avoid field capturing
             *c.0 = 1;
             SYNC.store(1, Ordering::Release);
 
@@ -37,9 +36,8 @@ pub fn main() {
         });
 
         let j2 = spawn(move || {
-            let c = c; // avoid field capturing
             if SYNC.load(Ordering::Acquire) == 2 {
-                *c.0 //~ ERROR: Data race detected between (1) Write on thread `<unnamed>` and (2) Read on thread `<unnamed>`
+                *c.0 //~ ERROR: Data race detected between Read on thread `<unnamed>` and Write on thread `<unnamed>`
             } else {
                 0
             }

@@ -306,21 +306,22 @@ impl<'hir> LoweringContext<'_, 'hir> {
             self.lower_attrs(hir_id, &e.attrs);
             let mut expr = hir::Expr { hir_id, kind, span: self.lower_span(e.span) };
             if self.tcx.sess.opts.unstable_opts.meta_update && !self.tcx.sess.opts.unstable_opts.meta_update_analysis {
-                let node_id = self.tcx.def_id_to_node_id(&hir_id.owner);
-                if let Some(set) = self.tcx.special_types.need_unbox.get(&node_id){
-                    let local_id: u32 = hir_id.local_id.as_u32();
-                    let mut offset_id = local_id;
-                    if let Some(saved_offset) = self.metaupdate_id_offset_map.get(&node_id) {
-                        offset_id -= saved_offset;
-                    }else{
-                        self.metaupdate_id_offset_map.insert(node_id, 0);
-                    }
+                if let Some(node_id) = self.tcx.def_id_to_node_id(&hir_id.owner.to_def_id()) {
+                    if let Some(set) = self.tcx.special_types.need_unbox.get(&node_id){
+                        let local_id: u32 = hir_id.local_id.as_u32();
+                        let mut offset_id = local_id;
+                        if let Some(saved_offset) = self.metaupdate_id_offset_map.get(&node_id) {
+                            offset_id -= saved_offset;
+                        }else{
+                            self.metaupdate_id_offset_map.insert(node_id, 0);
+                        }
 
-                    if set.contains(&offset_id) {
-                        println!("Found unboxable, crate: {}, owner: {}, local: {}",self.tcx.crate_name(LOCAL_CRATE).to_string(), hir_id.owner.def_id.index(), offset_id);
-                        expr = hir::Expr{hir_id: self.next_id(), kind: hir::ExprKind::Unary(hir::UnOp::Deref, self.arena.alloc(expr)), span: DUMMY_SP};
-                        let expr_def_id = self.tcx.def_id_to_node_id(&expr.hir_id.owner.into());
-                        *self.metaupdate_id_offset_map.get_mut(&expr_def_id).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
+                        if set.contains(&offset_id) {
+                            println!("Found unboxable, crate: {}, owner: {}, local: {}",self.tcx.crate_name(LOCAL_CRATE).to_string(), hir_id.owner.def_id.index(), offset_id);
+                            expr = hir::Expr{hir_id: self.next_id(), kind: hir::ExprKind::Unary(hir::UnOp::Deref, self.arena.alloc(expr)), span: DUMMY_SP};
+                            let expr_def_id = self.tcx.def_id_to_node_id(&expr.hir_id.owner.to_def_id()).unwrap();
+                            *self.metaupdate_id_offset_map.get_mut(&expr_def_id).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
+                        }
                     }
                 }
             }
@@ -1054,20 +1055,21 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 {
                     let mut expr = self.lower_expr(rhs);
                     if self.tcx.sess.opts.unstable_opts.meta_update {
-                        let node_id = self.tcx.def_id_to_node_id(&expr.hir_id.owner.into());
-                        if let Some(set) = self.tcx.special_types.field_exprs.get(&node_id) {
-                            let local_id: u32 = expr.hir_id.local_id.as_u32();
-                            let mut offset_id = local_id;
-                            if let Some(saved_offset) = self.metaupdate_id_offset_map.get(&node_id) {
-                                offset_id -= saved_offset;
-                            }else{
-                                self.metaupdate_id_offset_map.insert(node_id, 0);
-                            }
+                        if let Some(node_id) = self.tcx.def_id_to_node_id(&expr.hir_id.owner.to_def_id()) {
+                            if let Some(set) = self.tcx.special_types.field_exprs.get(&node_id) {
+                                let local_id: u32 = expr.hir_id.local_id.as_u32();
+                                let mut offset_id = local_id;
+                                if let Some(saved_offset) = self.metaupdate_id_offset_map.get(&node_id) {
+                                    offset_id -= saved_offset;
+                                }else{
+                                    self.metaupdate_id_offset_map.insert(node_id, 0);
+                                }
 
-                            if set.contains(&offset_id) {
-                                println!("Found boxable, crate: {}, owner: {}, local: {}", self.tcx.crate_name(LOCAL_CRATE).to_string(), expr.hir_id.owner.def_id.index(), offset_id);
-                                expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
-                                *self.metaupdate_id_offset_map.get_mut(&node_id).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
+                                if set.contains(&offset_id) {
+                                    println!("Found boxable, crate: {}, owner: {}, local: {}", self.tcx.crate_name(LOCAL_CRATE).to_string(), expr.hir_id.owner.def_id.index(), offset_id);
+                                    expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
+                                    *self.metaupdate_id_offset_map.get_mut(&node_id).unwrap() += expr.hir_id.local_id.as_u32() - local_id;
+                                }
                             }
                         }
                     }
@@ -1431,30 +1433,30 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
     fn lower_expr_field(&mut self, f: &ExprField) -> hir::ExprField<'hir> {
         let hir_id = self.lower_node_id(f.id);
-        let node_id = self.tcx.def_id_to_node_id(hir_id.owner.into());
+        let node_id = self.tcx.def_id_to_node_id(hir_id.owner.to_def_id());
         self.lower_attrs(hir_id, &f.attrs);
         hir::ExprField {
             hir_id,
             ident: self.lower_ident(f.ident),
-            expr: if self.tcx.sess.opts.unstable_opts.meta_update && self.tcx.special_types.field_exprs.contains_key(&node_id) {
-                    let def_id = 
-                    let set = self.tcx.special_types.field_exprs.get(&node_id).unwrap();
-                    let mut local_id = hir_id.local_id.as_u32();
-                    if let Some(offset) = self.metaupdate_id_offset_map.get_mut(&node_id) {
-                        local_id -= *offset;
-                    }else{
-                        self.metaupdate_id_offset_map.insert(node_id, 0);
-                    }
+            expr: if self.tcx.sess.opts.unstable_opts.meta_update && node_id.is_some() && self.tcx.special_types.field_exprs.contains_key(&node_id.unwrap()) {
+                let node_id = node_id.unwrap();
+                let set = self.tcx.special_types.field_exprs.get(&node_id).unwrap();
+                let mut local_id = hir_id.local_id.as_u32();
+                if let Some(offset) = self.metaupdate_id_offset_map.get_mut(&node_id) {
+                    local_id -= *offset;
+                } else {
+                    self.metaupdate_id_offset_map.insert(node_id, 0);
+                }
 
-                    let mut expr = self.lower_expr(&f.expr);
-                    if set.contains(&local_id){
-                        let mut offset = expr.hir_id.local_id.as_u32();
-                        expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
-                        offset = expr.hir_id.local_id.as_u32() - offset;
-                        *self.metaupdate_id_offset_map.get_mut(&node_id).unwrap() += offset;
-                    }
-                    expr
-                } else { self.lower_expr(&f.expr)},
+                let mut expr = self.lower_expr(&f.expr);
+                if set.contains(&local_id) {
+                    let mut offset = expr.hir_id.local_id.as_u32();
+                    expr = self.arena.alloc(self.expr(DUMMY_SP, hir::ExprKind::Box(expr), AttrVec::new()));
+                    offset = expr.hir_id.local_id.as_u32() - offset;
+                    *self.metaupdate_id_offset_map.get_mut(&node_id).unwrap() += offset;
+                }
+                expr
+            } else { self.lower_expr(&f.expr)},
             span: self.lower_span(f.span),
             is_shorthand: f.is_shorthand,
         }

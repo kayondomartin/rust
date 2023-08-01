@@ -1,5 +1,3 @@
-//@revisions: stack tree
-//@[tree]compile-flags: -Zmiri-tree-borrows
 //@compile-flags: -Zmiri-strict-provenance
 #![feature(strict_provenance, strict_provenance_atomic_ptr)]
 use std::sync::atomic::{

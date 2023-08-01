@@ -1,9 +1,8 @@
-use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::prelude::*;
 use std::io::{self, BufReader};
 use std::path::{Component, Path};
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use itertools::Itertools;
 use rustc_data_structures::flock;
@@ -11,7 +10,7 @@ use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
-use super::{collect_paths_for_type, ensure_trailing_slash, Context};
+use super::{collect_paths_for_type, ensure_trailing_slash, Context, BASIC_KEYWORDS};
 use crate::clean::Crate;
 use crate::config::{EmitType, RenderOptions};
 use crate::docfs::PathError;
@@ -138,7 +137,7 @@ pub(super) fn write_shared(
         Ok((ret, krates))
     }
 
-    /// Read a file and return all lines that match the <code>"{crate}":{data},\ </code> format,
+    /// Read a file and return all lines that match the <code>"{crate}":{data},\</code> format,
     /// and return a tuple `(Vec<DataString>, Vec<CrateNameString>)`.
     ///
     /// This forms the payload of files that look like this:
@@ -185,26 +184,23 @@ pub(super) fn write_shared(
 
     use std::ffi::OsString;
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct Hierarchy {
-        parent: Weak<Self>,
         elem: OsString,
-        children: RefCell<FxHashMap<OsString, Rc<Self>>>,
-        elems: RefCell<FxHashSet<OsString>>,
+        children: FxHashMap<OsString, Hierarchy>,
+        elems: FxHashSet<OsString>,
     }
 
     impl Hierarchy {
-        fn with_parent(elem: OsString, parent: &Rc<Self>) -> Self {
-            Self { elem, parent: Rc::downgrade(parent), ..Self::default() }
+        fn new(elem: OsString) -> Hierarchy {
+            Hierarchy { elem, children: FxHashMap::default(), elems: FxHashSet::default() }
         }
 
         fn to_json_string(&self) -> String {
-            let borrow = self.children.borrow();
-            let mut subs: Vec<_> = borrow.values().collect();
+            let mut subs: Vec<&Hierarchy> = self.children.values().collect();
             subs.sort_unstable_by(|a, b| a.elem.cmp(&b.elem));
             let mut files = self
                 .elems
-                .borrow()
                 .iter()
                 .map(|s| format!("\"{}\"", s.to_str().expect("invalid osstring conversion")))
                 .collect::<Vec<_>>();
@@ -224,52 +220,36 @@ pub(super) fn write_shared(
                 files = files
             )
         }
-
-        fn add_path(self: &Rc<Self>, path: &Path) {
-            let mut h = Rc::clone(&self);
-            let mut elems = path
-                .components()
-                .filter_map(|s| match s {
-                    Component::Normal(s) => Some(s.to_owned()),
-                    Component::ParentDir => Some(OsString::from("..")),
-                    _ => None,
-                })
-                .peekable();
-            loop {
-                let cur_elem = elems.next().expect("empty file path");
-                if cur_elem == ".." {
-                    if let Some(parent) = h.parent.upgrade() {
-                        h = parent;
-                    }
-                    continue;
-                }
-                if elems.peek().is_none() {
-                    h.elems.borrow_mut().insert(cur_elem);
-                    break;
-                } else {
-                    let entry = Rc::clone(
-                        h.children
-                            .borrow_mut()
-                            .entry(cur_elem.clone())
-                            .or_insert_with(|| Rc::new(Self::with_parent(cur_elem, &h))),
-                    );
-                    h = entry;
-                }
-            }
-        }
     }
 
     if cx.include_sources {
-        let hierarchy = Rc::new(Hierarchy::default());
+        let mut hierarchy = Hierarchy::new(OsString::new());
         for source in cx
             .shared
             .local_sources
             .iter()
             .filter_map(|p| p.0.strip_prefix(&cx.shared.src_root).ok())
         {
-            hierarchy.add_path(source);
+            let mut h = &mut hierarchy;
+            let mut elems = source
+                .components()
+                .filter_map(|s| match s {
+                    Component::Normal(s) => Some(s.to_owned()),
+                    _ => None,
+                })
+                .peekable();
+            loop {
+                let cur_elem = elems.next().expect("empty file path");
+                if elems.peek().is_none() {
+                    h.elems.insert(cur_elem);
+                    break;
+                } else {
+                    let e = cur_elem.clone();
+                    h = h.children.entry(cur_elem.clone()).or_insert_with(|| Hierarchy::new(e));
+                }
+            }
         }
-        let hierarchy = Rc::try_unwrap(hierarchy).unwrap();
+
         let dst = cx.dst.join(&format!("source-files{}.js", cx.shared.resource_suffix));
         let make_sources = || {
             let (mut all_sources, _krates) =
@@ -340,11 +320,12 @@ if (typeof exports !== 'undefined') {exports.searchIndex = searchIndex};
                 root_path: "./",
                 static_root_path: shared.static_root_path.as_deref(),
                 description: "List of crates",
+                keywords: BASIC_KEYWORDS,
                 resource_suffix: &shared.resource_suffix,
             };
 
             let content = format!(
-                "<h1>List of all crates</h1><ul class=\"all-items\">{}</ul>",
+                "<h1 class=\"fqn\">List of all crates</h1><ul class=\"all-items\">{}</ul>",
                 krates
                     .iter()
                     .map(|s| {

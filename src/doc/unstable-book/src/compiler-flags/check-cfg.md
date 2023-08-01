@@ -202,5 +202,5 @@ fn shoot_lasers() {}
 
 #[cfg(feature = "monkeys")] // This is UNEXPECTED, because "monkeys" is not in
                             // the values(feature) list
-fn write_shakespeare() {}
+fn write_shakespear() {}
 ```

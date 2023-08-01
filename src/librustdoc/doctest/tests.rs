@@ -38,7 +38,6 @@ fn make_test_crate_name() {
     let input = "use asdf::qwop;
 assert_eq!(2+2, 4);";
     let expected = "#![allow(unused)]
-#[allow(unused_extern_crates)]
 extern crate r#asdf;
 fn main() {
 use asdf::qwop;
@@ -129,7 +128,6 @@ fn make_test_opts_attrs() {
     let input = "use asdf::qwop;
 assert_eq!(2+2, 4);";
     let expected = "#![feature(sick_rad)]
-#[allow(unused_extern_crates)]
 extern crate r#asdf;
 fn main() {
 use asdf::qwop;
@@ -143,7 +141,6 @@ assert_eq!(2+2, 4);
     opts.attrs.push("feature(hella_dope)".to_string());
     let expected = "#![feature(sick_rad)]
 #![feature(hella_dope)]
-#[allow(unused_extern_crates)]
 extern crate r#asdf;
 fn main() {
 use asdf::qwop;
@@ -239,7 +236,6 @@ assert_eq!(asdf::foo, 4);";
 
     let expected = "#![allow(unused)]
 extern crate hella_qwop;
-#[allow(unused_extern_crates)]
 extern crate r#asdf;
 fn main() {
 assert_eq!(asdf::foo, 4);

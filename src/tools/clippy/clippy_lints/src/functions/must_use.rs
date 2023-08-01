@@ -1,9 +1,7 @@
-use hir::FnSig;
 use rustc_ast::ast::Attribute;
 use rustc_errors::Applicability;
-use rustc_hir::def_id::DefIdSet;
+use rustc_hir::def_id::{DefIdSet, LocalDefId};
 use rustc_hir::{self as hir, def::Res, QPath};
-use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::{LateContext, LintContext};
 use rustc_middle::{
     lint::in_external_macro,
@@ -24,19 +22,19 @@ use super::{DOUBLE_MUST_USE, MUST_USE_CANDIDATE, MUST_USE_UNIT};
 
 pub(super) fn check_item<'tcx>(cx: &LateContext<'tcx>, item: &'tcx hir::Item<'_>) {
     let attrs = cx.tcx.hir().attrs(item.hir_id());
-    let attr = cx.tcx.get_attr(item.owner_id, sym::must_use);
+    let attr = cx.tcx.get_attr(item.owner_id.to_def_id(), sym::must_use);
     if let hir::ItemKind::Fn(ref sig, _generics, ref body_id) = item.kind {
         let is_public = cx.effective_visibilities.is_exported(item.owner_id.def_id);
         let fn_header_span = item.span.with_hi(sig.decl.output.span().hi());
         if let Some(attr) = attr {
-            check_needless_must_use(cx, sig.decl, item.owner_id, item.span, fn_header_span, attr, sig);
-        } else if is_public && !is_proc_macro(attrs) && !attrs.iter().any(|a| a.has_name(sym::no_mangle)) {
+            check_needless_must_use(cx, sig.decl, item.hir_id(), item.span, fn_header_span, attr);
+        } else if is_public && !is_proc_macro(cx.sess(), attrs) && !attrs.iter().any(|a| a.has_name(sym::no_mangle)) {
             check_must_use_candidate(
                 cx,
                 sig.decl,
                 cx.tcx.hir().body(*body_id),
                 item.span,
-                item.owner_id,
+                item.owner_id.def_id,
                 item.span.with_hi(sig.decl.output.span().hi()),
                 "this function could have a `#[must_use]` attribute",
             );
@@ -49,16 +47,17 @@ pub(super) fn check_impl_item<'tcx>(cx: &LateContext<'tcx>, item: &'tcx hir::Imp
         let is_public = cx.effective_visibilities.is_exported(item.owner_id.def_id);
         let fn_header_span = item.span.with_hi(sig.decl.output.span().hi());
         let attrs = cx.tcx.hir().attrs(item.hir_id());
-        let attr = cx.tcx.get_attr(item.owner_id, sym::must_use);
+        let attr = cx.tcx.get_attr(item.owner_id.to_def_id(), sym::must_use);
         if let Some(attr) = attr {
-            check_needless_must_use(cx, sig.decl, item.owner_id, item.span, fn_header_span, attr, sig);
-        } else if is_public && !is_proc_macro(attrs) && trait_ref_of_method(cx, item.owner_id.def_id).is_none() {
+            check_needless_must_use(cx, sig.decl, item.hir_id(), item.span, fn_header_span, attr);
+        } else if is_public && !is_proc_macro(cx.sess(), attrs) && trait_ref_of_method(cx, item.owner_id.def_id).is_none()
+        {
             check_must_use_candidate(
                 cx,
                 sig.decl,
                 cx.tcx.hir().body(*body_id),
                 item.span,
-                item.owner_id,
+                item.owner_id.def_id,
                 item.span.with_hi(sig.decl.output.span().hi()),
                 "this method could have a `#[must_use]` attribute",
             );
@@ -72,18 +71,18 @@ pub(super) fn check_trait_item<'tcx>(cx: &LateContext<'tcx>, item: &'tcx hir::Tr
         let fn_header_span = item.span.with_hi(sig.decl.output.span().hi());
 
         let attrs = cx.tcx.hir().attrs(item.hir_id());
-        let attr = cx.tcx.get_attr(item.owner_id, sym::must_use);
+        let attr = cx.tcx.get_attr(item.owner_id.to_def_id(), sym::must_use);
         if let Some(attr) = attr {
-            check_needless_must_use(cx, sig.decl, item.owner_id, item.span, fn_header_span, attr, sig);
+            check_needless_must_use(cx, sig.decl, item.hir_id(), item.span, fn_header_span, attr);
         } else if let hir::TraitFn::Provided(eid) = *eid {
             let body = cx.tcx.hir().body(eid);
-            if attr.is_none() && is_public && !is_proc_macro(attrs) {
+            if attr.is_none() && is_public && !is_proc_macro(cx.sess(), attrs) {
                 check_must_use_candidate(
                     cx,
                     sig.decl,
                     body,
                     item.span,
-                    item.owner_id,
+                    item.owner_id.def_id,
                     item.span.with_hi(sig.decl.output.span().hi()),
                     "this method could have a `#[must_use]` attribute",
                 );
@@ -95,11 +94,10 @@ pub(super) fn check_trait_item<'tcx>(cx: &LateContext<'tcx>, item: &'tcx hir::Tr
 fn check_needless_must_use(
     cx: &LateContext<'_>,
     decl: &hir::FnDecl<'_>,
-    item_id: hir::OwnerId,
+    item_id: hir::HirId,
     item_span: Span,
     fn_header_span: Span,
     attr: &Attribute,
-    sig: &FnSig<'_>,
 ) {
     if in_external_macro(cx.sess(), item_span) {
         return;
@@ -115,15 +113,6 @@ fn check_needless_must_use(
             },
         );
     } else if attr.value_str().is_none() && is_must_use_ty(cx, return_ty(cx, item_id)) {
-        // Ignore async functions unless Future::Output type is a must_use type
-        if sig.header.is_async() {
-            let infcx = cx.tcx.infer_ctxt().build();
-            if let Some(future_ty) = infcx.get_impl_future_output_ty(return_ty(cx, item_id))
-			&& !is_must_use_ty(cx, future_ty) {
-				return;
-			}
-        }
-
         span_lint_and_help(
             cx,
             DOUBLE_MUST_USE,
@@ -140,7 +129,7 @@ fn check_must_use_candidate<'tcx>(
     decl: &'tcx hir::FnDecl<'_>,
     body: &'tcx hir::Body<'_>,
     item_span: Span,
-    item_id: hir::OwnerId,
+    item_id: LocalDefId,
     fn_span: Span,
     msg: &str,
 ) {
@@ -148,8 +137,8 @@ fn check_must_use_candidate<'tcx>(
         || mutates_static(cx, body)
         || in_external_macro(cx.sess(), item_span)
         || returns_unit(decl)
-        || !cx.effective_visibilities.is_exported(item_id.def_id)
-        || is_must_use_ty(cx, return_ty(cx, item_id))
+        || !cx.effective_visibilities.is_exported(item_id)
+        || is_must_use_ty(cx, return_ty(cx, cx.tcx.hir().local_def_id_to_hir_id(item_id)))
     {
         return;
     }
@@ -186,7 +175,7 @@ fn is_mutable_pat(cx: &LateContext<'_>, pat: &hir::Pat<'_>, tys: &mut DefIdSet) 
         return false; // ignore `_` patterns
     }
     if cx.tcx.has_typeck_results(pat.hir_id.owner.to_def_id()) {
-        is_mutable_ty(cx, cx.tcx.typeck(pat.hir_id.owner.def_id).pat_ty(pat), tys)
+        is_mutable_ty(cx, cx.tcx.typeck(pat.hir_id.owner.def_id).pat_ty(pat), pat.span, tys)
     } else {
         false
     }
@@ -194,7 +183,7 @@ fn is_mutable_pat(cx: &LateContext<'_>, pat: &hir::Pat<'_>, tys: &mut DefIdSet) 
 
 static KNOWN_WRAPPER_TYS: &[Symbol] = &[sym::Rc, sym::Arc];
 
-fn is_mutable_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>, tys: &mut DefIdSet) -> bool {
+fn is_mutable_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>, span: Span, tys: &mut DefIdSet) -> bool {
     match *ty.kind() {
         // primitive types are never mutable
         ty::Bool | ty::Char | ty::Int(_) | ty::Uint(_) | ty::Float(_) | ty::Str => false,
@@ -203,12 +192,12 @@ fn is_mutable_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>, tys: &mut DefIdSet)
                 || KNOWN_WRAPPER_TYS
                     .iter()
                     .any(|&sym| cx.tcx.is_diagnostic_item(sym, adt.did()))
-                    && substs.types().any(|ty| is_mutable_ty(cx, ty, tys))
+                    && substs.types().any(|ty| is_mutable_ty(cx, ty, span, tys))
         },
-        ty::Tuple(substs) => substs.iter().any(|ty| is_mutable_ty(cx, ty, tys)),
-        ty::Array(ty, _) | ty::Slice(ty) => is_mutable_ty(cx, ty, tys),
+        ty::Tuple(substs) => substs.iter().any(|ty| is_mutable_ty(cx, ty, span, tys)),
+        ty::Array(ty, _) | ty::Slice(ty) => is_mutable_ty(cx, ty, span, tys),
         ty::RawPtr(ty::TypeAndMut { ty, mutbl }) | ty::Ref(_, ty, mutbl) => {
-            mutbl == hir::Mutability::Mut || is_mutable_ty(cx, ty, tys)
+            mutbl == hir::Mutability::Mut || is_mutable_ty(cx, ty, span, tys)
         },
         // calling something constitutes a side effect, so return true on all callables
         // also never calls need not be used, so return true for them, too
@@ -236,7 +225,12 @@ fn mutates_static<'tcx>(cx: &LateContext<'tcx>, body: &'tcx hir::Body<'_>) -> bo
                 let mut tys = DefIdSet::default();
                 for arg in args {
                     if cx.tcx.has_typeck_results(arg.hir_id.owner.to_def_id())
-                        && is_mutable_ty(cx, cx.tcx.typeck(arg.hir_id.owner.def_id).expr_ty(arg), &mut tys)
+                        && is_mutable_ty(
+                            cx,
+                            cx.tcx.typeck(arg.hir_id.owner.def_id).expr_ty(arg),
+                            arg.span,
+                            &mut tys,
+                        )
                         && is_mutated_static(arg)
                     {
                         return ControlFlow::Break(());
@@ -249,7 +243,12 @@ fn mutates_static<'tcx>(cx: &LateContext<'tcx>, body: &'tcx hir::Body<'_>) -> bo
                 let mut tys = DefIdSet::default();
                 for arg in std::iter::once(receiver).chain(args.iter()) {
                     if cx.tcx.has_typeck_results(arg.hir_id.owner.to_def_id())
-                        && is_mutable_ty(cx, cx.tcx.typeck(arg.hir_id.owner.def_id).expr_ty(arg), &mut tys)
+                        && is_mutable_ty(
+                            cx,
+                            cx.tcx.typeck(arg.hir_id.owner.def_id).expr_ty(arg),
+                            arg.span,
+                            &mut tys,
+                        )
                         && is_mutated_static(arg)
                     {
                         return ControlFlow::Break(());

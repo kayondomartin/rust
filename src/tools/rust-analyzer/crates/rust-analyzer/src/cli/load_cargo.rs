@@ -1,17 +1,14 @@
 //! Loads a Cargo project into a static instance of analysis, without support
 //! for incorporating changes.
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use crossbeam_channel::{unbounded, Receiver};
+use hir::db::DefDatabase;
 use ide::{AnalysisHost, Change};
-use ide_db::{
-    base_db::{CrateGraph, ProcMacros},
-    FxHashMap,
-};
+use ide_db::{base_db::CrateGraph, FxHashMap};
 use proc_macro_api::ProcMacroServer;
 use project_model::{CargoConfig, ProjectManifest, ProjectWorkspace};
-use triomphe::Arc;
 use vfs::{loader::Handle, AbsPath, AbsPathBuf};
 
 use crate::reload::{load_proc_macro, ProjectFolders, SourceRootConfig};
@@ -20,15 +17,8 @@ use crate::reload::{load_proc_macro, ProjectFolders, SourceRootConfig};
 // what otherwise would be `pub(crate)` has to be `pub` here instead.
 pub struct LoadCargoConfig {
     pub load_out_dirs_from_check: bool,
-    pub with_proc_macro_server: ProcMacroServerChoice,
+    pub with_proc_macro: bool,
     pub prefill_caches: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProcMacroServerChoice {
-    Sysroot,
-    Explicit(AbsPathBuf),
-    None,
 }
 
 // Note: Since this function is used by external tools that use rust-analyzer as a library
@@ -69,17 +59,33 @@ pub fn load_workspace(
         Box::new(loader)
     };
 
-    let proc_macro_server = match &load_config.with_proc_macro_server {
-        ProcMacroServerChoice::Sysroot => ws
-            .find_sysroot_proc_macro_srv()
-            .and_then(|it| ProcMacroServer::spawn(it).map_err(Into::into)),
-        ProcMacroServerChoice::Explicit(path) => {
-            ProcMacroServer::spawn(path.clone()).map_err(Into::into)
+    let proc_macro_client = if load_config.with_proc_macro {
+        let mut path = AbsPathBuf::assert(std::env::current_exe()?);
+        let mut args = vec!["proc-macro"];
+
+        if let ProjectWorkspace::Cargo { sysroot, .. } | ProjectWorkspace::Json { sysroot, .. } =
+            &ws
+        {
+            if let Some(sysroot) = sysroot.as_ref() {
+                let standalone_server_name =
+                    format!("rust-analyzer-proc-macro-srv{}", std::env::consts::EXE_SUFFIX);
+                let server_path = sysroot.root().join("libexec").join(&standalone_server_name);
+                if std::fs::metadata(&server_path).is_ok() {
+                    path = server_path;
+                    args = vec![];
+                }
+            }
         }
-        ProcMacroServerChoice::None => Err(anyhow!("proc macro server disabled")),
+
+        ProcMacroServer::spawn(path.clone(), args.clone()).map_err(|e| e.to_string())
+    } else {
+        Err("proc macro server disabled".to_owned())
     };
 
-    let (crate_graph, proc_macros) = ws.to_crate_graph(
+    let crate_graph = ws.to_crate_graph(
+        &mut |_, path: &AbsPath| {
+            load_proc_macro(proc_macro_client.as_ref().map_err(|e| &**e), path, &[])
+        },
         &mut |path: &AbsPath| {
             let contents = loader.load_sync(path);
             let path = vfs::VfsPath::from(path.to_path_buf());
@@ -88,28 +94,6 @@ pub fn load_workspace(
         },
         extra_env,
     );
-    let proc_macros = {
-        let proc_macro_server = match &proc_macro_server {
-            Ok(it) => Ok(it),
-            Err(e) => Err(e.to_string()),
-        };
-        proc_macros
-            .into_iter()
-            .map(|(crate_id, path)| {
-                (
-                    crate_id,
-                    path.map_or_else(
-                        |_| Err("proc macro crate is missing dylib".to_owned()),
-                        |(_, path)| {
-                            proc_macro_server.as_ref().map_err(Clone::clone).and_then(
-                                |proc_macro_server| load_proc_macro(proc_macro_server, &path, &[]),
-                            )
-                        },
-                    ),
-                )
-            })
-            .collect()
-    };
 
     let project_folders = ProjectFolders::new(&[ws], &[]);
     loader.set_config(vfs::loader::Config {
@@ -119,23 +103,17 @@ pub fn load_workspace(
     });
 
     tracing::debug!("crate graph: {:?}", crate_graph);
-    let host = load_crate_graph(
-        crate_graph,
-        proc_macros,
-        project_folders.source_root_config,
-        &mut vfs,
-        &receiver,
-    );
+    let host =
+        load_crate_graph(crate_graph, project_folders.source_root_config, &mut vfs, &receiver);
 
     if load_config.prefill_caches {
         host.analysis().parallel_prime_caches(1, |_| {})?;
     }
-    Ok((host, vfs, proc_macro_server.ok()))
+    Ok((host, vfs, proc_macro_client.ok()))
 }
 
 fn load_crate_graph(
     crate_graph: CrateGraph,
-    proc_macros: ProcMacros,
     source_root_config: SourceRootConfig,
     vfs: &mut vfs::Vfs,
     receiver: &Receiver<vfs::loader::Message>,
@@ -144,7 +122,7 @@ fn load_crate_graph(
     let mut host = AnalysisHost::new(lru_cap);
     let mut analysis_change = Change::new();
 
-    host.raw_database_mut().enable_proc_attr_macros();
+    host.raw_database_mut().set_enable_proc_attr_macros(true);
 
     // wait until Vfs has loaded all roots
     for task in receiver {
@@ -164,9 +142,9 @@ fn load_crate_graph(
     let changes = vfs.take_changes();
     for file in changes {
         if file.exists() {
-            let contents = vfs.file_contents(file.file_id);
-            if let Ok(text) = std::str::from_utf8(contents) {
-                analysis_change.change_file(file.file_id, Some(Arc::from(text)))
+            let contents = vfs.file_contents(file.file_id).to_vec();
+            if let Ok(text) = String::from_utf8(contents) {
+                analysis_change.change_file(file.file_id, Some(Arc::new(text)))
             }
         }
     }
@@ -174,7 +152,6 @@ fn load_crate_graph(
     analysis_change.set_roots(source_roots);
 
     analysis_change.set_crate_graph(crate_graph);
-    analysis_change.set_proc_macros(proc_macros);
 
     host.apply_change(analysis_change);
     host
@@ -192,7 +169,7 @@ mod tests {
         let cargo_config = CargoConfig::default();
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: false,
-            with_proc_macro_server: ProcMacroServerChoice::None,
+            with_proc_macro: false,
             prefill_caches: false,
         };
         let (host, _vfs, _proc_macro) =

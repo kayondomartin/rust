@@ -9,11 +9,8 @@ mod operators;
 pub mod edit;
 pub mod edit_in_place;
 pub mod make;
-pub mod prec;
 
 use std::marker::PhantomData;
-
-use either::Either;
 
 use crate::{
     syntax_node::{SyntaxNode, SyntaxNodeChildren, SyntaxToken},
@@ -25,8 +22,7 @@ pub use self::{
     generated::{nodes::*, tokens::*},
     node_ext::{
         AttrKind, FieldKind, Macro, NameLike, NameOrNameRef, PathSegmentKind, SelfParamKind,
-        SlicePatComponents, StructKind, TraitOrAlias, TypeBoundKind, TypeOrConstParam,
-        VisibilityKind,
+        SlicePatComponents, StructKind, TypeBoundKind, TypeOrConstParam, VisibilityKind,
     },
     operators::{ArithOp, BinaryOp, CmpOp, LogicOp, Ordering, RangeOp, UnaryOp},
     token_ext::{CommentKind, CommentPlacement, CommentShape, IsString, QuoteOffsets, Radix},
@@ -99,41 +95,6 @@ impl<N: AstNode> Iterator for AstChildren<N> {
     fn next(&mut self) -> Option<N> {
         self.inner.find_map(N::cast)
     }
-}
-
-impl<L, R> AstNode for Either<L, R>
-where
-    L: AstNode,
-    R: AstNode,
-{
-    fn can_cast(kind: SyntaxKind) -> bool
-    where
-        Self: Sized,
-    {
-        L::can_cast(kind) || R::can_cast(kind)
-    }
-
-    fn cast(syntax: SyntaxNode) -> Option<Self>
-    where
-        Self: Sized,
-    {
-        if L::can_cast(syntax.kind()) {
-            L::cast(syntax).map(Either::Left)
-        } else {
-            R::cast(syntax).map(Either::Right)
-        }
-    }
-
-    fn syntax(&self) -> &SyntaxNode {
-        self.as_ref().either(L::syntax, R::syntax)
-    }
-}
-
-impl<L, R> HasAttrs for Either<L, R>
-where
-    L: HasAttrs,
-    R: HasAttrs,
-{
 }
 
 mod support {

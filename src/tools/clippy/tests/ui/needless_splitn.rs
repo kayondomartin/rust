@@ -1,6 +1,7 @@
-//@run-rustfix
-//@edition:2018
+// run-rustfix
+// edition:2018
 
+#![feature(custom_inner_attributes)]
 #![warn(clippy::needless_splitn)]
 #![allow(clippy::iter_skip_next, clippy::iter_nth_zero, clippy::manual_split_once)]
 
@@ -39,8 +40,8 @@ fn _question_mark(s: &str) -> Option<()> {
     Some(())
 }
 
-#[clippy::msrv = "1.51"]
 fn _test_msrv() {
+    #![clippy::msrv = "1.51"]
     // `manual_split_once` MSRV shouldn't apply to `needless_splitn`
     let _ = "key=value".splitn(2, '=').nth(0).unwrap();
 }

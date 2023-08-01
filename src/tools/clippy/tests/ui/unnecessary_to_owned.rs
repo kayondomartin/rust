@@ -1,7 +1,8 @@
-//@run-rustfix
+// run-rustfix
 
 #![allow(clippy::needless_borrow, clippy::ptr_arg)]
-#![warn(clippy::unnecessary_to_owned, clippy::redundant_clone)]
+#![warn(clippy::unnecessary_to_owned)]
+#![feature(custom_inner_attributes)]
 
 use std::borrow::Cow;
 use std::ffi::{CStr, CString, OsStr, OsString};
@@ -214,14 +215,14 @@ fn get_file_path(_file_type: &FileType) -> Result<std::path::PathBuf, std::io::E
 
 fn require_string(_: &String) {}
 
-#[clippy::msrv = "1.35"]
 fn _msrv_1_35() {
+    #![clippy::msrv = "1.35"]
     // `copied` was stabilized in 1.36, so clippy should use `cloned`.
     let _ = &["x"][..].to_vec().into_iter();
 }
 
-#[clippy::msrv = "1.36"]
 fn _msrv_1_36() {
+    #![clippy::msrv = "1.36"]
     let _ = &["x"][..].to_vec().into_iter();
 }
 
@@ -423,87 +424,5 @@ mod issue_9504 {
     async fn foo<S: AsRef<str>>(_: S) {}
     async fn bar() {
         foo(std::path::PathBuf::new().to_string_lossy().to_string()).await;
-    }
-}
-
-mod issue_9771a {
-    #![allow(dead_code)]
-
-    use std::marker::PhantomData;
-
-    pub struct Key<K: AsRef<[u8]>, V: ?Sized>(K, PhantomData<V>);
-
-    impl<K: AsRef<[u8]>, V: ?Sized> Key<K, V> {
-        pub fn new(key: K) -> Key<K, V> {
-            Key(key, PhantomData)
-        }
-    }
-
-    pub fn pkh(pkh: &[u8]) -> Key<Vec<u8>, String> {
-        Key::new([b"pkh-", pkh].concat().to_vec())
-    }
-}
-
-mod issue_9771b {
-    #![allow(dead_code)]
-
-    pub struct Key<K: AsRef<[u8]>>(K);
-
-    pub fn from(c: &[u8]) -> Key<Vec<u8>> {
-        let v = [c].concat();
-        Key(v.to_vec())
-    }
-}
-
-// This is a watered down version of the code in: https://github.com/oxigraph/rio
-// The ICE is triggered by the call to `to_owned` on this line:
-// https://github.com/oxigraph/rio/blob/66635b9ff8e5423e58932353fa40d6e64e4820f7/testsuite/src/parser_evaluator.rs#L116
-mod issue_10021 {
-    #![allow(unused)]
-
-    pub struct Iri<T>(T);
-
-    impl<T: AsRef<str>> Iri<T> {
-        pub fn parse(iri: T) -> Result<Self, ()> {
-            unimplemented!()
-        }
-    }
-
-    pub fn parse_w3c_rdf_test_file(url: &str) -> Result<(), ()> {
-        let base_iri = Iri::parse(url.to_owned())?;
-        Ok(())
-    }
-}
-
-mod issue_10033 {
-    #![allow(dead_code)]
-    use std::{fmt::Display, ops::Deref};
-
-    fn _main() {
-        let f = Foo;
-
-        // Not actually unnecessary - this calls `Foo`'s `Display` impl, not `str`'s (even though `Foo` does
-        // deref to `str`)
-        foo(&f.to_string());
-    }
-
-    fn foo(s: &str) {
-        println!("{}", s);
-    }
-
-    struct Foo;
-
-    impl Deref for Foo {
-        type Target = str;
-
-        fn deref(&self) -> &Self::Target {
-            "str"
-        }
-    }
-
-    impl Display for Foo {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "Foo")
-        }
     }
 }

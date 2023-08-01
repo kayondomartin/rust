@@ -1,5 +1,4 @@
 #![warn(clippy::suspicious_unary_op_formatting)]
-#![allow(clippy::needless_if)]
 
 #[rustfmt::skip]
 fn main() {

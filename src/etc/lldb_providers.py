@@ -1,6 +1,6 @@
 import sys
 
-from lldb import SBData, SBError, eBasicTypeLong, eBasicTypeUnsignedLong, \
+from lldb import SBValue, SBData, SBError, eBasicTypeLong, eBasicTypeUnsignedLong, \
     eBasicTypeUnsignedChar
 
 # from lldb.formatters import Logger
@@ -31,7 +31,7 @@ from lldb import SBData, SBError, eBasicTypeLong, eBasicTypeUnsignedLong, \
 #
 # You can find more information and examples here:
 #   1. https://lldb.llvm.org/varformats.html
-#   2. https://lldb.llvm.org/use/python-reference.html
+#   2. https://lldb.llvm.org/python-reference.html
 #   3. https://lldb.llvm.org/python_reference/lldb.formatters.cpp.libcxx-pysrc.html
 #   4. https://github.com/llvm-mirror/lldb/tree/master/examples/summaries/cocoa
 ####################################################################################################
@@ -69,9 +69,9 @@ def unwrap_unique_or_non_null(unique_or_nonnull):
     return ptr if ptr.TypeIsPointerType() else ptr.GetChildAtIndex(0)
 
 
-class DefaultSyntheticProvider:
+class DefaultSynthteticProvider:
     def __init__(self, valobj, dict):
-        # type: (SBValue, dict) -> DefaultSyntheticProvider
+        # type: (SBValue, dict) -> DefaultSynthteticProvider
         # logger = Logger.Logger()
         # logger >> "Default synthetic provider for " + str(valobj.GetName())
         self.valobj = valobj
@@ -356,7 +356,7 @@ class StdSliceSyntheticProvider:
 class StdVecDequeSyntheticProvider:
     """Pretty-printer for alloc::collections::vec_deque::VecDeque<T>
 
-    struct VecDeque<T> { head: usize, len: usize, buf: RawVec<T> }
+    struct VecDeque<T> { tail: usize, head: usize, buf: RawVec<T> }
     """
 
     def __init__(self, valobj, dict):
@@ -373,7 +373,7 @@ class StdVecDequeSyntheticProvider:
     def get_child_index(self, name):
         # type: (str) -> int
         index = name.lstrip('[').rstrip(']')
-        if index.isdigit() and int(index) < self.size:
+        if index.isdigit() and self.tail <= index and (self.tail + index) % self.cap < self.head:
             return int(index)
         else:
             return -1
@@ -381,16 +381,20 @@ class StdVecDequeSyntheticProvider:
     def get_child_at_index(self, index):
         # type: (int) -> SBValue
         start = self.data_ptr.GetValueAsUnsigned()
-        address = start + ((index + self.head) % self.cap) * self.element_type_size
+        address = start + ((index + self.tail) % self.cap) * self.element_type_size
         element = self.data_ptr.CreateValueFromAddress("[%s]" % index, address, self.element_type)
         return element
 
     def update(self):
         # type: () -> None
         self.head = self.valobj.GetChildMemberWithName("head").GetValueAsUnsigned()
-        self.size = self.valobj.GetChildMemberWithName("len").GetValueAsUnsigned()
+        self.tail = self.valobj.GetChildMemberWithName("tail").GetValueAsUnsigned()
         self.buf = self.valobj.GetChildMemberWithName("buf")
         self.cap = self.buf.GetChildMemberWithName("cap").GetValueAsUnsigned()
+        if self.head >= self.tail:
+            self.size = self.head - self.tail
+        else:
+            self.size = self.cap + self.head - self.tail
 
         self.data_ptr = unwrap_unique_or_non_null(self.buf.GetChildMemberWithName("ptr"))
 

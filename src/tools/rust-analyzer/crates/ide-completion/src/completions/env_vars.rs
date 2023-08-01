@@ -37,10 +37,10 @@ pub(crate) fn complete_cargo_env_vars(
     guard_env_macro(expanded, &ctx.sema)?;
     let range = expanded.text_range_between_quotes()?;
 
-    CARGO_DEFINED_VARS.into_iter().for_each(|&(var, detail)| {
+    CARGO_DEFINED_VARS.iter().for_each(|(var, detail)| {
         let mut item = CompletionItem::new(CompletionItemKind::Keyword, range, var);
-        item.detail(detail);
-        item.add_to(acc, ctx.db);
+        item.detail(*detail);
+        item.add_to(acc);
     });
 
     Some(())
@@ -68,26 +68,28 @@ mod tests {
             &format!(
                 r#"
             #[rustc_builtin_macro]
-            macro_rules! {macro_name} {{
+            macro_rules! {} {{
                 ($var:literal) => {{ 0 }}
             }}
 
             fn main() {{
-                let foo = {macro_name}!("CAR$0");
+                let foo = {}!("CAR$0");
             }}
-        "#
+        "#,
+                macro_name, macro_name
             ),
             &format!(
                 r#"
             #[rustc_builtin_macro]
-            macro_rules! {macro_name} {{
+            macro_rules! {} {{
                 ($var:literal) => {{ 0 }}
             }}
 
             fn main() {{
-                let foo = {macro_name}!("CARGO_BIN_NAME");
+                let foo = {}!("CARGO_BIN_NAME");
             }}
-        "#
+        "#,
+                macro_name, macro_name
             ),
         );
     }
@@ -110,7 +112,7 @@ mod tests {
         "#;
 
         let completions = completion_list(fixture);
-        assert!(completions.is_empty(), "Completions weren't empty: {completions}");
+        assert!(completions.is_empty(), "Completions weren't empty: {}", completions);
     }
 
     #[test]
@@ -127,7 +129,7 @@ mod tests {
         "#;
 
         let completions = completion_list(fixture);
-        assert!(completions.is_empty(), "Completions weren't empty: {completions}");
+        assert!(completions.is_empty(), "Completions weren't empty: {}", completions);
     }
 
     #[test]
@@ -143,6 +145,6 @@ mod tests {
         "#;
 
         let completions = completion_list(fixture);
-        assert!(completions.is_empty(), "Completions weren't empty: {completions}")
+        assert!(completions.is_empty(), "Completions weren't empty: {}", completions)
     }
 }

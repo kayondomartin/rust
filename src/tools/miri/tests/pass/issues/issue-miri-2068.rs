@@ -1,3 +1,5 @@
+#![feature(pin_macro)]
+
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};

@@ -14,15 +14,14 @@ use std::{
 };
 
 use cargo_metadata::{camino::Utf8Path, Message};
-use itertools::Itertools;
 use la_arena::ArenaMap;
-use paths::{AbsPath, AbsPathBuf};
-use rustc_hash::{FxHashMap, FxHashSet};
+use paths::AbsPathBuf;
+use rustc_hash::FxHashMap;
 use semver::Version;
 use serde::Deserialize;
 
 use crate::{
-    cfg_flag::CfgFlag, utf8_stdout, CargoConfig, CargoFeatures, CargoWorkspace, InvocationLocation,
+    cfg_flag::CfgFlag, CargoConfig, CargoFeatures, CargoWorkspace, InvocationLocation,
     InvocationStrategy, Package,
 };
 
@@ -57,10 +56,7 @@ impl BuildScriptOutput {
 }
 
 impl WorkspaceBuildScripts {
-    fn build_command(
-        config: &CargoConfig,
-        allowed_features: &FxHashSet<String>,
-    ) -> io::Result<Command> {
+    fn build_command(config: &CargoConfig) -> io::Result<Command> {
         let mut cmd = match config.run_build_script_command.as_deref() {
             Some([program, args @ ..]) => {
                 let mut cmd = Command::new(program);
@@ -70,16 +66,15 @@ impl WorkspaceBuildScripts {
             _ => {
                 let mut cmd = Command::new(toolchain::cargo());
 
-                cmd.args(["check", "--quiet", "--workspace", "--message-format=json"]);
-                cmd.args(&config.extra_args);
+                cmd.args(&["check", "--quiet", "--workspace", "--message-format=json"]);
 
                 // --all-targets includes tests, benches and examples in addition to the
-                // default lib and bins. This is an independent concept from the --target
+                // default lib and bins. This is an independent concept from the --targets
                 // flag below.
                 cmd.arg("--all-targets");
 
                 if let Some(target) = &config.target {
-                    cmd.args(["--target", target]);
+                    cmd.args(&["--target", target]);
                 }
 
                 match &config.features {
@@ -92,12 +87,7 @@ impl WorkspaceBuildScripts {
                         }
                         if !features.is_empty() {
                             cmd.arg("--features");
-                            cmd.arg(
-                                features
-                                    .iter()
-                                    .filter(|&feat| allowed_features.contains(feat))
-                                    .join(","),
-                            );
+                            cmd.arg(features.join(" "));
                         }
                     }
                 }
@@ -132,25 +122,18 @@ impl WorkspaceBuildScripts {
             InvocationLocation::Root(root) if config.run_build_script_command.is_some() => {
                 root.as_path()
             }
-            _ => workspace.workspace_root(),
+            _ => &workspace.workspace_root(),
         }
         .as_ref();
 
-        let allowed_features = workspace.workspace_features();
-
-        match Self::run_per_ws(
-            Self::build_command(config, &allowed_features)?,
-            workspace,
-            current_dir,
-            progress,
-        ) {
+        match Self::run_per_ws(Self::build_command(config)?, workspace, current_dir, progress) {
             Ok(WorkspaceBuildScripts { error: Some(error), .. })
                 if toolchain.as_ref().map_or(false, |it| *it >= RUST_1_62) =>
             {
                 // building build scripts failed, attempt to build with --keep-going so
                 // that we potentially get more build data
-                let mut cmd = Self::build_command(config, &allowed_features)?;
-                cmd.args(["-Z", "unstable-options", "--keep-going"]).env("RUSTC_BOOTSTRAP", "1");
+                let mut cmd = Self::build_command(config)?;
+                cmd.args(&["-Z", "unstable-options", "--keep-going"]).env("RUSTC_BOOTSTRAP", "1");
                 let mut res = Self::run_per_ws(cmd, workspace, current_dir, progress)?;
                 res.error = Some(error);
                 Ok(res)
@@ -177,7 +160,7 @@ impl WorkspaceBuildScripts {
                 ))
             }
         };
-        let cmd = Self::build_command(config, &Default::default())?;
+        let cmd = Self::build_command(config)?;
         // NB: Cargo.toml could have been modified between `cargo metadata` and
         // `cargo check`. We shouldn't assume that package ids we see here are
         // exactly those from `config`.
@@ -267,7 +250,7 @@ impl WorkspaceBuildScripts {
 
         if tracing::enabled!(tracing::Level::INFO) {
             for package in workspace.packages() {
-                let package_build_data = &outputs[package];
+                let package_build_data = &mut outputs[package];
                 if !package_build_data.is_unchanged() {
                     tracing::info!(
                         "{}: {:?}",
@@ -312,7 +295,7 @@ impl WorkspaceBuildScripts {
                 match message {
                     Message::BuildScriptExecuted(mut message) => {
                         with_output_for(&message.package_id.repr, &mut |name, data| {
-                            progress(format!("running build-script: {name}"));
+                            progress(format!("running build-script: {}", name));
                             let cfgs = {
                                 let mut acc = Vec::new();
                                 for cfg in &message.cfgs {
@@ -320,7 +303,8 @@ impl WorkspaceBuildScripts {
                                         Ok(it) => acc.push(it),
                                         Err(err) => {
                                             push_err(&format!(
-                                                "invalid cfg from cargo-metadata: {err}"
+                                                "invalid cfg from cargo-metadata: {}",
+                                                err
                                             ));
                                             return;
                                         }
@@ -350,7 +334,7 @@ impl WorkspaceBuildScripts {
                     }
                     Message::CompilerArtifact(message) => {
                         with_output_for(&message.package_id.repr, &mut |name, data| {
-                            progress(format!("building proc-macros: {name}"));
+                            progress(format!("building proc-macros: {}", name));
                             if message.target.kind.iter().any(|k| k == "proc-macro") {
                                 // Skip rmeta file
                                 if let Some(filename) =
@@ -394,83 +378,6 @@ impl WorkspaceBuildScripts {
 
     pub(crate) fn get_output(&self, idx: Package) -> Option<&BuildScriptOutput> {
         self.outputs.get(idx)
-    }
-
-    pub(crate) fn rustc_crates(
-        rustc: &CargoWorkspace,
-        current_dir: &AbsPath,
-        extra_env: &FxHashMap<String, String>,
-    ) -> Self {
-        let mut bs = WorkspaceBuildScripts::default();
-        for p in rustc.packages() {
-            bs.outputs.insert(p, BuildScriptOutput::default());
-        }
-        let res = (|| {
-            let target_libdir = (|| {
-                let mut cargo_config = Command::new(toolchain::cargo());
-                cargo_config.envs(extra_env);
-                cargo_config
-                    .current_dir(current_dir)
-                    .args(["rustc", "-Z", "unstable-options", "--print", "target-libdir"])
-                    .env("RUSTC_BOOTSTRAP", "1");
-                if let Ok(it) = utf8_stdout(cargo_config) {
-                    return Ok(it);
-                }
-                let mut cmd = Command::new(toolchain::rustc());
-                cmd.envs(extra_env);
-                cmd.args(["--print", "target-libdir"]);
-                utf8_stdout(cmd)
-            })()?;
-
-            let target_libdir = AbsPathBuf::try_from(PathBuf::from(target_libdir))
-                .map_err(|_| anyhow::format_err!("target-libdir was not an absolute path"))?;
-            tracing::info!("Loading rustc proc-macro paths from {}", target_libdir.display());
-
-            let proc_macro_dylibs: Vec<(String, AbsPathBuf)> = std::fs::read_dir(target_libdir)?
-                .filter_map(|entry| {
-                    let dir_entry = entry.ok()?;
-                    if dir_entry.file_type().ok()?.is_file() {
-                        let path = dir_entry.path();
-                        let extension = path.extension()?;
-                        if extension == std::env::consts::DLL_EXTENSION {
-                            let name = path.file_stem()?.to_str()?.split_once('-')?.0.to_owned();
-                            let path = AbsPathBuf::try_from(path).ok()?;
-                            return Some((name, path));
-                        }
-                    }
-                    None
-                })
-                .collect();
-            for p in rustc.packages() {
-                let package = &rustc[p];
-                if package.targets.iter().any(|&it| rustc[it].is_proc_macro) {
-                    if let Some((_, path)) = proc_macro_dylibs
-                        .iter()
-                        .find(|(name, _)| *name.trim_start_matches("lib") == package.name)
-                    {
-                        bs.outputs[p].proc_macro_dylib_path = Some(path.clone());
-                    }
-                }
-            }
-
-            if tracing::enabled!(tracing::Level::INFO) {
-                for package in rustc.packages() {
-                    let package_build_data = &bs.outputs[package];
-                    if !package_build_data.is_unchanged() {
-                        tracing::info!(
-                            "{}: {:?}",
-                            rustc[package].manifest.parent().display(),
-                            package_build_data,
-                        );
-                    }
-                }
-            }
-            Ok(())
-        })();
-        if let Err::<_, anyhow::Error>(e) = res {
-            bs.error = Some(e.to_string());
-        }
-        bs
     }
 }
 

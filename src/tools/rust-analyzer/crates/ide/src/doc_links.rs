@@ -5,8 +5,6 @@ mod tests;
 
 mod intra_doc_links;
 
-use std::ffi::OsStr;
-
 use pulldown_cmark::{BrokenLink, CowStr, Event, InlineStr, LinkType, Options, Parser, Tag};
 use pulldown_cmark_to_cmark::{cmark_resume_with_options, Options as CMarkOptions};
 use stdx::format_to;
@@ -14,7 +12,7 @@ use url::Url;
 
 use hir::{db::HirDatabase, Adt, AsAssocItem, AssocItem, AssocItemContainer, HasAttrs};
 use ide_db::{
-    base_db::{CrateOrigin, LangCrateOrigin, ReleaseChannel, SourceDatabase},
+    base_db::{CrateOrigin, LangCrateOrigin, SourceDatabase},
     defs::{Definition, NameClass, NameRefClass},
     helpers::pick_best_token,
     RootDatabase,
@@ -31,16 +29,8 @@ use crate::{
     FilePosition, Semantics,
 };
 
-/// Web and local links to an item's documentation.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-pub struct DocumentationLinks {
-    /// The URL to the documentation on docs.rs.
-    /// May not lead anywhere.
-    pub web_url: Option<String>,
-    /// The URL to the documentation in the local file system.
-    /// May not lead anywhere.
-    pub local_url: Option<String>,
-}
+/// Weblink to an item's documentation.
+pub(crate) type DocumentationLink = String;
 
 const MARKDOWN_OPTIONS: Options =
     Options::ENABLE_FOOTNOTES.union(Options::ENABLE_TABLES).union(Options::ENABLE_TASKLISTS);
@@ -117,24 +107,11 @@ pub(crate) fn remove_links(markdown: &str) -> String {
     out
 }
 
-// Feature: Open Docs
-//
-// Retrieve a links to documentation for the given symbol.
-//
-// The simplest way to use this feature is via the context menu. Right-click on
-// the selected item. The context menu opens. Select **Open Docs**.
-//
-// |===
-// | Editor  | Action Name
-//
-// | VS Code | **rust-analyzer: Open Docs**
-// |===
+/// Retrieve a link to documentation for the given symbol.
 pub(crate) fn external_docs(
     db: &RootDatabase,
     position: &FilePosition,
-    target_dir: Option<&OsStr>,
-    sysroot: Option<&OsStr>,
-) -> Option<DocumentationLinks> {
+) -> Option<DocumentationLink> {
     let sema = &Semantics::new(db);
     let file = sema.parse(position.file_id).syntax().clone();
     let token = pick_best_token(file.token_at_offset(position.offset), |kind| match kind {
@@ -158,11 +135,11 @@ pub(crate) fn external_docs(
                 NameClass::Definition(it) | NameClass::ConstReference(it) => it,
                 NameClass::PatFieldShorthand { local_def: _, field_ref } => Definition::Field(field_ref),
             },
-            _ => return None
+            _ => return None,
         }
     };
 
-    Some(get_doc_links(db, definition, target_dir, sysroot))
+    get_doc_link(db, definition)
 }
 
 /// Extracts all links from a given markdown text returning the definition text range, link-text
@@ -204,7 +181,6 @@ pub(crate) fn resolve_doc_path_for_def(
         Definition::Const(it) => it.resolve_doc_path(db, link, ns),
         Definition::Static(it) => it.resolve_doc_path(db, link, ns),
         Definition::Trait(it) => it.resolve_doc_path(db, link, ns),
-        Definition::TraitAlias(it) => it.resolve_doc_path(db, link, ns),
         Definition::TypeAlias(it) => it.resolve_doc_path(db, link, ns),
         Definition::Macro(it) => it.resolve_doc_path(db, link, ns),
         Definition::Field(it) => it.resolve_doc_path(db, link, ns),
@@ -297,7 +273,7 @@ impl DocCommentToken {
             let (in_expansion_range, link, ns) =
                 extract_definitions_from_docs(&docs).into_iter().find_map(|(range, link, ns)| {
                     let mapped = doc_mapping.map(range)?;
-                    (mapped.value.contains(abs_in_expansion_offset)).then_some((mapped.value, link, ns))
+                    (mapped.value.contains(abs_in_expansion_offset)).then(|| (mapped.value, link, ns))
                 })?;
             // get the relative range to the doc/attribute in the expansion
             let in_expansion_relative_range = in_expansion_range - descended_prefix_len - token_start;
@@ -309,7 +285,7 @@ impl DocCommentToken {
     }
 }
 
-fn broken_link_clone_cb(link: BrokenLink<'_>) -> Option<(CowStr<'_>, CowStr<'_>)> {
+fn broken_link_clone_cb<'a>(link: BrokenLink<'a>) -> Option<(CowStr<'a>, CowStr<'a>)> {
     Some((/*url*/ link.reference.clone(), /*title*/ link.reference))
 }
 
@@ -320,35 +296,19 @@ fn broken_link_clone_cb(link: BrokenLink<'_>) -> Option<(CowStr<'_>, CowStr<'_>)
 //
 // This should cease to be a problem if RFC2988 (Stable Rustdoc URLs) is implemented
 // https://github.com/rust-lang/rfcs/pull/2988
-fn get_doc_links(
-    db: &RootDatabase,
-    def: Definition,
-    target_dir: Option<&OsStr>,
-    sysroot: Option<&OsStr>,
-) -> DocumentationLinks {
-    let join_url = |base_url: Option<Url>, path: &str| -> Option<Url> {
-        base_url.and_then(|url| url.join(path).ok())
-    };
+fn get_doc_link(db: &RootDatabase, def: Definition) -> Option<String> {
+    let (target, file, frag) = filename_and_frag_for_def(db, def)?;
 
-    let Some((target, file, frag)) = filename_and_frag_for_def(db, def) else { return Default::default(); };
-
-    let (mut web_url, mut local_url) = get_doc_base_urls(db, target, target_dir, sysroot);
+    let mut url = get_doc_base_url(db, target)?;
 
     if let Some(path) = mod_path_of_def(db, target) {
-        web_url = join_url(web_url, &path);
-        local_url = join_url(local_url, &path);
+        url = url.join(&path).ok()?;
     }
 
-    web_url = join_url(web_url, &file);
-    local_url = join_url(local_url, &file);
+    url = url.join(&file).ok()?;
+    url.set_fragment(frag.as_deref());
 
-    web_url.as_mut().map(|url| url.set_fragment(frag.as_deref()));
-    local_url.as_mut().map(|url| url.set_fragment(frag.as_deref()));
-
-    DocumentationLinks {
-        web_url: web_url.map(|it| it.into()),
-        local_url: local_url.map(|it| it.into()),
-    }
+    Some(url.into())
 }
 
 fn rewrite_intra_doc_link(
@@ -360,7 +320,7 @@ fn rewrite_intra_doc_link(
     let (link, ns) = parse_intra_doc_link(target);
 
     let resolved = resolve_doc_path_for_def(db, def, link, ns)?;
-    let mut url = get_doc_base_urls(db, resolved, None, None).0?;
+    let mut url = get_doc_base_url(db, resolved)?;
 
     let (_, file, frag) = filename_and_frag_for_def(db, resolved)?;
     if let Some(path) = mod_path_of_def(db, resolved) {
@@ -379,7 +339,7 @@ fn rewrite_url_link(db: &RootDatabase, def: Definition, target: &str) -> Option<
         return None;
     }
 
-    let mut url = get_doc_base_urls(db, def, None, None).0?;
+    let mut url = get_doc_base_url(db, def)?;
     let (def, file, frag) = filename_and_frag_for_def(db, def)?;
 
     if let Some(path) = mod_path_of_def(db, def) {
@@ -394,7 +354,7 @@ fn rewrite_url_link(db: &RootDatabase, def: Definition, target: &str) -> Option<
 fn mod_path_of_def(db: &RootDatabase, def: Definition) -> Option<String> {
     def.canonical_module_path(db).map(|it| {
         let mut path = String::new();
-        it.flat_map(|it| it.name(db)).for_each(|name| format_to!(path, "{}/", name.display(db)));
+        it.flat_map(|it| it.name(db)).for_each(|name| format_to!(path, "{}/", name));
         path
     })
 }
@@ -454,38 +414,18 @@ fn map_links<'e>(
 /// ```ignore
 /// https://doc.rust-lang.org/std/iter/trait.Iterator.html#tymethod.next
 /// ^^^^^^^^^^^^^^^^^^^^^^^^^^
-/// file:///project/root/target/doc/std/iter/trait.Iterator.html#tymethod.next
-/// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 /// ```
-fn get_doc_base_urls(
-    db: &RootDatabase,
-    def: Definition,
-    target_dir: Option<&OsStr>,
-    sysroot: Option<&OsStr>,
-) -> (Option<Url>, Option<Url>) {
-    let local_doc = target_dir
-        .and_then(|path| path.to_str())
-        .and_then(|path| Url::parse(&format!("file:///{path}/")).ok())
-        .and_then(|it| it.join("doc/").ok());
-    let system_doc = sysroot
-        .and_then(|it| it.to_str())
-        .map(|sysroot| format!("file:///{sysroot}/share/doc/rust/html/"))
-        .and_then(|it| Url::parse(&it).ok());
-
+fn get_doc_base_url(db: &RootDatabase, def: Definition) -> Option<Url> {
     // special case base url of `BuiltinType` to core
     // https://github.com/rust-lang/rust-analyzer/issues/12250
     if let Definition::BuiltinType(..) = def {
-        let web_link = Url::parse("https://doc.rust-lang.org/nightly/core/").ok();
-        let system_link = system_doc.and_then(|it| it.join("core/").ok());
-        return (web_link, system_link);
+        return Url::parse("https://doc.rust-lang.org/nightly/core/").ok();
     };
 
-    let Some(krate) = def.krate(db) else { return Default::default() };
-    let Some(display_name) = krate.display_name(db) else { return Default::default() };
-    let crate_data = &db.crate_graph()[krate.into()];
-    let channel = crate_data.channel.map_or("nightly", ReleaseChannel::as_str);
+    let krate = def.krate(db)?;
+    let display_name = krate.display_name(db)?;
 
-    let (web_base, local_base) = match &crate_data.origin {
+    let base = match db.crate_graph()[krate.into()].origin {
         // std and co do not specify `html_root_url` any longer so we gotta handwrite this ourself.
         // FIXME: Use the toolchains channel instead of nightly
         CrateOrigin::Lang(
@@ -495,17 +435,10 @@ fn get_doc_base_urls(
             | LangCrateOrigin::Std
             | LangCrateOrigin::Test),
         ) => {
-            let system_url = system_doc.and_then(|it| it.join(&format!("{origin}")).ok());
-            let web_url = format!("https://doc.rust-lang.org/{channel}/{origin}");
-            (Some(web_url), system_url)
+            format!("https://doc.rust-lang.org/nightly/{origin}")
         }
-        CrateOrigin::Lang(_) => return (None, None),
-        CrateOrigin::Rustc { name: _ } => {
-            (Some(format!("https://doc.rust-lang.org/{channel}/nightly-rustc/")), None)
-        }
-        CrateOrigin::Local { repo: _, name: _ } => {
-            // FIXME: These should not attempt to link to docs.rs!
-            let weblink = krate.get_html_root_url(db).or_else(|| {
+        _ => {
+            krate.get_html_root_url(db).or_else(|| {
                 let version = krate.version(db);
                 // Fallback to docs.rs. This uses `display_name` and can never be
                 // correct, but that's what fallbacks are about.
@@ -517,32 +450,10 @@ fn get_doc_base_urls(
                     krate = display_name,
                     version = version.as_deref().unwrap_or("*")
                 ))
-            });
-            (weblink, local_doc)
-        }
-        CrateOrigin::Library { repo: _, name } => {
-            let weblink = krate.get_html_root_url(db).or_else(|| {
-                let version = krate.version(db);
-                // Fallback to docs.rs. This uses `display_name` and can never be
-                // correct, but that's what fallbacks are about.
-                //
-                // FIXME: clicking on the link should just open the file in the editor,
-                // instead of falling back to external urls.
-                Some(format!(
-                    "https://docs.rs/{krate}/{version}/",
-                    krate = name,
-                    version = version.as_deref().unwrap_or("*")
-                ))
-            });
-            (weblink, local_doc)
+            })?
         }
     };
-    let web_base = web_base
-        .and_then(|it| Url::parse(&it).ok())
-        .and_then(|it| it.join(&format!("{display_name}/")).ok());
-    let local_base = local_base.and_then(|it| it.join(&format!("{display_name}/")).ok());
-
-    (web_base, local_base)
+    Url::parse(&base).ok()?.join(&format!("{}/", display_name)).ok()
 }
 
 /// Get the filename and extension generated for a symbol by rustdoc.
@@ -567,9 +478,9 @@ fn filename_and_frag_for_def(
 
     let res = match def {
         Definition::Adt(adt) => match adt {
-            Adt::Struct(s) => format!("struct.{}.html", s.name(db).display(db.upcast())),
-            Adt::Enum(e) => format!("enum.{}.html", e.name(db).display(db.upcast())),
-            Adt::Union(u) => format!("union.{}.html", u.name(db).display(db.upcast())),
+            Adt::Struct(s) => format!("struct.{}.html", s.name(db)),
+            Adt::Enum(e) => format!("enum.{}.html", e.name(db)),
+            Adt::Union(u) => format!("union.{}.html", u.name(db)),
         },
         Definition::Module(m) => match m.name(db) {
             // `#[doc(keyword = "...")]` is internal used only by rust compiler
@@ -577,25 +488,20 @@ fn filename_and_frag_for_def(
                 Some(kw) => {
                     format!("keyword.{}.html", kw.trim_matches('"'))
                 }
-                None => format!("{}/index.html", name.display(db.upcast())),
+                None => format!("{}/index.html", name),
             },
             None => String::from("index.html"),
         },
-        Definition::Trait(t) => format!("trait.{}.html", t.name(db).display(db.upcast())),
-        Definition::TraitAlias(t) => format!("traitalias.{}.html", t.name(db).display(db.upcast())),
-        Definition::TypeAlias(t) => format!("type.{}.html", t.name(db).display(db.upcast())),
-        Definition::BuiltinType(t) => format!("primitive.{}.html", t.name().display(db.upcast())),
-        Definition::Function(f) => format!("fn.{}.html", f.name(db).display(db.upcast())),
+        Definition::Trait(t) => format!("trait.{}.html", t.name(db)),
+        Definition::TypeAlias(t) => format!("type.{}.html", t.name(db)),
+        Definition::BuiltinType(t) => format!("primitive.{}.html", t.name()),
+        Definition::Function(f) => format!("fn.{}.html", f.name(db)),
         Definition::Variant(ev) => {
-            format!(
-                "enum.{}.html#variant.{}",
-                ev.parent_enum(db).name(db).display(db.upcast()),
-                ev.name(db).display(db.upcast())
-            )
+            format!("enum.{}.html#variant.{}", ev.parent_enum(db).name(db), ev.name(db))
         }
-        Definition::Const(c) => format!("const.{}.html", c.name(db)?.display(db.upcast())),
-        Definition::Static(s) => format!("static.{}.html", s.name(db).display(db.upcast())),
-        Definition::Macro(mac) => format!("macro.{}.html", mac.name(db).display(db.upcast())),
+        Definition::Const(c) => format!("const.{}.html", c.name(db)?),
+        Definition::Static(s) => format!("static.{}.html", s.name(db)),
+        Definition::Macro(mac) => format!("macro.{}.html", mac.name(db)),
         Definition::Field(field) => {
             let def = match field.parent_def(db) {
                 hir::VariantDef::Struct(it) => Definition::Adt(it.into()),
@@ -603,11 +509,7 @@ fn filename_and_frag_for_def(
                 hir::VariantDef::Variant(it) => Definition::Variant(it),
             };
             let (_, file, _) = filename_and_frag_for_def(db, def)?;
-            return Some((
-                def,
-                file,
-                Some(format!("structfield.{}", field.name(db).display(db.upcast()))),
-            ));
+            return Some((def, file, Some(format!("structfield.{}", field.name(db)))));
         }
         Definition::SelfType(impl_) => {
             let adt = impl_.self_ty(db).as_adt()?.into();
@@ -641,14 +543,12 @@ fn get_assoc_item_fragment(db: &dyn HirDatabase, assoc_item: hir::AssocItem) -> 
             // Rustdoc makes this decision based on whether a method 'has defaultness'.
             // Currently this is only the case for provided trait methods.
             if is_trait_method && !function.has_body(db) {
-                format!("tymethod.{}", function.name(db).display(db.upcast()))
+                format!("tymethod.{}", function.name(db))
             } else {
-                format!("method.{}", function.name(db).display(db.upcast()))
+                format!("method.{}", function.name(db))
             }
         }
-        AssocItem::Const(constant) => {
-            format!("associatedconstant.{}", constant.name(db)?.display(db.upcast()))
-        }
-        AssocItem::TypeAlias(ty) => format!("associatedtype.{}", ty.name(db).display(db.upcast())),
+        AssocItem::Const(constant) => format!("associatedconstant.{}", constant.name(db)?),
+        AssocItem::TypeAlias(ty) => format!("associatedtype.{}", ty.name(db)),
     })
 }

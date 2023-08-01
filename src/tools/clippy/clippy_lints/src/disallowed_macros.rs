@@ -1,6 +1,7 @@
 use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::macros::macro_backtrace;
 use rustc_data_structures::fx::FxHashSet;
+use rustc_hir::def::{Namespace, Res};
 use rustc_hir::def_id::DefIdMap;
 use rustc_hir::{Expr, ForeignItem, HirId, ImplItem, Item, Pat, Path, Stmt, TraitItem, Ty};
 use rustc_lint::{LateContext, LateLintPass};
@@ -47,7 +48,7 @@ declare_clippy_lint! {
     ///     value: usize,
     /// }
     /// ```
-    #[clippy::version = "1.66.0"]
+    #[clippy::version = "1.65.0"]
     pub DISALLOWED_MACROS,
     style,
     "use of a disallowed macro"
@@ -88,7 +89,7 @@ impl DisallowedMacros {
                     &format!("use of a disallowed macro `{}`", conf.path()),
                     |diag| {
                         if let Some(reason) = conf.reason() {
-                            diag.note(reason);
+                            diag.note(&format!("{reason} (from clippy.toml)"));
                         }
                     },
                 );
@@ -103,7 +104,7 @@ impl LateLintPass<'_> for DisallowedMacros {
     fn check_crate(&mut self, cx: &LateContext<'_>) {
         for (index, conf) in self.conf_disallowed.iter().enumerate() {
             let segs: Vec<_> = conf.path().split("::").collect();
-            for id in clippy_utils::def_path_def_ids(cx, &segs) {
+            if let Res::Def(_, id) = clippy_utils::def_path_res(cx, &segs, Some(Namespace::MacroNS)) {
                 self.disallowed.insert(id, index);
             }
         }

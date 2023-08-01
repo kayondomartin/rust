@@ -1,9 +1,9 @@
-//@aux-build:proc_macros.rs:proc-macro
+// aux-build:macro_rules.rs
 
 #![warn(clippy::empty_loop)]
 
-extern crate proc_macros;
-use proc_macros::{external, inline_macros};
+#[macro_use]
+extern crate macro_rules;
 
 fn should_trigger() {
     loop {}
@@ -16,7 +16,6 @@ fn should_trigger() {
     }
 }
 
-#[inline_macros]
 fn should_not_trigger() {
     loop {
         panic!("This is fine")
@@ -39,10 +38,14 @@ fn should_not_trigger() {
     loop {}
 
     // We don't lint loops inside macros
-    inline!(loop {});
+    macro_rules! foo {
+        () => {
+            loop {}
+        };
+    }
 
     // We don't lint external macros
-    external!(loop {});
+    foofoo!()
 }
 
 fn main() {}

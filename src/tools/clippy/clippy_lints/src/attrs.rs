@@ -1,25 +1,24 @@
 //! checks for attributes
 
+use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_sugg, span_lint_and_then};
 use clippy_utils::macros::{is_panic, macro_backtrace};
-use clippy_utils::msrvs::{self, Msrv};
+use clippy_utils::msrvs;
 use clippy_utils::source::{first_line_of_span, is_present_in_source, snippet_opt, without_block_comments};
-use clippy_utils::{
-    diagnostics::{span_lint, span_lint_and_help, span_lint_and_sugg, span_lint_and_then},
-    is_from_proc_macro,
-};
+use clippy_utils::{extract_msrv_attr, meets_msrv};
 use if_chain::if_chain;
-use rustc_ast::{AttrKind, AttrStyle, Attribute, LitKind, MetaItemKind, MetaItemLit, NestedMetaItem};
+use rustc_ast::{AttrKind, AttrStyle, Attribute, Lit, LitKind, MetaItemKind, NestedMetaItem};
 use rustc_errors::Applicability;
 use rustc_hir::{
     Block, Expr, ExprKind, ImplItem, ImplItemKind, Item, ItemKind, StmtKind, TraitFn, TraitItem, TraitItemKind,
 };
-use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, Level, LintContext};
+use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty;
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
+use rustc_span::sym;
 use rustc_span::symbol::Symbol;
-use rustc_span::{sym, DUMMY_SP};
 use semver::Version;
 
 static UNIX_SYSTEMS: &[&str] = &[
@@ -181,52 +180,6 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for empty lines after documenation comments.
-    ///
-    /// ### Why is this bad?
-    /// The documentation comment was most likely meant to be an inner attribute or regular comment.
-    /// If it was intended to be a documentation comment, then the empty line should be removed to
-    /// be more idiomatic.
-    ///
-    /// ### Known problems
-    /// Only detects empty lines immediately following the documentation. If the doc comment is followed
-    /// by an attribute and then an empty line, this lint will not trigger. Use `empty_line_after_outer_attr`
-    /// in combination with this lint to detect both cases.
-    ///
-    /// Does not detect empty lines after doc attributes (e.g. `#[doc = ""]`).
-    ///
-    /// ### Example
-    /// ```rust
-    /// /// Some doc comment with a blank line after it.
-    ///
-    /// fn not_quite_good_code() { }
-    /// ```
-    ///
-    /// Use instead:
-    /// ```rust
-    /// /// Good (no blank line)
-    /// fn this_is_fine() { }
-    /// ```
-    ///
-    /// ```rust
-    /// // Good (convert to a regular comment)
-    ///
-    /// fn this_is_fine_too() { }
-    /// ```
-    ///
-    /// ```rust
-    /// //! Good (convert to a comment on an inner attribute)
-    ///
-    /// fn this_is_fine_as_well() { }
-    /// ```
-    #[clippy::version = "1.70.0"]
-    pub EMPTY_LINE_AFTER_DOC_COMMENTS,
-    nursery,
-    "empty line after documentation comments"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
     /// Checks for `warn`/`deny`/`forbid` attributes targeting the whole clippy::restriction category.
     ///
     /// ### Why is this bad?
@@ -341,56 +294,6 @@ declare_clippy_lint! {
     "ensures that all `allow` and `expect` attributes have a reason"
 }
 
-declare_clippy_lint! {
-    /// ### What it does
-    /// Checks for `any` and `all` combinators in `cfg` with only one condition.
-    ///
-    /// ### Why is this bad?
-    /// If there is only one condition, no need to wrap it into `any` or `all` combinators.
-    ///
-    /// ### Example
-    /// ```rust
-    /// #[cfg(any(unix))]
-    /// pub struct Bar;
-    /// ```
-    ///
-    /// Use instead:
-    /// ```rust
-    /// #[cfg(unix)]
-    /// pub struct Bar;
-    /// ```
-    #[clippy::version = "1.71.0"]
-    pub NON_MINIMAL_CFG,
-    style,
-    "ensure that all `cfg(any())` and `cfg(all())` have more than one condition"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
-    /// Checks for `#[cfg(features = "...")]` and suggests to replace it with
-    /// `#[cfg(feature = "...")]`.
-    ///
-    /// ### Why is this bad?
-    /// Misspelling `feature` as `features` can be sometimes hard to spot. It
-    /// may cause conditional compilation not work quitely.
-    ///
-    /// ### Example
-    /// ```rust
-    /// #[cfg(features = "some-feature")]
-    /// fn conditional() { }
-    /// ```
-    ///
-    /// Use instead:
-    /// ```rust
-    /// #[cfg(feature = "some-feature")]
-    /// fn conditional() { }
-    /// ```
-    #[clippy::version = "1.69.0"]
-    pub MAYBE_MISUSED_CFG,
-    suspicious,
-    "prevent from misusing the wrong attr name"
-}
-
 declare_lint_pass!(Attributes => [
     ALLOW_ATTRIBUTES_WITHOUT_REASON,
     INLINE_ALWAYS,
@@ -400,26 +303,6 @@ declare_lint_pass!(Attributes => [
 ]);
 
 impl<'tcx> LateLintPass<'tcx> for Attributes {
-    fn check_crate(&mut self, cx: &LateContext<'tcx>) {
-        for (name, level) in &cx.sess().opts.lint_opts {
-            if name == "clippy::restriction" && *level > Level::Allow {
-                span_lint_and_then(
-                    cx,
-                    BLANKET_CLIPPY_RESTRICTION_LINTS,
-                    DUMMY_SP,
-                    "`clippy::restriction` is not meant to be enabled as a group",
-                    |diag| {
-                        diag.note(format!(
-                            "because of the command line `--{} clippy::restriction`",
-                            level.as_str()
-                        ));
-                        diag.help("enable the restriction lints you need individually");
-                    },
-                );
-            }
-        }
-    }
-
     fn check_attribute(&mut self, cx: &LateContext<'tcx>, attr: &'tcx Attribute) {
         if let Some(items) = &attr.meta_item_list() {
             if let Some(ident) = attr.ident() {
@@ -475,9 +358,7 @@ impl<'tcx> LateLintPass<'tcx> for Attributes {
                                                         | "enum_glob_use"
                                                         | "redundant_pub_crate"
                                                         | "macro_use_imports"
-                                                        | "unsafe_removed_from_name"
-                                                        | "module_name_repetitions"
-                                                        | "single_component_path_imports"
+                                                        | "unsafe_removed_from_name",
                                                 )
                                             })
                                         {
@@ -560,18 +441,18 @@ fn check_clippy_lint_names(cx: &LateContext<'_>, name: Symbol, items: &[NestedMe
                     cx,
                     BLANKET_CLIPPY_RESTRICTION_LINTS,
                     lint.span(),
-                    "`clippy::restriction` is not meant to be enabled as a group",
+                    "restriction lints are not meant to be all enabled",
                     None,
-                    "enable the restriction lints you need individually",
+                    "try enabling only the lints you really need",
                 );
             }
         }
     }
 }
 
-fn check_lint_reason<'cx>(cx: &LateContext<'cx>, name: Symbol, items: &[NestedMetaItem], attr: &'cx Attribute) {
+fn check_lint_reason(cx: &LateContext<'_>, name: Symbol, items: &[NestedMetaItem], attr: &'_ Attribute) {
     // Check for the feature
-    if !cx.tcx.features().lint_reasons {
+    if !cx.tcx.sess.features_untracked().lint_reasons {
         return;
     }
 
@@ -580,11 +461,6 @@ fn check_lint_reason<'cx>(cx: &LateContext<'cx>, name: Symbol, items: &[NestedMe
         && let MetaItemKind::NameValue(_) = &item.kind
         && item.path == sym::reason
     {
-        return;
-    }
-
-    // Check if the attribute is in an external macro and therefore out of the developer's control
-    if in_external_macro(cx.sess(), attr.span) || is_from_proc_macro(cx, &attr) {
         return;
     }
 
@@ -673,7 +549,7 @@ fn check_attrs(cx: &LateContext<'_>, span: Span, name: Symbol, attrs: &[Attribut
     }
 }
 
-fn check_semver(cx: &LateContext<'_>, span: Span, lit: &MetaItemLit) {
+fn check_semver(cx: &LateContext<'_>, span: Span, lit: &Lit) {
     if let LitKind::Str(is, _) = lit.kind {
         if Version::parse(is.as_str()).is_ok() {
             return;
@@ -696,16 +572,13 @@ fn is_word(nmi: &NestedMetaItem, expected: Symbol) -> bool {
 }
 
 pub struct EarlyAttributes {
-    pub msrv: Msrv,
+    pub msrv: Option<RustcVersion>,
 }
 
 impl_lint_pass!(EarlyAttributes => [
     DEPRECATED_CFG_ATTR,
     MISMATCHED_TARGET_OS,
     EMPTY_LINE_AFTER_OUTER_ATTR,
-    EMPTY_LINE_AFTER_DOC_COMMENTS,
-    NON_MINIMAL_CFG,
-    MAYBE_MISUSED_CFG,
 ]);
 
 impl EarlyLintPass for EarlyAttributes {
@@ -714,25 +587,17 @@ impl EarlyLintPass for EarlyAttributes {
     }
 
     fn check_attribute(&mut self, cx: &EarlyContext<'_>, attr: &Attribute) {
-        check_deprecated_cfg_attr(cx, attr, &self.msrv);
+        check_deprecated_cfg_attr(cx, attr, self.msrv);
         check_mismatched_target_os(cx, attr);
-        check_minimal_cfg_condition(cx, attr);
-        check_misused_cfg(cx, attr);
     }
 
     extract_msrv_attr!(EarlyContext);
 }
 
-/// Check for empty lines after outer attributes.
-///
-/// Attributes and documenation comments are both considered outer attributes
-/// by the AST. However, the average user likely considers them to be different.
-/// Checking for empty lines after each of these attributes is split into two different
-/// lints but can share the same logic.
 fn check_empty_line_after_outer_attr(cx: &EarlyContext<'_>, item: &rustc_ast::Item) {
     let mut iter = item.attrs.iter().peekable();
     while let Some(attr) = iter.next() {
-        if (matches!(attr.kind, AttrKind::Normal(..)) || matches!(attr.kind, AttrKind::DocComment(..)))
+        if matches!(attr.kind, AttrKind::Normal(..))
             && attr.style == AttrStyle::Outer
             && is_present_in_source(cx, attr.span)
         {
@@ -749,29 +614,22 @@ fn check_empty_line_after_outer_attr(cx: &EarlyContext<'_>, item: &rustc_ast::It
                 let lines = without_block_comments(lines);
 
                 if lines.iter().filter(|l| l.trim().is_empty()).count() > 2 {
-                    let (lint_msg, lint_type) = match attr.kind {
-                        AttrKind::DocComment(..) => (
-                            "found an empty line after a doc comment. \
-                            Perhaps you need to use `//!` to make a comment on a module, remove the empty line, or make a regular comment with `//`?",
-                            EMPTY_LINE_AFTER_DOC_COMMENTS,
-                        ),
-                        AttrKind::Normal(..) => (
-                            "found an empty line after an outer attribute. \
-                            Perhaps you forgot to add a `!` to make it an inner attribute?",
-                            EMPTY_LINE_AFTER_OUTER_ATTR,
-                        ),
-                    };
-
-                    span_lint(cx, lint_type, begin_of_attr_to_item, lint_msg);
+                    span_lint(
+                        cx,
+                        EMPTY_LINE_AFTER_OUTER_ATTR,
+                        begin_of_attr_to_item,
+                        "found an empty line after an outer attribute. \
+                        Perhaps you forgot to add a `!` to make it an inner attribute?",
+                    );
                 }
             }
         }
     }
 }
 
-fn check_deprecated_cfg_attr(cx: &EarlyContext<'_>, attr: &Attribute, msrv: &Msrv) {
+fn check_deprecated_cfg_attr(cx: &EarlyContext<'_>, attr: &Attribute, msrv: Option<RustcVersion>) {
     if_chain! {
-        if msrv.meets(msrvs::TOOL_ATTRIBUTES);
+        if meets_msrv(msrv, msrvs::TOOL_ATTRIBUTES);
         // check cfg_attr
         if attr.has_name(sym::cfg_attr);
         if let Some(items) = attr.meta_item_list();
@@ -804,77 +662,6 @@ fn check_deprecated_cfg_attr(cx: &EarlyContext<'_>, attr: &Attribute, msrv: &Msr
                 Applicability::MachineApplicable,
             );
         }
-    }
-}
-
-fn check_nested_cfg(cx: &EarlyContext<'_>, items: &[NestedMetaItem]) {
-    for item in items {
-        if let NestedMetaItem::MetaItem(meta) = item {
-            if !meta.has_name(sym::any) && !meta.has_name(sym::all) {
-                continue;
-            }
-            if let MetaItemKind::List(list) = &meta.kind {
-                check_nested_cfg(cx, list);
-                if list.len() == 1 {
-                    span_lint_and_then(
-                        cx,
-                        NON_MINIMAL_CFG,
-                        meta.span,
-                        "unneeded sub `cfg` when there is only one condition",
-                        |diag| {
-                            if let Some(snippet) = snippet_opt(cx, list[0].span()) {
-                                diag.span_suggestion(meta.span, "try", snippet, Applicability::MaybeIncorrect);
-                            }
-                        },
-                    );
-                } else if list.is_empty() && meta.has_name(sym::all) {
-                    span_lint_and_then(
-                        cx,
-                        NON_MINIMAL_CFG,
-                        meta.span,
-                        "unneeded sub `cfg` when there is no condition",
-                        |_| {},
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn check_nested_misused_cfg(cx: &EarlyContext<'_>, items: &[NestedMetaItem]) {
-    for item in items {
-        if let NestedMetaItem::MetaItem(meta) = item {
-            if meta.has_name(sym!(features)) && let Some(val) = meta.value_str() {
-                span_lint_and_sugg(
-                    cx,
-                    MAYBE_MISUSED_CFG,
-                    meta.span,
-                    "feature may misspelled as features",
-                    "use",
-                    format!("feature = \"{val}\""),
-                    Applicability::MaybeIncorrect,
-                );
-            }
-            if let MetaItemKind::List(list) = &meta.kind {
-                check_nested_misused_cfg(cx, list);
-            }
-        }
-    }
-}
-
-fn check_minimal_cfg_condition(cx: &EarlyContext<'_>, attr: &Attribute) {
-    if attr.has_name(sym::cfg) &&
-        let Some(items) = attr.meta_item_list()
-    {
-        check_nested_cfg(cx, &items);
-    }
-}
-
-fn check_misused_cfg(cx: &EarlyContext<'_>, attr: &Attribute) {
-    if attr.has_name(sym::cfg) &&
-        let Some(items) = attr.meta_item_list()
-    {
-        check_nested_misused_cfg(cx, &items);
     }
 }
 

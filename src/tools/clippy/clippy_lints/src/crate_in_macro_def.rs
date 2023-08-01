@@ -9,7 +9,7 @@ use rustc_span::{symbol::sym, Span};
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of `crate` as opposed to `$crate` in a macro definition.
+    /// Checks for use of `crate` as opposed to `$crate` in a macro definition.
     ///
     /// ### Why is this bad?
     /// `crate` refers to the macro call's crate, whereas `$crate` refers to the macro definition's
@@ -55,7 +55,7 @@ impl EarlyLintPass for CrateInMacroDef {
         if_chain! {
             if item.attrs.iter().any(is_macro_export);
             if let ItemKind::MacroDef(macro_def) = &item.kind;
-            let tts = macro_def.body.tokens.clone();
+            let tts = macro_def.body.inner_tokens();
             if let Some(span) = contains_unhygienic_crate_reference(&tts);
             then {
                 span_lint_and_sugg(

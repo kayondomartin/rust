@@ -47,9 +47,9 @@
             "group": "test"
         },
         {
-            "label": "bless ui tests",
+            "label": "cargo dev bless",
             "type": "shell",
-            "command": "cargo bless",
+            "command": "cargo dev bless",
             "problemMatcher": [],
             "group": "none"
         }

@@ -11,19 +11,18 @@ use crate::walk::{filter_dirs, walk};
 use std::path::Path;
 
 pub fn check(root_path: &Path, bad: &mut bool) {
-    let core = root_path.join("core");
-    let core_copy = core.clone();
-    let core_tests = core.join("tests");
-    let core_benches = core.join("benches");
-    let is_core = move |path: &Path| {
-        path.starts_with(&core)
-            && !(path.starts_with(&core_tests) || path.starts_with(&core_benches))
+    let core = &root_path.join("core");
+    let core_tests = &core.join("tests");
+    let core_benches = &core.join("benches");
+    let is_core = |path: &Path| {
+        path.starts_with(core) && !(path.starts_with(core_tests) || path.starts_with(core_benches))
     };
 
-    let skip = move |path: &Path, is_dir| {
+    let mut skip = |path: &Path| {
         let file_name = path.file_name().unwrap_or_default();
-        if is_dir {
+        if path.is_dir() {
             filter_dirs(path)
+                || path.ends_with("src/test")
                 || path.ends_with("src/doc")
                 || (file_name == "tests" || file_name == "benches") && !is_core(path)
         } else {
@@ -36,9 +35,9 @@ pub fn check(root_path: &Path, bad: &mut bool) {
         }
     };
 
-    walk(root_path, skip, &mut |entry, contents| {
+    walk(root_path, &mut skip, &mut |entry, contents| {
         let path = entry.path();
-        let is_core = path.starts_with(&core_copy);
+        let is_core = path.starts_with(core);
         for (i, line) in contents.lines().enumerate() {
             let line = line.trim();
             let is_test = || line.contains("#[test]") && !line.contains("`#[test]");

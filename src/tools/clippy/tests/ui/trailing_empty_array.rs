@@ -144,7 +144,7 @@ struct ReprCAlign {
 
 // NOTE: because of https://doc.rust-lang.org/stable/reference/type-layout.html#primitive-representation-of-enums-with-fields and I'm not sure when in the compilation pipeline that would happen
 #[repr(C)]
-enum DontLintAnonymousStructsFromDesugaring {
+enum DontLintAnonymousStructsFromDesuraging {
     A(u32),
     B(f32, [u64; 0]),
     C { x: u32, y: [u64; 0] },
@@ -155,6 +155,7 @@ struct TupleStructReprC(i32, [usize; 0]);
 
 type NamedTuple = (i32, [usize; 0]);
 
+#[rustfmt::skip] // [rustfmt#4995](https://github.com/rust-lang/rustfmt/issues/4995)
 struct ConstParamZeroDefault<const N: usize = 0> {
     field: i32,
     last: [usize; N],
@@ -165,6 +166,7 @@ struct ConstParamNoDefault<const N: usize> {
     last: [usize; N],
 }
 
+#[rustfmt::skip] 
 struct ConstParamNonZeroDefault<const N: usize = 1> {
     field: i32,
     last: [usize; N],

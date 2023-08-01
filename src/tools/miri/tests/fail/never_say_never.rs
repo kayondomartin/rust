@@ -6,8 +6,10 @@
 
 fn main() {
     let y = &5;
-    let x: ! = unsafe { *(y as *const _ as *const !) };
-    f(x) //~ ERROR: entering unreachable code
+    let x: ! = unsafe {
+        *(y as *const _ as *const !) //~ ERROR: entering unreachable code
+    };
+    f(x)
 }
 
 fn f(x: !) -> ! {

@@ -1,7 +1,7 @@
-//@revisions: edition2018 edition2021
-//@[edition2018] edition:2018
-//@[edition2021] edition:2021
-//@run-rustfix
+// revisions: edition2018 edition2021
+//[edition2018] edition:2018
+//[edition2021] edition:2021
+// run-rustfix
 
 #![warn(clippy::uninlined_format_args)]
 
@@ -26,7 +26,4 @@ fn main() {
             panic!("p4 {var}");
         }
     }
-
-    assert!(var == 1, "p5 {var}");
-    debug_assert!(var == 1, "p6 {var}");
 }

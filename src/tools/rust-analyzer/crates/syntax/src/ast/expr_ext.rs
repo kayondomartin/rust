@@ -48,30 +48,23 @@ impl From<ast::IfExpr> for ElseBranch {
 }
 
 impl ast::IfExpr {
-    pub fn condition(&self) -> Option<ast::Expr> {
-        // If the condition is a BlockExpr, check if the then body is missing.
-        // If it is assume the condition is the expression that is missing instead.
-        let mut exprs = support::children(self.syntax());
-        let first = exprs.next();
-        match first {
-            Some(ast::Expr::BlockExpr(_)) => exprs.next().and(first),
-            first => first,
-        }
-    }
-
     pub fn then_branch(&self) -> Option<ast::BlockExpr> {
-        match support::children(self.syntax()).nth(1)? {
-            ast::Expr::BlockExpr(block) => Some(block),
-            _ => None,
-        }
+        self.children_after_condition().next()
     }
 
     pub fn else_branch(&self) -> Option<ElseBranch> {
-        match support::children(self.syntax()).nth(2)? {
-            ast::Expr::BlockExpr(block) => Some(ElseBranch::Block(block)),
-            ast::Expr::IfExpr(elif) => Some(ElseBranch::IfExpr(elif)),
-            _ => None,
-        }
+        let res = match self.children_after_condition().nth(1) {
+            Some(block) => ElseBranch::Block(block),
+            None => {
+                let elif = self.children_after_condition().next()?;
+                ElseBranch::IfExpr(elif)
+            }
+        };
+        Some(res)
+    }
+
+    fn children_after_condition<N: AstNode>(&self) -> impl Iterator<Item = N> {
+        self.syntax().children().skip(1).filter_map(N::cast)
     }
 }
 
@@ -288,7 +281,6 @@ impl ast::ArrayExpr {
 pub enum LiteralKind {
     String(ast::String),
     ByteString(ast::ByteString),
-    CString(ast::CString),
     IntNumber(ast::IntNumber),
     FloatNumber(ast::FloatNumber),
     Char(ast::Char),
@@ -319,9 +311,6 @@ impl ast::Literal {
         }
         if let Some(t) = ast::ByteString::cast(token.clone()) {
             return LiteralKind::ByteString(t);
-        }
-        if let Some(t) = ast::CString::cast(token.clone()) {
-            return LiteralKind::CString(t);
         }
         if let Some(t) = ast::Char::cast(token.clone()) {
             return LiteralKind::Char(t);
@@ -367,14 +356,7 @@ impl ast::BlockExpr {
             Some(it) => it,
             None => return true,
         };
-        match parent.kind() {
-            FOR_EXPR | IF_EXPR => parent
-                .children()
-                .find(|it| ast::Expr::can_cast(it.kind()))
-                .map_or(true, |it| it == *self.syntax()),
-            LET_ELSE | FN | WHILE_EXPR | LOOP_EXPR | CONST_BLOCK_PAT => false,
-            _ => true,
-        }
+        !matches!(parent.kind(), FN | IF_EXPR | WHILE_EXPR | LOOP_EXPR)
     }
 }
 

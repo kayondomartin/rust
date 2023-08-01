@@ -1,4 +1,4 @@
-//@compile-flags: -Zmiri-disable-weak-memory-emulation -Zmiri-preemption-rate=0 -Zmiri-disable-stacked-borrows
+//@compile-flags: -Zmiri-disable-weak-memory-emulation -Zmiri-preemption-rate=0
 #![feature(new_uninit)]
 
 use std::mem::MaybeUninit;
@@ -26,7 +26,6 @@ pub fn main() {
     //  2. write
     unsafe {
         let j1 = spawn(move || {
-            let ptr = ptr; // avoid field capturing
             // Concurrent allocate the memory.
             // Uses relaxed semantics to not generate
             // a release sequence.
@@ -35,11 +34,10 @@ pub fn main() {
         });
 
         let j2 = spawn(move || {
-            let ptr = ptr; // avoid field capturing
             let pointer = &*ptr.0;
 
             // Note: could also error due to reading uninitialized memory, but the data-race detector triggers first.
-            *pointer.load(Ordering::Relaxed) //~ ERROR: Data race detected between (1) Allocate on thread `<unnamed>` and (2) Read on thread `<unnamed>`
+            *pointer.load(Ordering::Relaxed) //~ ERROR: Data race detected between Read on thread `<unnamed>` and Allocate on thread `<unnamed>`
         });
 
         j1.join().unwrap();

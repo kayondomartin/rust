@@ -1,6 +1,4 @@
-#![allow(clippy::uninlined_format_args, clippy::useless_vec)]
-#![allow(clippy::needless_if, clippy::uninlined_format_args)]
-#![warn(clippy::needless_collect)]
+#![allow(clippy::uninlined_format_args)]
 
 use std::collections::{BinaryHeap, HashMap, HashSet, LinkedList, VecDeque};
 

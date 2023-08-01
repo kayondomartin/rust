@@ -1,7 +1,6 @@
-//@run-rustfix
+// run-rustfix
 
 #![warn(clippy::comparison_to_empty)]
-#![allow(clippy::useless_vec)]
 
 fn main() {
     // Disallow comparisons to empty

@@ -14,15 +14,11 @@ This feature allows for use of one of following sanitizers:
   forward-edge control flow protection.
 * [HWAddressSanitizer](#hwaddresssanitizer) a memory error detector similar to
   AddressSanitizer, but based on partial hardware assistance.
-* [KernelControlFlowIntegrity](#kernelcontrolflowintegrity) LLVM Kernel Control
-  Flow Integrity (KCFI) provides forward-edge control flow protection for
-  operating systems kernels.
 * [LeakSanitizer](#leaksanitizer) a run-time memory leak detector.
 * [MemorySanitizer](#memorysanitizer) a detector of uninitialized reads.
 * [MemTagSanitizer](#memtagsanitizer) fast memory error detector based on
   Armv8.5-A Memory Tagging Extension.
-* [SafeStack](#safestack) provides backward-edge control flow protection by separating the stack into safe and unsafe regions.
-* [ShadowCallStack](#shadowcallstack) provides backward-edge control flow protection (aarch64 only).
+* [ShadowCallStack](#shadowcallstack) provides backward-edge control flow protection.
 * [ThreadSanitizer](#threadsanitizer) a fast data race detector.
 
 To enable a sanitizer compile with `-Zsanitizer=address`,`-Zsanitizer=cfi`,
@@ -51,10 +47,10 @@ with runtime flag `ASAN_OPTIONS=detect_leaks=1` on macOS.
 AddressSanitizer is supported on the following targets:
 
 * `aarch64-apple-darwin`
-* `aarch64-unknown-fuchsia`
+* `aarch64-fuchsia`
 * `aarch64-unknown-linux-gnu`
 * `x86_64-apple-darwin`
-* `x86_64-unknown-fuchsia`
+* `x86_64-fuchsia`
 * `x86_64-unknown-freebsd`
 * `x86_64-unknown-linux-gnu`
 
@@ -197,24 +193,24 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
 
 # ControlFlowIntegrity
 
-The LLVM Control Flow Integrity (CFI) support in the Rust compiler provides
-forward-edge control flow protection for both Rust-compiled code only and for C
-or C++ and Rust -compiled code mixed-language binaries, also known as “mixed
-binaries” (i.e., for when C or C++ and Rust -compiled code share the same
-virtual address space), by aggregating function pointers in groups identified by
-their return and parameter types.
+The LLVM Control Flow Integrity (CFI) support in the Rust compiler initially
+provides forward-edge control flow protection for Rust-compiled code only by
+aggregating function pointers in groups identified by their return and parameter
+types.
 
-LLVM CFI can be enabled with `-Zsanitizer=cfi` and requires LTO (i.e., `-Clto`).
-Cross-language LLVM CFI can be enabled with `-Zsanitizer=cfi`, and requires the
-`-Zsanitizer-cfi-normalize-integers` option to be used with Clang
-`-fsanitize-cfi-icall-normalize-integers` for normalizing integer types, and
-proper (i.e., non-rustc) LTO (i.e., `-Clinker-plugin-lto`).
+Forward-edge control flow protection for C or C++ and Rust -compiled code "mixed
+binaries" (i.e., for when C or C++ and Rust -compiled code share the same
+virtual address space) will be provided in later work by defining and using
+compatible type identifiers (see Type metadata in the design document in the
+tracking issue [#89653](https://github.com/rust-lang/rust/issues/89653)).
+
+LLVM CFI can be enabled with -Zsanitizer=cfi and requires LTO (i.e., -Clto).
 
 See the [Clang ControlFlowIntegrity documentation][clang-cfi] for more details.
 
 ## Example
 
-```rust,ignore (making doc tests pass cross-platform is hard)
+```text
 #![feature(naked_functions)]
 
 use std::arch::asm;
@@ -239,7 +235,7 @@ pub extern "C" fn add_two(x: i32) {
              nop
              nop
              nop
-             lea eax, [edi+2]
+             lea rax, [rdi+2]
              ret
         ",
             options(noreturn)
@@ -344,7 +340,7 @@ $
 Fig. 5. Build and execution of the modified example with LLVM CFI disabled.
 
 ```shell
-$ RUSTFLAGS="-Cembed-bitcode=yes -Clto -Zsanitizer=cfi" cargo run --release
+$ RUSTFLAGS="-Zsanitizer=cfi -Cembed-bitcode=yes -Clto" cargo run --release
    Compiling rust-cfi-2 v0.1.0 (/home/rcvalle/rust-cfi-2)
     Finished release [optimized] target(s) in 3.38s
      Running `target/release/rust-cfi-2`
@@ -393,7 +389,7 @@ Closures][rust-book-ch19-05] chapter of the [The Rust Programming
 Language][rust-book] book.
 
 ```shell
-$ cargo run --release
+ cargo run --release
    Compiling rust-cfi-3 v0.1.0 (/home/rcvalle/rust-cfi-3)
     Finished release [optimized] target(s) in 0.74s
      Running `target/release/rust-cfi-3`
@@ -405,7 +401,7 @@ $
 Fig. 8. Build and execution of the modified example with LLVM CFI disabled.
 
 ```shell
-$ RUSTFLAGS="-Cembed-bitcode=yes -Clto -Zsanitizer=cfi" cargo run --release
+$ RUSTFLAGS="-Zsanitizer=cfi -Cembed-bitcode=yes -Clto" cargo run --release
    Compiling rust-cfi-3 v0.1.0 (/home/rcvalle/rust-cfi-3)
     Finished release [optimized] target(s) in 3.40s
      Running `target/release/rust-cfi-3`
@@ -420,90 +416,6 @@ When LLVM CFI is enabled, if there are any attempts to change/hijack control
 flow using an indirect branch/call to a function with different return and
 parameter types than the return type expected and arguments intended/passed in
 the call/branch site, the execution is also terminated (see Fig. 9).
-
-```ignore (cannot-test-this-because-uses-custom-build)
-int
-do_twice(int (*fn)(int), int arg) {
-    return fn(arg) + fn(arg);
-}
-```
-Fig. 10. Example C library.
-
-```ignore (cannot-test-this-because-uses-custom-build)
-use std::mem;
-
-#[link(name = "foo")]
-extern "C" {
-    fn do_twice(f: unsafe extern "C" fn(i32) -> i32, arg: i32) -> i32;
-}
-
-unsafe extern "C" fn add_one(x: i32) -> i32 {
-    x + 1
-}
-
-unsafe extern "C" fn add_two(x: i64) -> i64 {
-    x + 2
-}
-
-fn main() {
-    let answer = unsafe { do_twice(add_one, 5) };
-
-    println!("The answer is: {}", answer);
-
-    println!("With CFI enabled, you should not see the next answer");
-    let f: unsafe extern "C" fn(i32) -> i32 = unsafe {
-        mem::transmute::<*const u8, unsafe extern "C" fn(i32) -> i32>(add_two as *const u8)
-    };
-    let next_answer = unsafe { do_twice(f, 5) };
-
-    println!("The next answer is: {}", next_answer);
-}
-```
-Fig. 11. Another modified example from the [Advanced Functions and
-Closures][rust-book-ch19-05] chapter of the [The Rust Programming
-Language][rust-book] book.
-
-```shell
-$ make
-mkdir -p target/debug
-clang -I. -Isrc -Wall -flto -fvisibility=hidden -c -emit-llvm src/foo.c -o target/debug/libfoo.bc
-llvm-ar rcs target/debug/libfoo.a target/debug/libfoo.bc
-RUSTFLAGS="-L./target/debug -Clinker-plugin-lto -Clinker=clang -Clink-arg=-fuse-ld=lld" cargo build
-   Compiling main v0.1.0 (/home/rcvalle/rust-cross-cfi-1)
-    Finished dev [unoptimized + debuginfo] target(s) in 0.45s
-$ ./target/debug/main
-The answer is: 12
-With CFI enabled, you should not see the next answer
-The next answer is: 14
-$
-```
-Fig. 12. Build and execution of the modified example with LLVM CFI disabled.
-
-```shell
-$ make
-mkdir -p target/debug
-clang -I. -Isrc -Wall -flto -fvisibility=hidden -fsanitize=cfi -fsanitize-cfi-icall-normalize-integers -c -emit-llvm src/foo.c -o target/debug/libfoo.bc
-llvm-ar rcs target/debug/libfoo.a target/debug/libfoo.bc
-RUSTFLAGS="-L./target/debug -Clinker-plugin-lto -Clinker=clang -Clink-arg=-fuse-ld=lld -Zsanitizer=cfi -Zsanitizer-cfi-normalize-integers" cargo build
-   Compiling main v0.1.0 (/home/rcvalle/rust-cross-cfi-1)
-    Finished dev [unoptimized + debuginfo] target(s) in 0.45s
-$ ./target/debug/main
-The answer is: 12
-With CFI enabled, you should not see the next answer
-Illegal instruction
-$
-```
-Fig. 13. Build and execution of the modified example with LLVM CFI enabled.
-
-When LLVM CFI is enabled, if there are any attempts to change/hijack control
-flow using an indirect branch/call to a function with different return and
-parameter types than the return type expected and arguments intended/passed in
-the call/branch site, even across the FFI boundary and for extern "C" function
-types indirectly called (i.e., callbacks/function pointers) across the FFI
-boundary, in C or C++ and Rust -compiled code mixed-language binaries, also
-known as “mixed binaries” (i.e., for when C or C++ and Rust -compiled code share
-the same virtual address space), the execution is also terminated (see Fig. 13).
-
 
 [rust-book-ch19-05]: https://doc.rust-lang.org/book/ch19-05-advanced-functions-and-closures.html
 [rust-book]: https://doc.rust-lang.org/book/title-page.html
@@ -590,50 +502,6 @@ Registers where the failure occurred (pc 0xaaaae0ae4a98):
 SUMMARY: HWAddressSanitizer: tag-mismatch (/.../main+0x54a94)
 ```
 
-# KernelControlFlowIntegrity
-
-The LLVM Kernel Control Flow Integrity (CFI) support to the Rust compiler
-initially provides forward-edge control flow protection for operating systems
-kernels for Rust-compiled code only by aggregating function pointers in groups
-identified by their return and parameter types. (See [LLVM commit cff5bef "KCFI
-sanitizer"](https://github.com/llvm/llvm-project/commit/cff5bef948c91e4919de8a5fb9765e0edc13f3de).)
-
-Forward-edge control flow protection for C or C++ and Rust -compiled code "mixed
-binaries" (i.e., for when C or C++ and Rust -compiled code share the same
-virtual address space) will be provided in later work by defining and using
-compatible type identifiers (see Type metadata in the design document in the
-tracking issue [#89653](https://github.com/rust-lang/rust/issues/89653)).
-
-LLVM KCFI can be enabled with `-Zsanitizer=kcfi`.
-
-LLVM KCFI is supported on the following targets:
-
-* `aarch64-linux-android`
-* `aarch64-unknown-linux-gnu`
-* `x86_64-linux-android`
-* `x86_64-unknown-linux-gnu`
-
-See the [Clang KernelControlFlowIntegrity documentation][clang-kcfi] for more
-details.
-
-# KernelAddressSanitizer
-
-KernelAddressSanitizer (KASAN) is a freestanding version of AddressSanitizer
-which is suitable for detecting memory errors in programs which do not have a
-runtime environment, such as operating system kernels. KernelAddressSanitizer
-requires manual implementation of the underlying functions used for tracking
-KernelAddressSanitizer state.
-
-KernelAddressSanitizer is supported on the following targets:
-
-* `aarch64-unknown-none`
-* `riscv64gc-unknown-none-elf`
-* `riscv64imac-unknown-none-elf`
-* `x86_64-unknown-none`
-
-See the [Linux Kernel's KernelAddressSanitizer documentation][linux-kasan] for
-more details.
-
 # LeakSanitizer
 
 LeakSanitizer is run-time memory leak detector.
@@ -712,16 +580,6 @@ MemTagSanitizer requires hardware support and the `mte` target feature.
 To enable this target feature compile with `-C target-feature="+mte"`.
 
 See the [LLVM MemTagSanitizer documentation][llvm-memtag] for more details.
-
-# SafeStack
-
-SafeStack provides backward edge control flow protection by separating the stack into data which is only accessed safely (the safe stack) and all other data (the unsafe stack).
-
-SafeStack can be enabled with the `-Zsanitizer=safestack` option and is supported on the following targets:
-
-* `x86_64-unknown-linux-gnu`
-
-See the [Clang SafeStack documentation][clang-safestack] for more details.
 
 # ShadowCallStack
 
@@ -804,7 +662,7 @@ It is strongly recommended to combine sanitizers with recompiled and
 instrumented standard library, for example using [cargo `-Zbuild-std`
 functionality][build-std].
 
-[build-std]: ../../cargo/reference/unstable.html#build-std
+[build-std]: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std
 
 # Build scripts and procedural macros
 
@@ -827,7 +685,6 @@ Sanitizers produce symbolized stacktraces when llvm-symbolizer binary is in `PAT
 * [AddressSanitizer in Clang][clang-asan]
 * [ControlFlowIntegrity in Clang][clang-cfi]
 * [HWAddressSanitizer in Clang][clang-hwasan]
-* [Linux Kernel's KernelAddressSanitizer documentation][linux-kasan]
 * [LeakSanitizer in Clang][clang-lsan]
 * [MemorySanitizer in Clang][clang-msan]
 * [MemTagSanitizer in LLVM][llvm-memtag]
@@ -836,11 +693,8 @@ Sanitizers produce symbolized stacktraces when llvm-symbolizer binary is in `PAT
 [clang-asan]: https://clang.llvm.org/docs/AddressSanitizer.html
 [clang-cfi]: https://clang.llvm.org/docs/ControlFlowIntegrity.html
 [clang-hwasan]: https://clang.llvm.org/docs/HardwareAssistedAddressSanitizerDesign.html
-[clang-kcfi]: https://clang.llvm.org/docs/ControlFlowIntegrity.html#fsanitize-kcfi
 [clang-lsan]: https://clang.llvm.org/docs/LeakSanitizer.html
 [clang-msan]: https://clang.llvm.org/docs/MemorySanitizer.html
-[clang-safestack]: https://clang.llvm.org/docs/SafeStack.html
 [clang-scs]: https://clang.llvm.org/docs/ShadowCallStack.html
 [clang-tsan]: https://clang.llvm.org/docs/ThreadSanitizer.html
-[linux-kasan]: https://www.kernel.org/doc/html/latest/dev-tools/kasan.html
 [llvm-memtag]: https://llvm.org/docs/MemTagSanitizer.html

@@ -1,7 +1,7 @@
-//@run-rustfix
+// run-rustfix
 
 #![warn(clippy::get_last_with_len)]
-#![allow(unused, clippy::useless_vec)]
+#![allow(unused)]
 
 use std::collections::VecDeque;
 

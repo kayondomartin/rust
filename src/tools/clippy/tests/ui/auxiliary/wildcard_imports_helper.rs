@@ -25,9 +25,3 @@ pub mod prelude {
         pub struct PreludeModAnywhere;
     }
 }
-
-pub mod extern_prelude {
-    pub mod v1 {
-        pub struct ExternPreludeModAnywhere;
-    }
-}

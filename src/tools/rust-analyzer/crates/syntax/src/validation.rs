@@ -5,11 +5,13 @@
 mod block;
 
 use rowan::Direction;
-use rustc_lexer::unescape::{self, unescape_literal, Mode};
+use rustc_lexer::unescape::{
+    self, unescape_byte, unescape_byte_literal, unescape_char, unescape_literal, Mode,
+};
 
 use crate::{
     algo,
-    ast::{self, HasAttrs, HasVisibility, IsString},
+    ast::{self, HasAttrs, HasVisibility},
     match_ast, AstNode, SyntaxError,
     SyntaxKind::{CONST, FN, INT_NUMBER, TYPE_ALIAS},
     SyntaxNode, SyntaxToken, TextSize, T,
@@ -44,7 +46,7 @@ pub(crate) fn validate(root: &SyntaxNode) -> Vec<SyntaxError> {
     errors
 }
 
-fn rustc_unescape_error_to_string(err: unescape::EscapeError) -> (&'static str, bool) {
+fn rustc_unescape_error_to_string(err: unescape::EscapeError) -> &'static str {
     use unescape::EscapeError as EE;
 
     #[rustfmt::skip]
@@ -103,15 +105,12 @@ fn rustc_unescape_error_to_string(err: unescape::EscapeError) -> (&'static str, 
         EE::UnicodeEscapeInByte => {
             "Byte literals must not contain unicode escapes"
         }
-        EE::NonAsciiCharInByte  => {
+        EE::NonAsciiCharInByte | EE::NonAsciiCharInByteString => {
             "Byte literals must not contain non-ASCII characters"
         }
-        EE::UnskippedWhitespaceWarning => "Whitespace after this escape is not skipped",
-        EE::MultipleSkippedLinesWarning => "Multiple lines are skipped by this escape",
-
     };
 
-    (err_message, err.is_fatal())
+    err_message
 }
 
 fn validate_literal(literal: ast::Literal, acc: &mut Vec<SyntaxError>) {
@@ -124,13 +123,9 @@ fn validate_literal(literal: ast::Literal, acc: &mut Vec<SyntaxError>) {
     let text = token.text();
 
     // FIXME: lift this lambda refactor to `fn` (https://github.com/rust-lang/rust-analyzer/pull/2834#discussion_r366199205)
-    let mut push_err = |prefix_len, off, err: unescape::EscapeError| {
+    let mut push_err = |prefix_len, (off, err): (usize, unescape::EscapeError)| {
         let off = token.text_range().start() + TextSize::try_from(off + prefix_len).unwrap();
-        let (message, is_err) = rustc_unescape_error_to_string(err);
-        // FIXME: Emit lexer warnings
-        if is_err {
-            acc.push(SyntaxError::new_at_offset(message, off));
-        }
+        acc.push(SyntaxError::new_at_offset(rustc_unescape_error_to_string(err), off));
     };
 
     match literal.kind() {
@@ -139,7 +134,7 @@ fn validate_literal(literal: ast::Literal, acc: &mut Vec<SyntaxError>) {
                 if let Some(without_quotes) = unquote(text, 1, '"') {
                     unescape_literal(without_quotes, Mode::Str, &mut |range, char| {
                         if let Err(err) = char {
-                            push_err(1, range.start, err);
+                            push_err(1, (range.start, err));
                         }
                     });
                 }
@@ -148,41 +143,22 @@ fn validate_literal(literal: ast::Literal, acc: &mut Vec<SyntaxError>) {
         ast::LiteralKind::ByteString(s) => {
             if !s.is_raw() {
                 if let Some(without_quotes) = unquote(text, 2, '"') {
-                    unescape_literal(without_quotes, Mode::ByteStr, &mut |range, char| {
+                    unescape_byte_literal(without_quotes, Mode::ByteStr, &mut |range, char| {
                         if let Err(err) = char {
-                            push_err(1, range.start, err);
-                        }
-                    });
-                }
-            }
-        }
-        ast::LiteralKind::CString(s) => {
-            if !s.is_raw() {
-                if let Some(without_quotes) = unquote(text, 2, '"') {
-                    unescape_literal(without_quotes, Mode::ByteStr, &mut |range, char| {
-                        if let Err(err) = char {
-                            push_err(1, range.start, err);
+                            push_err(2, (range.start, err));
                         }
                     });
                 }
             }
         }
         ast::LiteralKind::Char(_) => {
-            if let Some(without_quotes) = unquote(text, 1, '\'') {
-                unescape_literal(without_quotes, Mode::Char, &mut |range, char| {
-                    if let Err(err) = char {
-                        push_err(1, range.start, err);
-                    }
-                });
+            if let Some(Err(e)) = unquote(text, 1, '\'').map(unescape_char) {
+                push_err(1, e);
             }
         }
         ast::LiteralKind::Byte(_) => {
-            if let Some(without_quotes) = unquote(text, 2, '\'') {
-                unescape_literal(without_quotes, Mode::Byte, &mut |range, char| {
-                    if let Err(err) = char {
-                        push_err(2, range.start, err);
-                    }
-                });
+            if let Some(Err(e)) = unquote(text, 2, '\'').map(unescape_byte) {
+                push_err(2, e);
             }
         }
         ast::LiteralKind::IntNumber(_)
@@ -201,14 +177,14 @@ pub(crate) fn validate_block_structure(root: &SyntaxNode) {
                     assert_eq!(
                         node.parent(),
                         pair.parent(),
-                        "\nunpaired curlies:\n{}\n{:#?}\n",
+                        "\nunpaired curlys:\n{}\n{:#?}\n",
                         root.text(),
                         root,
                     );
                     assert!(
                         node.next_sibling_or_token().is_none()
                             && pair.prev_sibling_or_token().is_none(),
-                        "\nfloating curlies at {:?}\nfile:\n{}\nerror:\n{}\n",
+                        "\nfloating curlys at {:?}\nfile:\n{}\nerror:\n{}\n",
                         node,
                         root.text(),
                         node,
@@ -222,7 +198,7 @@ pub(crate) fn validate_block_structure(root: &SyntaxNode) {
 
 fn validate_numeric_name(name_ref: Option<ast::NameRef>, errors: &mut Vec<SyntaxError>) {
     if let Some(int_token) = int_token(name_ref) {
-        if int_token.text().chars().any(|c| !c.is_ascii_digit()) {
+        if int_token.text().chars().any(|c| !c.is_digit(10)) {
             errors.push(SyntaxError::new(
                 "Tuple (struct) field access is only allowed through \
                 decimal integers with no underscores or suffix",

@@ -1,10 +1,7 @@
-//@aux-build:proc_macro_derive.rs:proc-macro
-
 #![allow(
     clippy::assign_op_pattern,
     clippy::erasing_op,
     clippy::identity_op,
-    clippy::no_effect,
     clippy::op_ref,
     clippy::unnecessary_owned_empty_strings,
     arithmetic_overflow,
@@ -13,120 +10,32 @@
 #![feature(const_mut_refs, inline_const, saturating_int_impl)]
 #![warn(clippy::arithmetic_side_effects)]
 
-extern crate proc_macro_derive;
-
 use core::num::{Saturating, Wrapping};
 
-const ONE: i32 = 1;
-const ZERO: i32 = 0;
-
-#[derive(Clone, Copy)]
 pub struct Custom;
 
-#[derive(proc_macro_derive::ShadowDerive)]
-pub struct Nothing;
-
 macro_rules! impl_arith {
-    ( $( $_trait:ident, $lhs:ty, $rhs:ty, $method:ident; )* ) => {
+    ( $( $_trait:ident, $ty:ty, $method:ident; )* ) => {
         $(
-            impl core::ops::$_trait<$lhs> for $rhs {
-                type Output = Custom;
-                fn $method(self, _: $lhs) -> Self::Output { todo!() }
-            }
-        )*
-    }
-}
-
-macro_rules! impl_assign_arith {
-    ( $( $_trait:ident, $lhs:ty, $rhs:ty, $method:ident; )* ) => {
-        $(
-            impl core::ops::$_trait<$lhs> for $rhs {
-                fn $method(&mut self, _: $lhs) {}
+            impl core::ops::$_trait<$ty> for Custom {
+                type Output = Self;
+                fn $method(self, _: $ty) -> Self::Output { Self }
             }
         )*
     }
 }
 
 impl_arith!(
-    Add, Custom, Custom, add;
-    Div, Custom, Custom, div;
-    Mul, Custom, Custom, mul;
-    Rem, Custom, Custom, rem;
-    Shl, Custom, Custom, shl;
-    Shr, Custom, Custom, shr;
-    Sub, Custom, Custom, sub;
+    Add, i32, add;
+    Div, i32, div;
+    Mul, i32, mul;
+    Sub, i32, sub;
 
-    Add, Custom, &Custom, add;
-    Div, Custom, &Custom, div;
-    Mul, Custom, &Custom, mul;
-    Rem, Custom, &Custom, rem;
-    Shl, Custom, &Custom, shl;
-    Shr, Custom, &Custom, shr;
-    Sub, Custom, &Custom, sub;
-
-    Add, &Custom, Custom, add;
-    Div, &Custom, Custom, div;
-    Mul, &Custom, Custom, mul;
-    Rem, &Custom, Custom, rem;
-    Shl, &Custom, Custom, shl;
-    Shr, &Custom, Custom, shr;
-    Sub, &Custom, Custom, sub;
-
-    Add, &Custom, &Custom, add;
-    Div, &Custom, &Custom, div;
-    Mul, &Custom, &Custom, mul;
-    Rem, &Custom, &Custom, rem;
-    Shl, &Custom, &Custom, shl;
-    Shr, &Custom, &Custom, shr;
-    Sub, &Custom, &Custom, sub;
+    Add, f64, add;
+    Div, f64, div;
+    Mul, f64, mul;
+    Sub, f64, sub;
 );
-
-impl_assign_arith!(
-    AddAssign, Custom, Custom, add_assign;
-    DivAssign, Custom, Custom, div_assign;
-    MulAssign, Custom, Custom, mul_assign;
-    RemAssign, Custom, Custom, rem_assign;
-    ShlAssign, Custom, Custom, shl_assign;
-    ShrAssign, Custom, Custom, shr_assign;
-    SubAssign, Custom, Custom, sub_assign;
-
-    AddAssign, Custom, &Custom, add_assign;
-    DivAssign, Custom, &Custom, div_assign;
-    MulAssign, Custom, &Custom, mul_assign;
-    RemAssign, Custom, &Custom, rem_assign;
-    ShlAssign, Custom, &Custom, shl_assign;
-    ShrAssign, Custom, &Custom, shr_assign;
-    SubAssign, Custom, &Custom, sub_assign;
-
-    AddAssign, &Custom, Custom, add_assign;
-    DivAssign, &Custom, Custom, div_assign;
-    MulAssign, &Custom, Custom, mul_assign;
-    RemAssign, &Custom, Custom, rem_assign;
-    ShlAssign, &Custom, Custom, shl_assign;
-    ShrAssign, &Custom, Custom, shr_assign;
-    SubAssign, &Custom, Custom, sub_assign;
-
-    AddAssign, &Custom, &Custom, add_assign;
-    DivAssign, &Custom, &Custom, div_assign;
-    MulAssign, &Custom, &Custom, mul_assign;
-    RemAssign, &Custom, &Custom, rem_assign;
-    ShlAssign, &Custom, &Custom, shl_assign;
-    ShrAssign, &Custom, &Custom, shr_assign;
-    SubAssign, &Custom, &Custom, sub_assign;
-);
-
-impl core::ops::Neg for Custom {
-    type Output = Custom;
-    fn neg(self) -> Self::Output {
-        todo!()
-    }
-}
-impl core::ops::Neg for &Custom {
-    type Output = Custom;
-    fn neg(self) -> Self::Output {
-        todo!()
-    }
-}
 
 pub fn association_with_structures_should_not_trigger_the_lint() {
     enum Foo {
@@ -208,10 +117,6 @@ pub fn non_overflowing_ops_or_ops_already_handled_by_the_compiler_should_not_tri
     _n += &0;
     _n -= 0;
     _n -= &0;
-    _n += ZERO;
-    _n += &ZERO;
-    _n -= ZERO;
-    _n -= &ZERO;
     _n /= 99;
     _n /= &99;
     _n %= 99;
@@ -220,44 +125,16 @@ pub fn non_overflowing_ops_or_ops_already_handled_by_the_compiler_should_not_tri
     _n *= &0;
     _n *= 1;
     _n *= &1;
-    _n *= ZERO;
-    _n *= &ZERO;
-    _n *= ONE;
-    _n *= &ONE;
-    _n += -0;
-    _n += &-0;
-    _n -= -0;
-    _n -= &-0;
-    _n += -ZERO;
-    _n += &-ZERO;
-    _n -= -ZERO;
-    _n -= &-ZERO;
-    _n /= -99;
-    _n /= &-99;
-    _n %= -99;
-    _n %= &-99;
-    _n *= -0;
-    _n *= &-0;
-    _n *= -1;
-    _n *= &-1;
 
     // Binary
     _n = _n + 0;
     _n = _n + &0;
     _n = 0 + _n;
     _n = &0 + _n;
-    _n = _n + ZERO;
-    _n = _n + &ZERO;
-    _n = ZERO + _n;
-    _n = &ZERO + _n;
     _n = _n - 0;
     _n = _n - &0;
     _n = 0 - _n;
     _n = &0 - _n;
-    _n = _n - ZERO;
-    _n = _n - &ZERO;
-    _n = ZERO - _n;
-    _n = &ZERO - _n;
     _n = _n / 99;
     _n = _n / &99;
     _n = _n % 99;
@@ -268,37 +145,17 @@ pub fn non_overflowing_ops_or_ops_already_handled_by_the_compiler_should_not_tri
     _n = &0 * _n;
     _n = _n * 1;
     _n = _n * &1;
-    _n = ZERO * _n;
-    _n = &ZERO * _n;
-    _n = _n * ONE;
-    _n = _n * &ONE;
     _n = 1 * _n;
     _n = &1 * _n;
     _n = 23 + 85;
 
-    // Method
-    _n.saturating_div(1);
-    _n.wrapping_div(1);
-    _n.wrapping_rem(1);
-    _n.wrapping_rem_euclid(1);
-
-    _n.saturating_div(1);
-    _n.checked_div(1);
-    _n.checked_rem(1);
-    _n.checked_rem_euclid(1);
-
     // Unary
-    _n = -2147483647;
-    _n = -i32::MAX;
-    _n = -i32::MIN;
-    _n = -&2147483647;
-    _n = -&i32::MAX;
-    _n = -&i32::MIN;
+    _n = -1;
+    _n = -(-1);
 }
 
-pub fn unknown_ops_or_runtime_ops_that_can_overflow() {
+pub fn runtime_ops() {
     let mut _n = i32::MAX;
-    let mut _custom = Custom;
 
     // Assign
     _n += 1;
@@ -311,44 +168,6 @@ pub fn unknown_ops_or_runtime_ops_that_can_overflow() {
     _n %= &0;
     _n *= 2;
     _n *= &2;
-    _n += -1;
-    _n += &-1;
-    _n -= -1;
-    _n -= &-1;
-    _n /= -0;
-    _n /= &-0;
-    _n %= -0;
-    _n %= &-0;
-    _n *= -2;
-    _n *= &-2;
-    _custom += Custom;
-    _custom += &Custom;
-    _custom -= Custom;
-    _custom -= &Custom;
-    _custom /= Custom;
-    _custom /= &Custom;
-    _custom %= Custom;
-    _custom %= &Custom;
-    _custom *= Custom;
-    _custom *= &Custom;
-    _custom >>= Custom;
-    _custom >>= &Custom;
-    _custom <<= Custom;
-    _custom <<= &Custom;
-    _custom += -Custom;
-    _custom += &-Custom;
-    _custom -= -Custom;
-    _custom -= &-Custom;
-    _custom /= -Custom;
-    _custom /= &-Custom;
-    _custom %= -Custom;
-    _custom %= &-Custom;
-    _custom *= -Custom;
-    _custom *= &-Custom;
-    _custom >>= -Custom;
-    _custom >>= &-Custom;
-    _custom <<= -Custom;
-    _custom <<= &-Custom;
 
     // Binary
     _n = _n + 1;
@@ -370,115 +189,36 @@ pub fn unknown_ops_or_runtime_ops_that_can_overflow() {
     _n = 23 + &85;
     _n = &23 + 85;
     _n = &23 + &85;
-    _custom = _custom + _custom;
-    _custom = _custom + &_custom;
-    _custom = Custom + _custom;
-    _custom = &Custom + _custom;
-    _custom = _custom - Custom;
-    _custom = _custom - &Custom;
-    _custom = Custom - _custom;
-    _custom = &Custom - _custom;
-    _custom = _custom / Custom;
-    _custom = _custom / &Custom;
-    _custom = _custom % Custom;
-    _custom = _custom % &Custom;
-    _custom = _custom * Custom;
-    _custom = _custom * &Custom;
-    _custom = Custom * _custom;
-    _custom = &Custom * _custom;
-    _custom = Custom + &Custom;
-    _custom = &Custom + Custom;
-    _custom = &Custom + &Custom;
-    _custom = _custom >> _custom;
-    _custom = _custom >> &_custom;
-    _custom = Custom << _custom;
-    _custom = &Custom << _custom;
 
-    // Method
-    _n.saturating_div(0);
-    _n.wrapping_div(0);
-    _n.wrapping_rem(0);
-    _n.wrapping_rem_euclid(0);
-
-    _n.saturating_div(_n);
-    _n.wrapping_div(_n);
-    _n.wrapping_rem(_n);
-    _n.wrapping_rem_euclid(_n);
+    // Custom
+    let _ = Custom + 0;
+    let _ = Custom + 1;
+    let _ = Custom + 2;
+    let _ = Custom + 0.0;
+    let _ = Custom + 1.0;
+    let _ = Custom + 2.0;
+    let _ = Custom - 0;
+    let _ = Custom - 1;
+    let _ = Custom - 2;
+    let _ = Custom - 0.0;
+    let _ = Custom - 1.0;
+    let _ = Custom - 2.0;
+    let _ = Custom / 0;
+    let _ = Custom / 1;
+    let _ = Custom / 2;
+    let _ = Custom / 0.0;
+    let _ = Custom / 1.0;
+    let _ = Custom / 2.0;
+    let _ = Custom * 0;
+    let _ = Custom * 1;
+    let _ = Custom * 2;
+    let _ = Custom * 0.0;
+    let _ = Custom * 1.0;
+    let _ = Custom * 2.0;
 
     // Unary
     _n = -_n;
     _n = -&_n;
-    _custom = -_custom;
-    _custom = -&_custom;
-}
-
-// Copied and pasted from the `integer_arithmetic` lint for comparison.
-pub fn integer_arithmetic() {
-    let mut i = 1i32;
-    let mut var1 = 0i32;
-    let mut var2 = -1i32;
-
-    1 + i;
-    i * 2;
-    1 % i / 2;
-    i - 2 + 2 - i;
-    -i;
-    i >> 1;
-    i << 1;
-
-    -1;
-    -(-1);
-
-    i & 1;
-    i | 1;
-    i ^ 1;
-
-    i += 1;
-    i -= 1;
-    i *= 2;
-    i /= 2;
-    i /= 0;
-    i /= -1;
-    i /= var1;
-    i /= var2;
-    i %= 2;
-    i %= 0;
-    i %= -1;
-    i %= var1;
-    i %= var2;
-    i <<= 3;
-    i >>= 2;
-
-    i |= 1;
-    i &= 1;
-    i ^= i;
-}
-
-pub fn issue_10583(a: u16) -> u16 {
-    10 / a
-}
-
-pub fn issue_10767() {
-    let n = &1.0;
-    n + n;
-    3.1_f32 + &1.2_f32;
-    &3.4_f32 + 1.5_f32;
-    &3.5_f32 + &1.3_f32;
-}
-
-pub fn issue_10792() {
-    struct One {
-        a: u32,
-    }
-    struct Two {
-        b: u32,
-        c: u64,
-    }
-    const ONE: One = One { a: 1 };
-    const TWO: Two = Two { b: 2, c: 3 };
-    let _ = 10 / ONE.a;
-    let _ = 10 / TWO.b;
-    let _ = 10 / TWO.c;
 }
 
 fn main() {}

@@ -5,11 +5,7 @@ Assumes the `MIRI_SYSROOT` env var to be set appropriately,
 and the working directory to contain the cargo-miri-test project.
 '''
 
-import difflib
-import os
-import re
-import sys
-import subprocess
+import sys, subprocess, os, re, difflib
 
 CGREEN  = '\33[32m'
 CBOLD   = '\33[1m'
@@ -50,9 +46,7 @@ def check_output(actual, path, name):
     print(f"--- END diff {name} ---")
     return False
 
-def test(name, cmd, stdout_ref, stderr_ref, stdin=b'', env=None):
-    if env is None:
-        env = {}
+def test(name, cmd, stdout_ref, stderr_ref, stdin=b'', env={}):
     print("Testing {}...".format(name))
     ## Call `cargo miri`, capture all output
     p_env = os.environ.copy()
@@ -70,15 +64,13 @@ def test(name, cmd, stdout_ref, stderr_ref, stdin=b'', env=None):
 
     stdout_matches = check_output(stdout, stdout_ref, "stdout")
     stderr_matches = check_output(stderr, stderr_ref, "stderr")
-
+    
     if p.returncode == 0 and stdout_matches and stderr_matches:
         # All good!
         return
     fail("exit code was {}".format(p.returncode))
 
-def test_no_rebuild(name, cmd, env=None):
-    if env is None:
-        env = {}
+def test_no_rebuild(name, cmd, env={}):
     print("Testing {}...".format(name))
     p_env = os.environ.copy()
     p_env.update(env)
@@ -92,13 +84,13 @@ def test_no_rebuild(name, cmd, env=None):
     stdout = stdout.decode("UTF-8")
     stderr = stderr.decode("UTF-8")
     if p.returncode != 0:
-        fail("rebuild failed")
+        fail("rebuild failed");
     # Also check for 'Running' as a sanity check.
     if stderr.count(" Compiling ") > 0 or stderr.count(" Running ") == 0:
         print("--- BEGIN stderr ---")
         print(stderr, end="")
         print("--- END stderr ---")
-        fail("Something was being rebuilt when it should not be (or we got no output)")
+        fail("Something was being rebuilt when it should not be (or we got no output)");
 
 def test_cargo_miri_run():
     test("`cargo miri run` (no isolation)",
@@ -116,9 +108,8 @@ def test_cargo_miri_run():
         env={'MIRITESTVAR': "wrongval"}, # changing the env var causes a rebuild (re-runs build.rs),
                                          # so keep it set
     )
-    # This also covers passing arguments without `--`: Cargo will forward unused positional arguments to the program.
     test("`cargo miri run` (with arguments and target)",
-        cargo_miri("run") + ["--bin", "cargo-miri-test", "hello world", '"hello world"', r'he\\llo\"world'],
+        cargo_miri("run") + ["--bin", "cargo-miri-test", "--", "hello world", '"hello world"', r'he\\llo\"world'],
         "run.args.stdout.ref", "run.args.stderr.ref",
     )
     test("`cargo miri r` (subcrate, no isolation)",
@@ -142,7 +133,7 @@ def test_cargo_miri_test():
     test("`cargo miri test`",
         cargo_miri("test"),
         default_ref, "test.stderr-empty.ref",
-        env={'MIRIFLAGS': "-Zmiri-permissive-provenance -Zmiri-seed=4242"},
+        env={'MIRIFLAGS': "-Zmiri-permissive-provenance -Zmiri-seed=feed"},
     )
     test("`cargo miri test` (no isolation, no doctests)",
         cargo_miri("test") + ["--bins", "--tests"], # no `--lib`, we disabled that in `Cargo.toml`

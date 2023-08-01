@@ -53,7 +53,7 @@ pub(crate) fn render<P: AsRef<Path>>(
 
     let mut css = String::new();
     for name in &options.markdown_css {
-        write!(css, r#"<link rel="stylesheet" href="{name}">"#)
+        write!(css, r#"<link rel="stylesheet" type="text/css" href="{name}">"#)
             .expect("Writing to a String can't fail");
     }
 
@@ -72,14 +72,7 @@ pub(crate) fn render<P: AsRef<Path>>(
     let mut ids = IdMap::new();
     let error_codes = ErrorCodes::from(options.unstable_features.is_nightly_build());
     let text = if !options.markdown_no_toc {
-        MarkdownWithToc {
-            content: text,
-            ids: &mut ids,
-            error_codes,
-            edition,
-            playground: &playground,
-        }
-        .into_string()
+        MarkdownWithToc(text, &mut ids, error_codes, edition, &playground).into_string()
     } else {
         Markdown {
             content: text,

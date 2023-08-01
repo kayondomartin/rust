@@ -1,4 +1,8 @@
-#![doc = include_str!("../README.md")]
+//! Build a dist manifest, hash and sign everything.
+//! This gets called by `promote-release`
+//! (https://github.com/rust-lang/rust-central-station/tree/master/promote-release)
+//! via `x.py dist hash-and-sign`; the cmdline arguments are set up
+//! by rustbuild (in `src/bootstrap/dist.rs`).
 
 mod checksum;
 mod manifest;
@@ -24,7 +28,6 @@ static HOSTS: &[&str] = &[
     "i686-pc-windows-gnu",
     "i686-pc-windows-msvc",
     "i686-unknown-linux-gnu",
-    "loongarch64-unknown-linux-gnu",
     "mips-unknown-linux-gnu",
     "mips64-unknown-linux-gnuabi64",
     "mips64el-unknown-linux-gnuabi64",
@@ -52,7 +55,7 @@ static TARGETS: &[&str] = &[
     "aarch64-apple-darwin",
     "aarch64-apple-ios",
     "aarch64-apple-ios-sim",
-    "aarch64-unknown-fuchsia",
+    "aarch64-fuchsia",
     "aarch64-linux-android",
     "aarch64-pc-windows-msvc",
     "aarch64-unknown-hermit",
@@ -61,7 +64,6 @@ static TARGETS: &[&str] = &[
     "aarch64-unknown-none",
     "aarch64-unknown-none-softfloat",
     "aarch64-unknown-redox",
-    "aarch64-unknown-uefi",
     "arm-linux-androideabi",
     "arm-unknown-linux-gnueabi",
     "arm-unknown-linux-gnueabihf",
@@ -97,8 +99,6 @@ static TARGETS: &[&str] = &[
     "i686-unknown-freebsd",
     "i686-unknown-linux-gnu",
     "i686-unknown-linux-musl",
-    "i686-unknown-uefi",
-    "loongarch64-unknown-linux-gnu",
     "m68k-unknown-linux-gnu",
     "mips-unknown-linux-gnu",
     "mips-unknown-linux-musl",
@@ -140,7 +140,7 @@ static TARGETS: &[&str] = &[
     "x86_64-apple-darwin",
     "x86_64-apple-ios",
     "x86_64-fortanix-unknown-sgx",
-    "x86_64-unknown-fuchsia",
+    "x86_64-fuchsia",
     "x86_64-linux-android",
     "x86_64-pc-windows-gnu",
     "x86_64-pc-windows-msvc",
@@ -155,7 +155,6 @@ static TARGETS: &[&str] = &[
     "x86_64-unknown-none",
     "x86_64-unknown-redox",
     "x86_64-unknown-hermit",
-    "x86_64-unknown-uefi",
 ];
 
 /// This allows the manifest to contain rust-docs for hosts that don't build
@@ -185,7 +184,7 @@ static PKG_INSTALLERS: &[&str] = &["x86_64-apple-darwin", "aarch64-apple-darwin"
 
 static MINGW: &[&str] = &["i686-pc-windows-gnu", "x86_64-pc-windows-gnu"];
 
-static NIGHTLY_ONLY_COMPONENTS: &[PkgType] = &[PkgType::Miri, PkgType::JsonDocs];
+static NIGHTLY_ONLY_COMPONENTS: &[&str] = &["miri-preview", "rust-docs-json-preview"];
 
 macro_rules! t {
     ($e:expr) => {
@@ -288,9 +287,28 @@ impl Builder {
     }
 
     fn add_packages_to(&mut self, manifest: &mut Manifest) {
-        for pkg in PkgType::all() {
-            self.package(pkg, &mut manifest.pkg);
+        macro_rules! package {
+            ($name:expr, $targets:expr) => {
+                self.package($name, &mut manifest.pkg, $targets, &[])
+            };
         }
+        package!("rustc", HOSTS);
+        package!("rustc-dev", HOSTS);
+        package!("reproducible-artifacts", HOSTS);
+        package!("rustc-docs", HOSTS);
+        package!("cargo", HOSTS);
+        package!("rust-mingw", MINGW);
+        package!("rust-std", TARGETS);
+        self.package("rust-docs", &mut manifest.pkg, HOSTS, DOCS_FALLBACK);
+        self.package("rust-docs-json-preview", &mut manifest.pkg, HOSTS, DOCS_FALLBACK);
+        package!("rust-src", &["*"]);
+        package!("rls-preview", HOSTS);
+        package!("rust-analyzer-preview", HOSTS);
+        package!("clippy-preview", HOSTS);
+        package!("miri-preview", HOSTS);
+        package!("rustfmt-preview", HOSTS);
+        package!("rust-analysis", TARGETS);
+        package!("llvm-tools-preview", TARGETS);
     }
 
     fn add_artifacts_to(&mut self, manifest: &mut Manifest) {
@@ -315,28 +333,44 @@ impl Builder {
     }
 
     fn add_profiles_to(&mut self, manifest: &mut Manifest) {
-        use PkgType::*;
-
-        let mut profile = |name, pkgs: &_| self.profile(name, &mut manifest.profiles, pkgs);
-
-        // Use a Vec here to make sure we don't exclude any components in an earlier profile.
-        let minimal = vec![Rustc, Cargo, RustStd, RustMingw];
-        profile("minimal", &minimal);
-
-        let mut default = minimal;
-        default.extend([HtmlDocs, Rustfmt, Clippy]);
-        profile("default", &default);
-
-        // NOTE: this profile is effectively deprecated; do not add new components to it.
-        let mut complete = default;
-        complete.extend([Rls, RustAnalyzer, RustSrc, LlvmTools, RustAnalysis, Miri]);
-        profile("complete", &complete);
+        let mut profile = |name, pkgs| self.profile(name, &mut manifest.profiles, pkgs);
+        profile("minimal", &["rustc", "cargo", "rust-std", "rust-mingw"]);
+        profile(
+            "default",
+            &[
+                "rustc",
+                "cargo",
+                "rust-std",
+                "rust-mingw",
+                "rust-docs",
+                "rustfmt-preview",
+                "clippy-preview",
+            ],
+        );
+        profile(
+            "complete",
+            &[
+                "rustc",
+                "cargo",
+                "rust-std",
+                "rust-mingw",
+                "rust-docs",
+                "rustfmt-preview",
+                "clippy-preview",
+                "rls-preview",
+                "rust-analyzer-preview",
+                "rust-src",
+                "llvm-tools-preview",
+                "rust-analysis",
+                "miri-preview",
+            ],
+        );
 
         // The compiler libraries are not stable for end users, and they're also huge, so we only
         // `rustc-dev` for nightly users, and only in the "complete" profile. It's still possible
         // for users to install the additional component manually, if needed.
         if self.versions.channel() == "nightly" {
-            self.extend_profile("complete", &mut manifest.profiles, &[RustcDev]);
+            self.extend_profile("complete", &mut manifest.profiles, &["rustc-dev"]);
             // Do not include the rustc-docs component for now, as it causes
             // conflicts with the rust-docs component when installed. See
             // #75833.
@@ -348,11 +382,12 @@ impl Builder {
         let mut rename = |from: &str, to: &str| {
             manifest.renames.insert(from.to_owned(), Rename { to: to.to_owned() })
         };
-        for pkg in PkgType::all() {
-            if pkg.is_preview() {
-                rename(pkg.tarball_component_name(), &pkg.manifest_component_name());
-            }
-        }
+        rename("rls", "rls-preview");
+        rename("rustfmt", "rustfmt-preview");
+        rename("clippy", "clippy-preview");
+        rename("miri", "miri-preview");
+        rename("rust-docs-json", "rust-docs-json-preview");
+        rename("rust-analyzer", "rust-analyzer-preview");
     }
 
     fn rust_package(&mut self, manifest: &Manifest) -> Package {
@@ -384,52 +419,42 @@ impl Builder {
         let mut components = Vec::new();
         let mut extensions = Vec::new();
 
-        let host_component = |pkg: &_| Component::from_pkg(pkg, host);
+        let host_component = |pkg| Component::from_str(pkg, host);
 
-        for pkg in PkgType::all() {
-            match pkg {
-                // rustc/rust-std/cargo/docs are all required
-                PkgType::Rustc | PkgType::Cargo | PkgType::HtmlDocs => {
-                    components.push(host_component(pkg));
-                }
-                PkgType::RustStd => {
-                    components.push(host_component(pkg));
-                    extensions.extend(
-                        TARGETS
-                            .iter()
-                            .filter(|&&target| target != host)
-                            .map(|target| Component::from_pkg(pkg, target)),
-                    );
-                }
-                // so is rust-mingw if it's available for the target
-                PkgType::RustMingw => {
-                    if host.contains("pc-windows-gnu") {
-                        components.push(host_component(pkg));
-                    }
-                }
-                // Tools are always present in the manifest,
-                // but might be marked as unavailable if they weren't built.
-                PkgType::Clippy
-                | PkgType::Miri
-                | PkgType::Rls
-                | PkgType::RustAnalyzer
-                | PkgType::Rustfmt
-                | PkgType::LlvmTools
-                | PkgType::RustAnalysis
-                | PkgType::JsonDocs => {
-                    extensions.push(host_component(pkg));
-                }
-                PkgType::RustcDev | PkgType::RustcDocs => {
-                    extensions.extend(HOSTS.iter().map(|target| Component::from_pkg(pkg, target)));
-                }
-                PkgType::RustSrc => {
-                    extensions.push(Component::from_pkg(pkg, "*"));
-                }
-                PkgType::Rust => {}
-                // NOTE: this is intentional, these artifacts aren't intended to be used with rustup
-                PkgType::ReproducibleArtifacts => {}
-            }
+        // rustc/rust-std/cargo/docs are all required,
+        // and so is rust-mingw if it's available for the target.
+        components.extend(vec![
+            host_component("rustc"),
+            host_component("rust-std"),
+            host_component("cargo"),
+            host_component("rust-docs"),
+        ]);
+        if host.contains("pc-windows-gnu") {
+            components.push(host_component("rust-mingw"));
         }
+
+        // Tools are always present in the manifest,
+        // but might be marked as unavailable if they weren't built.
+        extensions.extend(vec![
+            host_component("clippy-preview"),
+            host_component("miri-preview"),
+            host_component("rls-preview"),
+            host_component("rust-analyzer-preview"),
+            host_component("rustfmt-preview"),
+            host_component("llvm-tools-preview"),
+            host_component("rust-analysis"),
+            host_component("rust-docs-json-preview"),
+        ]);
+
+        extensions.extend(
+            TARGETS
+                .iter()
+                .filter(|&&target| target != host)
+                .map(|target| Component::from_str("rust-std", target)),
+        );
+        extensions.extend(HOSTS.iter().map(|target| Component::from_str("rustc-dev", target)));
+        extensions.extend(HOSTS.iter().map(|target| Component::from_str("rustc-docs", target)));
+        extensions.push(Component::from_str("rust-src", "*"));
 
         // If the components/extensions don't actually exist for this
         // particular host/target combination then nix it entirely from our
@@ -456,44 +481,43 @@ impl Builder {
         &mut self,
         profile_name: &str,
         dst: &mut BTreeMap<String, Vec<String>>,
-        pkgs: &[PkgType],
+        pkgs: &[&str],
     ) {
-        dst.insert(
-            profile_name.to_owned(),
-            pkgs.iter().map(|s| s.manifest_component_name()).collect(),
-        );
+        dst.insert(profile_name.to_owned(), pkgs.iter().map(|s| (*s).to_owned()).collect());
     }
 
     fn extend_profile(
         &mut self,
         profile_name: &str,
         dst: &mut BTreeMap<String, Vec<String>>,
-        pkgs: &[PkgType],
+        pkgs: &[&str],
     ) {
         dst.get_mut(profile_name)
             .expect("existing profile")
-            .extend(pkgs.iter().map(|s| s.manifest_component_name()));
+            .extend(pkgs.iter().map(|s| (*s).to_owned()));
     }
 
-    fn package(&mut self, pkg: &PkgType, dst: &mut BTreeMap<String, Package>) {
-        if *pkg == PkgType::Rust {
-            // This is handled specially by `rust_package` later.
-            // Order is important, so don't call `rust_package` here.
-            return;
-        }
-
-        let fallback = if pkg.use_docs_fallback() { DOCS_FALLBACK } else { &[] };
-        let version_info = self.versions.version(&pkg).expect("failed to load package version");
+    fn package(
+        &mut self,
+        pkgname: &str,
+        dst: &mut BTreeMap<String, Package>,
+        targets: &[&str],
+        fallback: &[(&str, &str)],
+    ) {
+        let version_info = self
+            .versions
+            .version(&PkgType::from_component(pkgname))
+            .expect("failed to load package version");
         let mut is_present = version_info.present;
 
         // Never ship nightly-only components for other trains.
-        if self.versions.channel() != "nightly" && NIGHTLY_ONLY_COMPONENTS.contains(&pkg) {
+        if self.versions.channel() != "nightly" && NIGHTLY_ONLY_COMPONENTS.contains(&pkgname) {
             is_present = false; // Pretend the component is entirely missing.
         }
 
         macro_rules! tarball_name {
             ($target_name:expr) => {
-                self.versions.tarball_name(pkg, $target_name).unwrap()
+                self.versions.tarball_name(&PkgType::from_component(pkgname), $target_name).unwrap()
             };
         }
         let mut target_from_compressed_tar = |target_name| {
@@ -522,8 +546,7 @@ impl Builder {
             Target::unavailable()
         };
 
-        let targets = pkg
-            .targets()
+        let targets = targets
             .iter()
             .map(|name| {
                 let target = if is_present {
@@ -538,7 +561,7 @@ impl Builder {
             .collect();
 
         dst.insert(
-            pkg.manifest_component_name(),
+            pkgname.to_string(),
             Package {
                 version: version_info.version.unwrap_or_default(),
                 git_commit_hash: version_info.git_commit,

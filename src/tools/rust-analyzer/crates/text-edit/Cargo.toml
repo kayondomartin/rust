@@ -2,15 +2,13 @@
 name = "text-edit"
 version = "0.0.0"
 description = "TBD"
-
-authors.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+edition = "2021"
+rust-version = "1.57"
 
 [lib]
 doctest = false
 
 [dependencies]
 itertools = "0.10.5"
-text-size.workspace = true
+text-size = "1.1.0"

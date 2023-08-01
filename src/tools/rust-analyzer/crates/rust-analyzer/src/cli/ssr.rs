@@ -1,22 +1,21 @@
 //! Applies structured search replace rules from the command line.
 
 use ide_ssr::MatchFinder;
-use project_model::{CargoConfig, RustLibSource};
+use project_model::CargoConfig;
 
 use crate::cli::{
     flags,
-    load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice},
+    load_cargo::{load_workspace_at, LoadCargoConfig},
     Result,
 };
 
 impl flags::Ssr {
     pub fn run(self) -> Result<()> {
         use ide_db::base_db::SourceDatabaseExt;
-        let mut cargo_config = CargoConfig::default();
-        cargo_config.sysroot = Some(RustLibSource::Discover);
+        let cargo_config = CargoConfig::default();
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: true,
-            with_proc_macro_server: ProcMacroServerChoice::Sysroot,
+            with_proc_macro: true,
             prefill_caches: false,
         };
         let (host, vfs, _proc_macro) = load_workspace_at(
@@ -52,7 +51,7 @@ impl flags::Search {
         let cargo_config = CargoConfig::default();
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: true,
-            with_proc_macro_server: ProcMacroServerChoice::Sysroot,
+            with_proc_macro: true,
             prefill_caches: false,
         };
         let (host, _vfs, _proc_macro) = load_workspace_at(
@@ -71,7 +70,7 @@ impl flags::Search {
                 let sr = db.source_root(root);
                 for file_id in sr.iter() {
                     for debug_info in match_finder.debug_where_text_equal(file_id, debug_snippet) {
-                        println!("{debug_info:#?}");
+                        println!("{:#?}", debug_info);
                     }
                 }
             }

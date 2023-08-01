@@ -1,5 +1,4 @@
 #![warn(clippy::rc_clone_in_vec_init)]
-#![allow(clippy::useless_vec)]
 use std::rc::Rc;
 use std::sync::Mutex;
 

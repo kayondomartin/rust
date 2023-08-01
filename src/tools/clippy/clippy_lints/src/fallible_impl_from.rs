@@ -56,7 +56,7 @@ impl<'tcx> LateLintPass<'tcx> for FallibleImplFrom {
         if_chain! {
             if let hir::ItemKind::Impl(impl_) = &item.kind;
             if let Some(impl_trait_ref) = cx.tcx.impl_trait_ref(item.owner_id);
-            if cx.tcx.is_diagnostic_item(sym::From, impl_trait_ref.skip_binder().def_id);
+            if cx.tcx.is_diagnostic_item(sym::From, impl_trait_ref.def_id);
             then {
                 lint_impl_body(cx, item.span, impl_.items);
             }
@@ -64,7 +64,7 @@ impl<'tcx> LateLintPass<'tcx> for FallibleImplFrom {
     }
 }
 
-fn lint_impl_body(cx: &LateContext<'_>, impl_span: Span, impl_items: &[hir::ImplItemRef]) {
+fn lint_impl_body<'tcx>(cx: &LateContext<'tcx>, impl_span: Span, impl_items: &[hir::ImplItemRef]) {
     use rustc_hir::intravisit::{self, Visitor};
     use rustc_hir::{Expr, ImplItemKind};
 

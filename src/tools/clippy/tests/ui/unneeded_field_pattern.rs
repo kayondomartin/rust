@@ -1,9 +1,5 @@
-//@aux-build:proc_macros.rs:proc-macro
 #![warn(clippy::unneeded_field_pattern)]
-#![allow(dead_code, unused)]
-
-#[macro_use]
-extern crate proc_macros;
+#[allow(dead_code, unused)]
 
 struct Foo {
     a: i32,
@@ -22,13 +18,5 @@ fn main() {
     match f {
         Foo { b: 0, .. } => {}, // should be OK
         Foo { .. } => {},       // and the Force might be with this one
-    }
-    external! {
-        let f = Foo { a: 0, b: 0, c: 0 };
-        match f {
-            Foo { a: _, b: 0, .. } => {},
-
-            Foo { a: _, b: _, c: _ } => {},
-        }
     }
 }

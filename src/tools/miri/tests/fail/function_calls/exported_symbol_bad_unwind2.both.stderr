@@ -1,6 +1,6 @@
 thread 'main' panicked at 'explicit panic', $DIR/exported_symbol_bad_unwind2.rs:LL:CC
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-error: abnormal termination: panic in a function that cannot unwind
+error: abnormal termination: the program aborted execution
   --> $DIR/exported_symbol_bad_unwind2.rs:LL:CC
    |
 LL | / extern "C-unwind" fn nounwind() {
@@ -8,10 +8,10 @@ LL | |
 LL | |
 LL | |     panic!();
 LL | | }
-   | |_^ panic in a function that cannot unwind
+   | |_^ the program aborted execution
    |
    = note: inside `nounwind` at $DIR/exported_symbol_bad_unwind2.rs:LL:CC
-note: inside `main`
+note: inside `main` at $DIR/exported_symbol_bad_unwind2.rs:LL:CC
   --> $DIR/exported_symbol_bad_unwind2.rs:LL:CC
    |
 LL |     unsafe { nounwind() }

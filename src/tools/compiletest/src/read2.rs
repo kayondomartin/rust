@@ -83,7 +83,7 @@ impl ProcOutput {
                 }
 
                 let new_len = bytes.len();
-                if (*filtered_len).min(new_len) <= HEAD_LEN + TAIL_LEN {
+                if *filtered_len <= HEAD_LEN + TAIL_LEN {
                     return;
                 }
 
@@ -110,18 +110,9 @@ impl ProcOutput {
     fn into_bytes(self) -> Vec<u8> {
         match self {
             ProcOutput::Full { bytes, .. } => bytes,
-            ProcOutput::Abbreviated { mut head, mut skipped, tail } => {
-                let mut tail = &*tail;
-
-                // Skip over '{' at the start of the tail, so we don't later wrongfully consider this as json.
-                // See <https://rust-lang.zulipchat.com/#narrow/stream/182449-t-compiler.2Fhelp/topic/Weird.20CI.20failure/near/321797811>
-                while tail.get(0) == Some(&b'{') {
-                    tail = &tail[1..];
-                    skipped += 1;
-                }
-
+            ProcOutput::Abbreviated { mut head, skipped, tail } => {
                 write!(&mut head, "\n\n<<<<<< SKIPPED {} BYTES >>>>>>\n\n", skipped).unwrap();
-                head.extend_from_slice(tail);
+                head.extend_from_slice(&tail);
                 head
             }
         }
@@ -232,7 +223,7 @@ mod imp {
     use miow::iocp::{CompletionPort, CompletionStatus};
     use miow::pipe::NamedPipe;
     use miow::Overlapped;
-    use windows::Win32::Foundation::ERROR_BROKEN_PIPE;
+    use winapi::shared::winerror::ERROR_BROKEN_PIPE;
 
     struct Pipe<'a> {
         dst: &'a mut Vec<u8>,
@@ -295,7 +286,7 @@ mod imp {
             match self.pipe.read_overlapped(dst, self.overlapped.raw()) {
                 Ok(_) => Ok(()),
                 Err(e) => {
-                    if e.raw_os_error() == Some(ERROR_BROKEN_PIPE.0 as i32) {
+                    if e.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
                         self.done = true;
                         Ok(())
                     } else {

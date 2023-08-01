@@ -23,8 +23,7 @@ mod type_pos;
 mod use_tree;
 mod visibility;
 
-use expect_test::Expect;
-use hir::PrefixKind;
+use hir::{db::DefDatabase, PrefixKind, Semantics};
 use ide_db::{
     base_db::{fixture::ChangeFixture, FileLoader, FilePosition},
     imports::insert_use::{ImportGranularity, InsertUseConfig},
@@ -32,6 +31,7 @@ use ide_db::{
 };
 use itertools::Itertools;
 use stdx::{format_to, trim_indent};
+use syntax::{AstNode, NodeOrToken, SyntaxElement};
 use test_utils::assert_eq_text;
 
 use crate::{
@@ -75,7 +75,6 @@ pub(crate) const TEST_CONFIG: CompletionConfig = CompletionConfig {
         skip_glob_imports: true,
     },
     snippets: Vec::new(),
-    limit: None,
 };
 
 pub(crate) fn completion_list(ra_fixture: &str) -> String {
@@ -87,7 +86,7 @@ pub(crate) fn completion_list_no_kw(ra_fixture: &str) -> String {
 }
 
 pub(crate) fn completion_list_no_kw_with_private_editable(ra_fixture: &str) -> String {
-    let mut config = TEST_CONFIG;
+    let mut config = TEST_CONFIG.clone();
     config.enable_private_editable = true;
     completion_list_with_config(config, ra_fixture, false, None)
 }
@@ -105,14 +104,14 @@ fn completion_list_with_config(
     include_keywords: bool,
     trigger_character: Option<char>,
 ) -> String {
-    // filter out all but one built-in type completion for smaller test outputs
+    // filter out all but one builtintype completion for smaller test outputs
     let items = get_all_items(config, ra_fixture, trigger_character);
     let items = items
         .into_iter()
-        .filter(|it| it.kind != CompletionItemKind::BuiltinType || it.label == "u32")
-        .filter(|it| include_keywords || it.kind != CompletionItemKind::Keyword)
-        .filter(|it| include_keywords || it.kind != CompletionItemKind::Snippet)
-        .sorted_by_key(|it| (it.kind, it.label.clone(), it.detail.as_ref().map(ToOwned::to_owned)))
+        .filter(|it| it.kind() != CompletionItemKind::BuiltinType || it.label() == "u32")
+        .filter(|it| include_keywords || it.kind() != CompletionItemKind::Keyword)
+        .filter(|it| include_keywords || it.kind() != CompletionItemKind::Snippet)
+        .sorted_by_key(|it| (it.kind(), it.label().to_owned(), it.detail().map(ToOwned::to_owned)))
         .collect();
     render_completion_list(items)
 }
@@ -121,7 +120,7 @@ fn completion_list_with_config(
 pub(crate) fn position(ra_fixture: &str) -> (RootDatabase, FilePosition) {
     let change_fixture = ChangeFixture::parse(ra_fixture);
     let mut database = RootDatabase::default();
-    database.enable_proc_attr_macros();
+    database.set_enable_proc_attr_macros(true);
     database.apply_change(change_fixture.change);
     let (file_id, range_or_offset) = change_fixture.file_position.expect("expected a marker ($0)");
     let offset = range_or_offset.expect_offset();
@@ -139,8 +138,8 @@ pub(crate) fn do_completion_with_config(
 ) -> Vec<CompletionItem> {
     get_all_items(config, code, None)
         .into_iter()
-        .filter(|c| c.kind == kind)
-        .sorted_by(|l, r| l.label.cmp(&r.label))
+        .filter(|c| c.kind() == kind)
+        .sorted_by(|l, r| l.label().cmp(r.label()))
         .collect()
 }
 
@@ -149,18 +148,18 @@ fn render_completion_list(completions: Vec<CompletionItem>) -> String {
         s.chars().count()
     }
     let label_width =
-        completions.iter().map(|it| monospace_width(&it.label)).max().unwrap_or_default().min(22);
+        completions.iter().map(|it| monospace_width(it.label())).max().unwrap_or_default().min(22);
     completions
         .into_iter()
         .map(|it| {
-            let tag = it.kind.tag();
-            let var_name = format!("{tag} {}", it.label);
+            let tag = it.kind().tag();
+            let var_name = format!("{} {}", tag, it.label());
             let mut buf = var_name;
-            if let Some(detail) = it.detail {
-                let width = label_width.saturating_sub(monospace_width(&it.label));
+            if let Some(detail) = it.detail() {
+                let width = label_width.saturating_sub(monospace_width(it.label()));
                 format_to!(buf, "{:width$} {}", "", detail, width = width);
             }
-            if it.deprecated {
+            if it.deprecated() {
                 format_to!(buf, " DEPRECATED");
             }
             format_to!(buf, "\n");
@@ -184,25 +183,25 @@ pub(crate) fn check_edit_with_config(
     let ra_fixture_after = trim_indent(ra_fixture_after);
     let (db, position) = position(ra_fixture_before);
     let completions: Vec<CompletionItem> =
-        crate::completions(&db, &config, position, None).unwrap();
+        crate::completions(&db, &config, position, None).unwrap().into();
     let (completion,) = completions
         .iter()
         .filter(|it| it.lookup() == what)
         .collect_tuple()
-        .unwrap_or_else(|| panic!("can't find {what:?} completion in {completions:#?}"));
+        .unwrap_or_else(|| panic!("can't find {:?} completion in {:#?}", what, completions));
     let mut actual = db.file_text(position.file_id).to_string();
 
-    let mut combined_edit = completion.text_edit.clone();
+    let mut combined_edit = completion.text_edit().to_owned();
 
     resolve_completion_edits(
         &db,
         &config,
         position,
-        completion
-            .import_to_add
-            .iter()
-            .cloned()
-            .filter_map(|(import_path, import_name)| Some((import_path, import_name))),
+        completion.imports_to_add().iter().filter_map(|import_edit| {
+            let import_path = &import_edit.import_path;
+            let import_name = import_path.segments().last()?;
+            Some((import_path.to_string(), import_name.to_string()))
+        }),
     )
     .into_iter()
     .flatten()
@@ -216,9 +215,13 @@ pub(crate) fn check_edit_with_config(
     assert_eq_text!(&ra_fixture_after, &actual)
 }
 
-fn check_empty(ra_fixture: &str, expect: Expect) {
-    let actual = completion_list(ra_fixture);
-    expect.assert_eq(&actual);
+pub(crate) fn check_pattern_is_applicable(code: &str, check: impl FnOnce(SyntaxElement) -> bool) {
+    let (db, pos) = position(code);
+
+    let sema = Semantics::new(&db);
+    let original_file = sema.parse(pos.file_id);
+    let token = original_file.syntax().token_at_offset(pos.offset).left_biased().unwrap();
+    assert!(check(NodeOrToken::Token(token)));
 }
 
 pub(crate) fn get_all_items(
@@ -231,7 +234,7 @@ pub(crate) fn get_all_items(
         .map_or_else(Vec::default, Into::into);
     // validate
     res.iter().for_each(|it| {
-        let sr = it.source_range;
+        let sr = it.source_range();
         assert!(
             sr.contains_inclusive(position.offset),
             "source range {sr:?} does not contain the offset {:?} of the completion request: {it:?}",
@@ -242,9 +245,8 @@ pub(crate) fn get_all_items(
 }
 
 #[test]
-fn test_no_completions_in_for_loop_in_kw_pos() {
+fn test_no_completions_required() {
     assert_eq!(completion_list(r#"fn foo() { for i i$0 }"#), String::new());
-    assert_eq!(completion_list(r#"fn foo() { for i in$0 }"#), String::new());
 }
 
 #[test]

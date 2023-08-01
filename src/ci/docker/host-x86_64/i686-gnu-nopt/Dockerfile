@@ -15,8 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   gdb \
   zlib1g-dev \
   lib32z1-dev \
-  xz-utils \
-  && rm -rf /var/lib/apt/lists/*
+  xz-utils
 
 
 COPY scripts/sccache.sh /scripts/

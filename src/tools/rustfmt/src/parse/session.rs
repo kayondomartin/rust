@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rustc_data_structures::sync::{Lrc, Send};
 use rustc_errors::emitter::{Emitter, EmitterWriter};
 use rustc_errors::translation::Translate;
-use rustc_errors::{ColorConfig, Diagnostic, Handler, Level as DiagnosticLevel, TerminalUrl};
+use rustc_errors::{ColorConfig, Diagnostic, Handler, Level as DiagnosticLevel};
 use rustc_session::parse::ParseSess as RawParseSess;
 use rustc_span::{
     source_map::{FilePathMapping, SourceMap},
@@ -12,7 +12,6 @@ use rustc_span::{
 };
 
 use crate::config::file_lines::LineRange;
-use crate::config::options::Color;
 use crate::ignore_path::IgnorePathSet;
 use crate::parse::parser::{ModError, ModulePathSuccess};
 use crate::source_map::LineRangeUtils;
@@ -108,26 +107,15 @@ impl Emitter for SilentOnIgnoredFilesEmitter {
     }
 }
 
-impl From<Color> for ColorConfig {
-    fn from(color: Color) -> Self {
-        match color {
-            Color::Auto => ColorConfig::Auto,
-            Color::Always => ColorConfig::Always,
-            Color::Never => ColorConfig::Never,
-        }
-    }
-}
-
 fn default_handler(
     source_map: Lrc<SourceMap>,
     ignore_path_set: Lrc<IgnorePathSet>,
     can_reset: Lrc<AtomicBool>,
     hide_parse_errors: bool,
-    color: Color,
 ) -> Handler {
     let supports_color = term::stderr().map_or(false, |term| term.supports_color());
-    let emit_color = if supports_color {
-        ColorConfig::from(color)
+    let color_cfg = if supports_color {
+        ColorConfig::Auto
     } else {
         ColorConfig::Never
     };
@@ -135,12 +123,10 @@ fn default_handler(
     let emitter = if hide_parse_errors {
         silent_emitter()
     } else {
-        let fallback_bundle = rustc_errors::fallback_fluent_bundle(
-            rustc_driver::DEFAULT_LOCALE_RESOURCES.to_vec(),
-            false,
-        );
+        let fallback_bundle =
+            rustc_errors::fallback_fluent_bundle(rustc_errors::DEFAULT_LOCALE_RESOURCES, false);
         Box::new(EmitterWriter::stderr(
-            emit_color,
+            color_cfg,
             Some(source_map.clone()),
             None,
             fallback_bundle,
@@ -149,7 +135,6 @@ fn default_handler(
             None,
             false,
             false,
-            TerminalUrl::No,
         ))
     };
     Handler::with_emitter(
@@ -179,7 +164,6 @@ impl ParseSess {
             Lrc::clone(&ignore_path_set),
             Lrc::clone(&can_reset_errors),
             config.hide_parse_errors(),
-            config.color(),
         );
         let parse_sess = RawParseSess::with_span_handler(handler, source_map);
 

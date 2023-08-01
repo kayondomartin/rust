@@ -1,5 +1,6 @@
 //! See [`CargoWorkspace`].
 
+use std::iter;
 use std::path::PathBuf;
 use std::str::from_utf8;
 use std::{ops, process::Command};
@@ -9,7 +10,7 @@ use base_db::Edition;
 use cargo_metadata::{CargoOpt, MetadataCommand};
 use la_arena::{Arena, Idx};
 use paths::{AbsPath, AbsPathBuf};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde_json::from_value;
 
@@ -31,7 +32,6 @@ pub struct CargoWorkspace {
     packages: Arena<PackageData>,
     targets: Arena<TargetData>,
     workspace_root: AbsPathBuf,
-    target_directory: AbsPathBuf,
 }
 
 impl ops::Index<Package> for CargoWorkspace {
@@ -50,11 +50,25 @@ impl ops::Index<Target> for CargoWorkspace {
 
 /// Describes how to set the rustc source directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RustLibSource {
+pub enum RustcSource {
     /// Explicit path for the rustc source directory.
     Path(AbsPathBuf),
     /// Try to automatically detect where the rustc source directory is.
     Discover,
+}
+
+/// Crates to disable `#[cfg(test)]` on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnsetTestCrates {
+    None,
+    Only(Vec<String>),
+    All,
+}
+
+impl Default for UnsetTestCrates {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,21 +95,40 @@ pub struct CargoConfig {
     /// rustc target
     pub target: Option<String>,
     /// Sysroot loading behavior
-    pub sysroot: Option<RustLibSource>,
-    pub sysroot_src: Option<AbsPathBuf>,
+    pub sysroot: Option<RustcSource>,
     /// rustc private crate source
-    pub rustc_source: Option<RustLibSource>,
-    pub cfg_overrides: CfgOverrides,
+    pub rustc_source: Option<RustcSource>,
+    /// crates to disable `#[cfg(test)]` on
+    pub unset_test_crates: UnsetTestCrates,
     /// Invoke `cargo check` through the RUSTC_WRAPPER.
     pub wrap_rustc_in_build_scripts: bool,
     /// The command to run instead of `cargo check` for building build scripts.
     pub run_build_script_command: Option<Vec<String>>,
-    /// Extra args to pass to the cargo command.
-    pub extra_args: Vec<String>,
     /// Extra env vars to set when invoking the cargo command
     pub extra_env: FxHashMap<String, String>,
     pub invocation_strategy: InvocationStrategy,
     pub invocation_location: InvocationLocation,
+}
+
+impl CargoConfig {
+    pub fn cfg_overrides(&self) -> CfgOverrides {
+        match &self.unset_test_crates {
+            UnsetTestCrates::None => CfgOverrides::Selective(iter::empty().collect()),
+            UnsetTestCrates::Only(unset_test_crates) => CfgOverrides::Selective(
+                unset_test_crates
+                    .iter()
+                    .cloned()
+                    .zip(iter::repeat_with(|| {
+                        cfg::CfgDiff::new(Vec::new(), vec![cfg::CfgAtom::Flag("test".into())])
+                            .unwrap()
+                    }))
+                    .collect(),
+            ),
+            UnsetTestCrates::All => CfgOverrides::Wildcard(
+                cfg::CfgDiff::new(Vec::new(), vec![cfg::CfgAtom::Flag("test".into())]).unwrap(),
+            ),
+        }
+    }
 }
 
 pub type Package = Idx<PackageData>;
@@ -237,7 +270,11 @@ impl CargoWorkspace {
         config: &CargoConfig,
         progress: &dyn Fn(String),
     ) -> Result<cargo_metadata::Metadata> {
-        let targets = find_list_of_build_targets(config, cargo_toml);
+        let target = config
+            .target
+            .clone()
+            .or_else(|| cargo_config_build_target(cargo_toml, &config.extra_env))
+            .or_else(|| rustc_discover_host_triple(cargo_toml, &config.extra_env));
 
         let mut meta = MetadataCommand::new();
         meta.cargo_path(toolchain::cargo());
@@ -257,29 +294,9 @@ impl CargoWorkspace {
         }
         meta.current_dir(current_dir.as_os_str());
 
-        let mut other_options = vec![];
-        // cargo metadata only supports a subset of flags of what cargo usually accepts, and usually
-        // the only relevant flags for metadata here are unstable ones, so we pass those along
-        // but nothing else
-        let mut extra_args = config.extra_args.iter();
-        while let Some(arg) = extra_args.next() {
-            if arg == "-Z" {
-                if let Some(arg) = extra_args.next() {
-                    other_options.push("-Z".to_owned());
-                    other_options.push(arg.to_owned());
-                }
-            }
+        if let Some(target) = target {
+            meta.other_options(vec![String::from("--filter-platform"), target]);
         }
-
-        if !targets.is_empty() {
-            other_options.append(
-                &mut targets
-                    .into_iter()
-                    .flat_map(|target| ["--filter-platform".to_owned().to_string(), target])
-                    .collect(),
-            );
-        }
-        meta.other_options(other_options);
 
         // FIXME: Fetching metadata is a slow process, as it might require
         // calling crates.io. We should be reporting progress here, but it's
@@ -391,13 +408,10 @@ impl CargoWorkspace {
         let workspace_root =
             AbsPathBuf::assert(PathBuf::from(meta.workspace_root.into_os_string()));
 
-        let target_directory =
-            AbsPathBuf::assert(PathBuf::from(meta.target_directory.into_os_string()));
-
-        CargoWorkspace { packages, targets, workspace_root, target_directory }
+        CargoWorkspace { packages, targets, workspace_root }
     }
 
-    pub fn packages(&self) -> impl Iterator<Item = Package> + ExactSizeIterator + '_ {
+    pub fn packages<'a>(&'a self) -> impl Iterator<Item = Package> + ExactSizeIterator + 'a {
         self.packages.iter().map(|(id, _pkg)| id)
     }
 
@@ -412,12 +426,8 @@ impl CargoWorkspace {
         &self.workspace_root
     }
 
-    pub fn target_directory(&self) -> &AbsPath {
-        &self.target_directory
-    }
-
     pub fn package_flag(&self, package: &PackageData) -> String {
-        if self.is_unique(&package.name) {
+        if self.is_unique(&*package.name) {
             package.name.clone()
         } else {
             format!("{}:{}", package.name, package.version)
@@ -454,37 +464,9 @@ impl CargoWorkspace {
         None
     }
 
-    /// Returns the union of the features of all member crates in this workspace.
-    pub fn workspace_features(&self) -> FxHashSet<String> {
-        self.packages()
-            .filter_map(|package| {
-                let package = &self[package];
-                if package.is_member {
-                    Some(package.features.keys().cloned())
-                } else {
-                    None
-                }
-            })
-            .flatten()
-            .collect()
-    }
-
     fn is_unique(&self, name: &str) -> bool {
         self.packages.iter().filter(|(_, v)| v.name == name).count() == 1
     }
-}
-
-fn find_list_of_build_targets(config: &CargoConfig, cargo_toml: &ManifestPath) -> Vec<String> {
-    if let Some(target) = &config.target {
-        return [target.into()].to_vec();
-    }
-
-    let build_targets = cargo_config_build_target(cargo_toml, &config.extra_env);
-    if !build_targets.is_empty() {
-        return build_targets;
-    }
-
-    rustc_discover_host_triple(cargo_toml, &config.extra_env).into_iter().collect()
 }
 
 fn rustc_discover_host_triple(
@@ -517,29 +499,20 @@ fn rustc_discover_host_triple(
 fn cargo_config_build_target(
     cargo_toml: &ManifestPath,
     extra_env: &FxHashMap<String, String>,
-) -> Vec<String> {
+) -> Option<String> {
     let mut cargo_config = Command::new(toolchain::cargo());
     cargo_config.envs(extra_env);
     cargo_config
         .current_dir(cargo_toml.parent())
-        .args(["-Z", "unstable-options", "config", "get", "build.target"])
+        .args(&["-Z", "unstable-options", "config", "get", "build.target"])
         .env("RUSTC_BOOTSTRAP", "1");
     // if successful we receive `build.target = "target-triple"`
-    // or `build.target = ["<target 1>", ..]`
     tracing::debug!("Discovering cargo config target by {:?}", cargo_config);
-    utf8_stdout(cargo_config).map(parse_output_cargo_config_build_target).unwrap_or_default()
-}
-
-fn parse_output_cargo_config_build_target(stdout: String) -> Vec<String> {
-    let trimmed = stdout.trim_start_matches("build.target = ").trim_matches('"');
-
-    if !trimmed.starts_with('[') {
-        return [trimmed.to_string()].to_vec();
+    match utf8_stdout(cargo_config) {
+        Ok(stdout) => stdout
+            .strip_prefix("build.target = \"")
+            .and_then(|stdout| stdout.strip_suffix('"'))
+            .map(ToOwned::to_owned),
+        Err(_) => None,
     }
-
-    let res = serde_json::from_str(trimmed);
-    if let Err(e) = &res {
-        tracing::warn!("Failed to parse `build.target` as an array of target: {}`", e);
-    }
-    res.unwrap_or_default()
 }

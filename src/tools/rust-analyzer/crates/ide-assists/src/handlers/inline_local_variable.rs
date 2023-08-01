@@ -1,3 +1,4 @@
+use either::Either;
 use hir::{PathResolution, Semantics};
 use ide_db::{
     base_db::FileId,
@@ -112,7 +113,7 @@ pub(crate) fn inline_local_variable(acc: &mut Assists, ctx: &AssistContext<'_>) 
         .collect::<Option<Vec<_>>>()?;
 
     let init_str = initializer_expr.syntax().text().to_string();
-    let init_in_paren = format!("({init_str})");
+    let init_in_paren = format!("({})", &init_str);
 
     let target = match target {
         ast::NameOrNameRef::Name(it) => it.syntax().text_range(),
@@ -131,7 +132,7 @@ pub(crate) fn inline_local_variable(acc: &mut Assists, ctx: &AssistContext<'_>) 
                 let replacement = if should_wrap { &init_in_paren } else { &init_str };
                 if ast::RecordExprField::for_field_name(&name).is_some() {
                     cov_mark::hit!(inline_field_shorthand);
-                    builder.insert(range.end(), format!(": {replacement}"));
+                    builder.insert(range.end(), format!(": {}", replacement));
                 } else {
                     builder.replace(range, replacement.clone())
                 }
@@ -204,13 +205,11 @@ fn inline_usage(
         return None;
     }
 
-    let sources = local.sources(sema.db);
-    let [source] = sources.as_slice() else {
-        // Not applicable with locals with multiple definitions (i.e. or patterns)
-        return None;
+    // FIXME: Handle multiple local definitions
+    let bind_pat = match local.source(sema.db).value {
+        Either::Left(ident) => ident,
+        _ => return None,
     };
-
-    let bind_pat = source.as_ident_pat()?;
 
     let let_stmt = ast::LetStmt::cast(bind_pat.syntax().parent()?)?;
 

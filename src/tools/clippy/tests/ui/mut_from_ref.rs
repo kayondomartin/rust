@@ -1,4 +1,4 @@
-#![allow(unused, clippy::needless_lifetimes)]
+#![allow(unused)]
 #![warn(clippy::mut_from_ref)]
 
 struct Foo;

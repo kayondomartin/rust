@@ -1,7 +1,7 @@
 use crate::*;
 use rustc_ast::ast::Mutability;
 use rustc_middle::ty::layout::LayoutOf as _;
-use rustc_middle::ty::{self, Instance, Ty};
+use rustc_middle::ty::{self, Instance};
 use rustc_span::{BytePos, Loc, Symbol};
 use rustc_target::{abi::Size, spec::abi::Abi};
 
@@ -24,7 +24,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
 
         let frame_count = this.active_thread_stack().len();
 
-        this.write_scalar(Scalar::from_target_usize(frame_count.try_into().unwrap(), this), dest)
+        this.write_scalar(Scalar::from_machine_usize(frame_count.try_into().unwrap(), this), dest)
     }
 
     fn handle_miri_get_backtrace(
@@ -71,7 +71,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         let len: u64 = ptrs.len().try_into().unwrap();
 
         let ptr_ty = this.machine.layouts.mut_raw_ptr.ty;
-        let array_layout = this.layout_of(Ty::new_array(tcx.tcx, ptr_ty, len)).unwrap();
+        let array_layout = this.layout_of(tcx.mk_array(ptr_ty, len)).unwrap();
 
         match flags {
             // storage for pointers is allocated by miri
@@ -102,7 +102,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 let ptr_layout = this.layout_of(ptr_ty)?;
 
                 for (i, ptr) in ptrs.into_iter().enumerate() {
-                    let offset = ptr_layout.size.checked_mul(i.try_into().unwrap(), this).unwrap();
+                    let offset = ptr_layout.size * i.try_into().unwrap();
 
                     let op_place = buf_place.offset(offset, ptr_layout, this)?;
 
@@ -190,9 +190,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             0 => {
                 // These are "mutable" allocations as we consider them to be owned by the callee.
                 let name_alloc =
-                    this.allocate_str(&name, MiriMemoryKind::Rust.into(), Mutability::Mut)?;
+                    this.allocate_str(&name, MiriMemoryKind::Rust.into(), Mutability::Mut);
                 let filename_alloc =
-                    this.allocate_str(&filename, MiriMemoryKind::Rust.into(), Mutability::Mut)?;
+                    this.allocate_str(&filename, MiriMemoryKind::Rust.into(), Mutability::Mut);
 
                 this.write_immediate(
                     name_alloc.to_ref(this),
@@ -205,11 +205,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             }
             1 => {
                 this.write_scalar(
-                    Scalar::from_target_usize(name.len().try_into().unwrap(), this),
+                    Scalar::from_machine_usize(name.len().try_into().unwrap(), this),
                     &this.mplace_field(&dest, 0)?.into(),
                 )?;
                 this.write_scalar(
-                    Scalar::from_target_usize(filename.len().try_into().unwrap(), this),
+                    Scalar::from_machine_usize(filename.len().try_into().unwrap(), this),
                     &this.mplace_field(&dest, 1)?.into(),
                 )?;
             }

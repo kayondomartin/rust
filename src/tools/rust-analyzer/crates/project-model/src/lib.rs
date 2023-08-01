@@ -25,7 +25,6 @@ mod sysroot;
 mod workspace;
 mod rustc_cfg;
 mod build_scripts;
-pub mod target_data_layout;
 
 #[cfg(test)]
 mod tests;
@@ -44,7 +43,7 @@ pub use crate::{
     build_scripts::WorkspaceBuildScripts,
     cargo_workspace::{
         CargoConfig, CargoFeatures, CargoWorkspace, Package, PackageData, PackageDependency,
-        RustLibSource, Target, TargetData, TargetKind,
+        RustcSource, Target, TargetData, TargetKind, UnsetTestCrates,
     },
     manifest_path::ManifestPath,
     project_json::{ProjectJson, ProjectJsonData},
@@ -146,7 +145,7 @@ impl ProjectManifest {
 }
 
 fn utf8_stdout(mut cmd: Command) -> Result<String> {
-    let output = cmd.output().with_context(|| format!("{cmd:?} failed"))?;
+    let output = cmd.output().with_context(|| format!("{:?} failed", cmd))?;
     if !output.status.success() {
         match String::from_utf8(output.stderr) {
             Ok(stderr) if !stderr.is_empty() => {

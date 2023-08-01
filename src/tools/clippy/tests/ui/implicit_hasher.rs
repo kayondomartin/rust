@@ -1,11 +1,9 @@
-//@aux-build:proc_macros.rs:proc-macro
-
+// aux-build:implicit_hasher_macros.rs
 #![deny(clippy::implicit_hasher)]
 #![allow(unused)]
 
 #[macro_use]
-extern crate proc_macros;
-use proc_macros::external;
+extern crate implicit_hasher_macros;
 
 use std::cmp::Eq;
 use std::collections::{HashMap, HashSet};
@@ -70,19 +68,22 @@ impl<S: BuildHasher + Default> Foo<i64> for HashSet<String, S> {
 
 pub fn foo(_map: &mut HashMap<i32, i32>, _set: &mut HashSet<i32>) {}
 
-#[proc_macros::inline_macros]
-pub mod gen {
-    use super::*;
-    inline! {
+macro_rules! gen {
+    (impl) => {
         impl<K: Hash + Eq, V> Foo<u8> for HashMap<K, V> {
             fn make() -> (Self, Self) {
                 (HashMap::new(), HashMap::with_capacity(10))
             }
         }
+    };
 
-        pub fn bar(_map: &mut HashMap<i32, i32>, _set: &mut HashSet<i32>) {}
-    }
+    (fn $name:ident) => {
+        pub fn $name(_map: &mut HashMap<i32, i32>, _set: &mut HashSet<i32>) {}
+    };
 }
+#[rustfmt::skip]
+gen!(impl);
+gen!(fn bar);
 
 // When the macro is in a different file, the suggestion spans can't be combined properly
 // and should not cause an ICE
@@ -93,9 +94,7 @@ pub mod test_macro;
 __implicit_hasher_test_macro!(impl<K, V> for HashMap<K, V> where V: test_macro::A);
 
 // #4260
-external! {
-    pub fn f(input: &HashMap<u32, u32>) {}
-}
+implicit_hasher_fn!();
 
 // #7712
 pub async fn election_vote(_data: HashMap<i32, i32>) {}

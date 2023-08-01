@@ -1,7 +1,7 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::snippet_with_applicability;
 use clippy_utils::ty::is_type_diagnostic_item;
-use clippy_utils::{get_parent_expr, is_res_lang_ctor, path_res};
+use clippy_utils::{get_parent_expr, is_res_lang_ctor, match_def_path, path_res, paths};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::LangItem::ResultErr;
@@ -81,7 +81,7 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>, scrutine
 /// Finds function return type by examining return expressions in match arms.
 fn find_return_type<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx ExprKind<'_>) -> Option<Ty<'tcx>> {
     if let ExprKind::Match(_, arms, MatchSource::TryDesugar) = expr {
-        for arm in *arms {
+        for arm in arms.iter() {
             if let ExprKind::Ret(Some(ret)) = arm.body.kind {
                 return Some(cx.typeck_results().expr_ty(ret));
             }
@@ -107,7 +107,7 @@ fn result_error_type<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> Option<Ty<'t
 fn poll_result_error_type<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> Option<Ty<'tcx>> {
     if_chain! {
         if let ty::Adt(def, subst) = ty.kind();
-        if cx.tcx.lang_items().get(LangItem::Poll) == Some(def.did());
+        if match_def_path(cx, def.did(), &paths::POLL);
         let ready_ty = subst.type_at(0);
 
         if let ty::Adt(ready_def, ready_subst) = ready_ty.kind();
@@ -124,7 +124,7 @@ fn poll_result_error_type<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> Option<
 fn poll_option_result_error_type<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> Option<Ty<'tcx>> {
     if_chain! {
         if let ty::Adt(def, subst) = ty.kind();
-        if cx.tcx.lang_items().get(LangItem::Poll) == Some(def.did());
+        if match_def_path(cx, def.did(), &paths::POLL);
         let ready_ty = subst.type_at(0);
 
         if let ty::Adt(ready_def, ready_subst) = ready_ty.kind();

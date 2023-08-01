@@ -1,5 +1,5 @@
 #![feature(adt_const_params)]
-#![deny(clippy::same_functions_in_if_condition)]
+#![warn(clippy::same_functions_in_if_condition)]
 // ifs_same_cond warning is different from `ifs_same_cond`.
 // clippy::if_same_then_else, clippy::comparison_chain -- all empty blocks
 #![allow(incomplete_features)]
@@ -9,8 +9,6 @@
     clippy::ifs_same_cond,
     clippy::uninlined_format_args
 )]
-
-use std::marker::ConstParamTy;
 
 fn function() -> bool {
     true
@@ -37,33 +35,33 @@ fn ifs_same_cond_fn() {
 
     if function() {
     } else if function() {
-        //~^ ERROR: `if` has the same function call as a previous `if`
+        //~ ERROR ifs same condition
     }
 
     if fn_arg(a) {
     } else if fn_arg(a) {
-        //~^ ERROR: `if` has the same function call as a previous `if`
+        //~ ERROR ifs same condition
     }
 
     if obj.method() {
     } else if obj.method() {
-        //~^ ERROR: `if` has the same function call as a previous `if`
+        //~ ERROR ifs same condition
     }
 
     if obj.method_arg(a) {
     } else if obj.method_arg(a) {
-        //~^ ERROR: `if` has the same function call as a previous `if`
+        //~ ERROR ifs same condition
     }
 
     let mut v = vec![1];
     if v.pop().is_none() {
+        //~ ERROR ifs same condition
     } else if v.pop().is_none() {
-        //~^ ERROR: `if` has the same function call as a previous `if`
     }
 
     if v.len() == 42 {
+        //~ ERROR ifs same condition
     } else if v.len() == 42 {
-        //~^ ERROR: `if` has the same function call as a previous `if`
     }
 
     if v.len() == 1 {
@@ -98,7 +96,7 @@ fn main() {
     };
     println!("{}", os);
 
-    #[derive(PartialEq, Eq, ConstParamTy)]
+    #[derive(PartialEq, Eq)]
     enum E {
         A,
         B,

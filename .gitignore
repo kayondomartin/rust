@@ -21,13 +21,12 @@ Session.vim
 .project
 .favorites.json
 .settings/
-.vs/
 
 ## Tool
 .valgrindrc
 .cargo
 # Included because it is part of the test case
-!/tests/run-make/thumb-none-qemu/example/.cargo
+!/src/test/run-make/thumb-none-qemu/example/.cargo
 
 ## Configuration
 /config.toml
@@ -42,14 +41,15 @@ no_llvm_build
 /inst/
 /llvm/
 /mingw-build/
-build/
-!/compiler/rustc_mir_build/src/build/
+/build/
 /build-rust-analyzer/
 /dist/
 /unicode-downloads
 /target
 /src/bootstrap/target
 /src/tools/x/target
+/src/ci/docker
+/src/etc/test-float-parse
 # Created by default with `src/ci/docker/run.sh`
 /obj/
 
@@ -76,6 +76,6 @@ package-lock.json
 package.json
 
 ## Rustdoc GUI tests
-tests/rustdoc-gui/src/**.lock
+src/test/rustdoc-gui/src/**.lock
 
 # Before adding new lines, see the comment at the top.

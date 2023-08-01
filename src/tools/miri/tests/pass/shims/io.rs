@@ -1,3 +1,5 @@
+#![feature(is_terminal)]
+
 use std::io::IsTerminal;
 
 fn main() {

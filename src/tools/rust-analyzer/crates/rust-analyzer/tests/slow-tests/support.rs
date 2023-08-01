@@ -9,10 +9,11 @@ use std::{
 use crossbeam_channel::{after, select, Receiver};
 use lsp_server::{Connection, Message, Notification, Request};
 use lsp_types::{notification::Exit, request::Shutdown, TextDocumentIdentifier, Url};
+use project_model::ProjectManifest;
 use rust_analyzer::{config::Config, lsp_ext, main_loop};
 use serde::Serialize;
 use serde_json::{json, to_string_pretty, Value};
-use test_utils::FixtureWithProjectMeta;
+use test_utils::Fixture;
 use vfs::AbsPathBuf;
 
 use crate::testdir::TestDir;
@@ -36,12 +37,8 @@ impl<'a> Project<'a> {
                     "sysroot": null,
                     // Can't use test binary as rustc wrapper.
                     "buildScripts": {
-                        "useRustcWrapper": false,
-                        "enable": false,
+                        "useRustcWrapper": false
                     },
-                },
-                "procMacro": {
-                    "enable": false,
                 }
             }),
         }
@@ -83,12 +80,10 @@ impl<'a> Project<'a> {
             profile::init_from(crate::PROFILE);
         });
 
-        let FixtureWithProjectMeta { fixture, mini_core, proc_macro_names, toolchain } =
-            FixtureWithProjectMeta::parse(self.fixture);
-        assert!(proc_macro_names.is_empty());
+        let (mini_core, proc_macros, fixtures) = Fixture::parse(self.fixture);
+        assert!(proc_macros.is_empty());
         assert!(mini_core.is_none());
-        assert!(toolchain.is_none());
-        for entry in fixture {
+        for entry in fixtures {
             let path = tmp_dir.path().join(&entry.path['/'.len_utf8()..]);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path.as_path(), entry.text.as_bytes()).unwrap();
@@ -100,6 +95,10 @@ impl<'a> Project<'a> {
         if roots.is_empty() {
             roots.push(tmp_dir_path.clone());
         }
+        let discovered_projects = roots
+            .into_iter()
+            .map(|it| ProjectManifest::discover_single(&it).unwrap())
+            .collect::<Vec<_>>();
 
         let mut config = Config::new(
             tmp_dir_path,
@@ -108,7 +107,6 @@ impl<'a> Project<'a> {
                     did_change_watched_files: Some(
                         lsp_types::DidChangeWatchedFilesClientCapabilities {
                             dynamic_registration: Some(true),
-                            relative_pattern_support: None,
                         },
                     ),
                     ..Default::default()
@@ -139,10 +137,9 @@ impl<'a> Project<'a> {
                 })),
                 ..Default::default()
             },
-            roots,
         );
+        config.discovered_projects = Some(discovered_projects);
         config.update(self.config).expect("invalid config");
-        config.rediscover_workspaces();
 
         Server::new(tmp_dir, config)
     }
@@ -155,7 +152,7 @@ pub(crate) fn project(fixture: &str) -> Server {
 pub(crate) struct Server {
     req_id: Cell<i32>,
     messages: RefCell<Vec<Message>>,
-    _thread: stdx::thread::JoinHandle,
+    _thread: jod_thread::JoinHandle<()>,
     client: Connection,
     /// XXX: remove the tempdir last
     dir: TestDir,
@@ -165,7 +162,7 @@ impl Server {
     fn new(dir: TestDir, config: Config) -> Server {
         let (connection, client) = Connection::memory();
 
-        let _thread = stdx::thread::Builder::new(stdx::thread::ThreadIntent::Worker)
+        let _thread = jod_thread::Builder::new()
             .name("test server".to_string())
             .spawn(move || main_loop(config, connection).unwrap())
             .expect("failed to spawn a thread");
@@ -219,7 +216,7 @@ impl Server {
     fn send_request_(&self, r: Request) -> Value {
         let id = r.id.clone();
         self.client.sender.send(r.clone().into()).unwrap();
-        while let Some(msg) = self.recv().unwrap_or_else(|Timeout| panic!("timeout: {r:?}")) {
+        while let Some(msg) = self.recv().unwrap_or_else(|Timeout| panic!("timeout: {:?}", r)) {
             match msg {
                 Message::Request(req) => {
                     if req.method == "client/registerCapability" {
@@ -231,19 +228,19 @@ impl Server {
                             continue;
                         }
                     }
-                    panic!("unexpected request: {req:?}")
+                    panic!("unexpected request: {:?}", req)
                 }
                 Message::Notification(_) => (),
                 Message::Response(res) => {
                     assert_eq!(res.id, id);
                     if let Some(err) = res.error {
-                        panic!("error response: {err:#?}");
+                        panic!("error response: {:#?}", err);
                     }
                     return res.result.unwrap();
                 }
             }
         }
-        panic!("no response for {r:?}");
+        panic!("no response for {:?}", r);
     }
     pub(crate) fn wait_until_workspace_is_loaded(self) -> Server {
         self.wait_for_message_cond(1, &|msg: &Message| match msg {
@@ -252,9 +249,6 @@ impl Server {
                     .clone()
                     .extract::<lsp_ext::ServerStatusParams>("experimental/serverStatus")
                     .unwrap();
-                if status.health != lsp_ext::Health::Ok {
-                    panic!("server errored/warned while loading workspace: {:?}", status.message);
-                }
                 status.quiescent
             }
             _ => false,

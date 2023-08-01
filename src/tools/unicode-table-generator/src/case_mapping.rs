@@ -1,62 +1,36 @@
 use crate::{fmt_list, UnicodeData};
-use std::{
-    char,
-    collections::BTreeMap,
-    fmt::{self, Write},
-};
-
-const INDEX_MASK: u32 = 1 << 22;
+use std::fmt;
 
 pub(crate) fn generate_case_mapping(data: &UnicodeData) -> String {
     let mut file = String::new();
 
-    write!(file, "const INDEX_MASK: u32 = 0x{:x};", INDEX_MASK).unwrap();
-    file.push_str("\n\n");
     file.push_str(HEADER.trim_start());
-    file.push('\n');
-    file.push_str(&generate_tables("LOWER", &data.to_lower));
+
+    let decl_type = "&[(char, [char; 3])]";
+
+    file.push_str(&format!(
+        "static LOWERCASE_TABLE: {} = &[{}];",
+        decl_type,
+        fmt_list(data.to_lower.iter().map(to_mapping))
+    ));
     file.push_str("\n\n");
-    file.push_str(&generate_tables("UPPER", &data.to_upper));
+    file.push_str(&format!(
+        "static UPPERCASE_TABLE: {} = &[{}];",
+        decl_type,
+        fmt_list(data.to_upper.iter().map(to_mapping))
+    ));
     file
 }
 
-fn generate_tables(case: &str, data: &BTreeMap<u32, (u32, u32, u32)>) -> String {
-    let mut mappings = Vec::with_capacity(data.len());
-    let mut multis = Vec::new();
-
-    for (&key, &(a, b, c)) in data.iter() {
-        let key = char::from_u32(key).unwrap();
-
-        if key.is_ascii() {
-            continue;
-        }
-
-        let value = if b == 0 && c == 0 {
-            a
-        } else {
-            multis.push([
-                CharEscape(char::from_u32(a).unwrap()),
-                CharEscape(char::from_u32(b).unwrap()),
-                CharEscape(char::from_u32(c).unwrap()),
-            ]);
-
-            INDEX_MASK | (u32::try_from(multis.len()).unwrap() - 1)
-        };
-
-        mappings.push((CharEscape(key), value));
-    }
-
-    let mut tables = String::new();
-
-    write!(tables, "static {}CASE_TABLE: &[(char, u32)] = &[{}];", case, fmt_list(mappings))
-        .unwrap();
-
-    tables.push_str("\n\n");
-
-    write!(tables, "static {}CASE_TABLE_MULTI: &[[char; 3]] = &[{}];", case, fmt_list(multis))
-        .unwrap();
-
-    tables
+fn to_mapping((key, (a, b, c)): (&u32, &(u32, u32, u32))) -> (CharEscape, [CharEscape; 3]) {
+    (
+        CharEscape(std::char::from_u32(*key).unwrap()),
+        [
+            CharEscape(std::char::from_u32(*a).unwrap()),
+            CharEscape(std::char::from_u32(*b).unwrap()),
+            CharEscape(std::char::from_u32(*c).unwrap()),
+        ],
+    )
 }
 
 struct CharEscape(char);
@@ -72,16 +46,10 @@ pub fn to_lower(c: char) -> [char; 3] {
     if c.is_ascii() {
         [(c as u8).to_ascii_lowercase() as char, '\0', '\0']
     } else {
-        LOWERCASE_TABLE
-            .binary_search_by(|&(key, _)| key.cmp(&c))
-            .map(|i| {
-                let u = LOWERCASE_TABLE[i].1;
-                char::from_u32(u).map(|c| [c, '\0', '\0']).unwrap_or_else(|| {
-                    // SAFETY: Index comes from statically generated table
-                    unsafe { *LOWERCASE_TABLE_MULTI.get_unchecked((u & (INDEX_MASK - 1)) as usize) }
-                })
-            })
-            .unwrap_or([c, '\0', '\0'])
+        match bsearch_case_table(c, LOWERCASE_TABLE) {
+            None => [c, '\0', '\0'],
+            Some(index) => LOWERCASE_TABLE[index].1,
+        }
     }
 }
 
@@ -89,16 +57,14 @@ pub fn to_upper(c: char) -> [char; 3] {
     if c.is_ascii() {
         [(c as u8).to_ascii_uppercase() as char, '\0', '\0']
     } else {
-        UPPERCASE_TABLE
-            .binary_search_by(|&(key, _)| key.cmp(&c))
-            .map(|i| {
-                let u = UPPERCASE_TABLE[i].1;
-                char::from_u32(u).map(|c| [c, '\0', '\0']).unwrap_or_else(|| {
-                    // SAFETY: Index comes from statically generated table
-                    unsafe { *UPPERCASE_TABLE_MULTI.get_unchecked((u & (INDEX_MASK - 1)) as usize) }
-                })
-            })
-            .unwrap_or([c, '\0', '\0'])
+        match bsearch_case_table(c, UPPERCASE_TABLE) {
+            None => [c, '\0', '\0'],
+            Some(index) => UPPERCASE_TABLE[index].1,
+        }
     }
+}
+
+fn bsearch_case_table(c: char, table: &[(char, [char; 3])]) -> Option<usize> {
+    table.binary_search_by(|&(key, _)| key.cmp(&c)).ok()
 }
 ";

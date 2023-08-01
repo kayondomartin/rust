@@ -1,5 +1,4 @@
 #![warn(clippy::unnecessary_lazy_evaluations)]
-#![allow(clippy::unnecessary_literal_unwrap)]
 
 struct Deep(Option<usize>);
 

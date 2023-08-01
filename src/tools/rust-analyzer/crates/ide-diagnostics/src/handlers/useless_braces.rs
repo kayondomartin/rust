@@ -71,9 +71,9 @@ use a;
 use a::{c, d::e};
 
 mod a {
-    pub mod c {}
-    pub mod d {
-        pub mod e {}
+    mod c {}
+    mod d {
+        mod e {}
     }
 }
 "#,
@@ -87,9 +87,9 @@ use a::{
 };
 
 mod a {
-    pub mod c {}
-    pub mod d {
-        pub mod e {}
+    mod c {}
+    mod d {
+        mod e {}
     }
 }
 "#,
@@ -116,11 +116,11 @@ use b;
         );
         check_fix(
             r#"
-mod a { pub mod c {} }
+mod a { mod c {} }
 use a::{c$0};
 "#,
             r#"
-mod a { pub mod c {} }
+mod a { mod c {} }
 use a::c;
 "#,
         );
@@ -136,11 +136,11 @@ use a;
         );
         check_fix(
             r#"
-mod a { pub mod c {} pub mod d { pub mod e {} } }
+mod a { mod c {} mod d { mod e {} } }
 use a::{c, d::{e$0}};
 "#,
             r#"
-mod a { pub mod c {} pub mod d { pub mod e {} } }
+mod a { mod c {} mod d { mod e {} } }
 use a::{c, d::e};
 "#,
         );

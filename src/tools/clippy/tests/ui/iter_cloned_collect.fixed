@@ -1,7 +1,6 @@
-//@run-rustfix
+// run-rustfix
 
 #![allow(unused)]
-#![allow(clippy::useless_vec)]
 
 use std::collections::HashSet;
 use std::collections::VecDeque;

@@ -1,11 +1,11 @@
-//@run-rustfix
-//@aux-build:proc_macros.rs:proc-macro
+// run-rustfix
+// aux-build:macro_rules.rs
 
 #![deny(clippy::try_err)]
 #![allow(clippy::unnecessary_wraps, clippy::needless_question_mark)]
 
-extern crate proc_macros;
-use proc_macros::{external, inline_macros};
+#[macro_use]
+extern crate macro_rules;
 
 use std::io;
 use std::task::Poll;
@@ -79,22 +79,36 @@ fn nested_error() -> Result<i32, i32> {
     Ok(1)
 }
 
-#[inline_macros]
-fn calling_macro() -> Result<i32, i32> {
-    // macro
-    inline!(
-        match $(Ok::<_, i32>(5)) {
+// Bad suggestion when in macro (see #6242)
+macro_rules! try_validation {
+    ($e: expr) => {{
+        match $e {
             Ok(_) => 0,
             Err(_) => Err(1)?,
         }
-    );
-    // `Err` arg is another macro
-    inline!(
-        match $(Ok::<_, i32>(5)) {
+    }};
+}
+
+macro_rules! ret_one {
+    () => {
+        1
+    };
+}
+
+macro_rules! try_validation_in_macro {
+    ($e: expr) => {{
+        match $e {
             Ok(_) => 0,
-            Err(_) => Err(inline!(1))?,
+            Err(_) => Err(ret_one!())?,
         }
-    );
+    }};
+}
+
+fn calling_macro() -> Result<i32, i32> {
+    // macro
+    try_validation!(Ok::<_, i32>(5));
+    // `Err` arg is another macro
+    try_validation_in_macro!(Ok::<_, i32>(5));
     Ok(5)
 }
 
@@ -107,19 +121,24 @@ fn main() {
     calling_macro().unwrap();
 
     // We don't want to lint in external macros
-    external! {
-        pub fn try_err_fn() -> Result<i32, i32> {
-            let err: i32 = 1;
-            // To avoid warnings during rustfix
-            if true { Err(err)? } else { Ok(2) }
-        }
-    }
+    try_err!();
 }
 
-#[inline_macros]
+macro_rules! bar {
+    () => {
+        String::from("aasdfasdfasdfa")
+    };
+}
+
+macro_rules! foo {
+    () => {
+        bar!()
+    };
+}
+
 pub fn macro_inside(fail: bool) -> Result<i32, String> {
     if fail {
-        Err(inline!(inline!(String::from("aasdfasdfasdfa"))))?;
+        Err(foo!())?;
     }
     Ok(0)
 }

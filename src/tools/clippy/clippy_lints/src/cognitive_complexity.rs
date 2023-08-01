@@ -4,14 +4,13 @@ use clippy_utils::diagnostics::span_lint_and_help;
 use clippy_utils::source::snippet_opt;
 use clippy_utils::ty::is_type_diagnostic_item;
 use clippy_utils::visitors::for_each_expr;
-use clippy_utils::{get_async_fn_body, is_async_fn, LimitStack};
+use clippy_utils::LimitStack;
 use core::ops::ControlFlow;
 use rustc_ast::ast::Attribute;
 use rustc_hir::intravisit::FnKind;
-use rustc_hir::{Body, Expr, ExprKind, FnDecl};
+use rustc_hir::{Body, ExprKind, FnDecl, HirId};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
-use rustc_span::def_id::LocalDefId;
 use rustc_span::source_map::Span;
 use rustc_span::{sym, BytePos};
 
@@ -57,12 +56,14 @@ impl CognitiveComplexity {
         cx: &LateContext<'tcx>,
         kind: FnKind<'tcx>,
         decl: &'tcx FnDecl<'_>,
-        expr: &'tcx Expr<'_>,
+        body: &'tcx Body<'_>,
         body_span: Span,
     ) {
         if body_span.from_expansion() {
             return;
         }
+
+        let expr = body.value;
 
         let mut cc = 1u64;
         let mut returns = 0u64;
@@ -141,21 +142,11 @@ impl<'tcx> LateLintPass<'tcx> for CognitiveComplexity {
         decl: &'tcx FnDecl<'_>,
         body: &'tcx Body<'_>,
         span: Span,
-        def_id: LocalDefId,
+        hir_id: HirId,
     ) {
-        if !cx.tcx.has_attr(def_id, sym::test) {
-            let expr = if is_async_fn(kind) {
-                match get_async_fn_body(cx.tcx, body) {
-                    Some(b) => b,
-                    None => {
-                        return;
-                    },
-                }
-            } else {
-                body.value
-            };
-
-            self.check(cx, kind, decl, expr, span);
+        let def_id = cx.tcx.hir().local_def_id(hir_id);
+        if !cx.tcx.has_attr(def_id.to_def_id(), sym::test) {
+            self.check(cx, kind, decl, body, span);
         }
     }
 

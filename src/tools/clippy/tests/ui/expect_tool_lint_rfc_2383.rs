@@ -1,3 +1,4 @@
+// check-pass
 #![feature(lint_reasons)]
 //! This file tests the `#[expect]` attribute implementation for tool lints. The same
 //! file is used to test clippy and rustdoc. Any changes to this file should be synced
@@ -11,7 +12,6 @@
 //! This test can't cover every lint from Clippy, rustdoc and potentially other
 //! tools that will be developed. This therefore only tests a small subset of lints
 #![expect(rustdoc::missing_crate_level_docs)]
-#![allow(clippy::needless_if)]
 
 mod rustc_ok {
     //! See <https://doc.rust-lang.org/rustc/lints/index.html>

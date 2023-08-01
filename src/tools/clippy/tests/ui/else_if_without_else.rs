@@ -43,7 +43,7 @@ fn main() {
     if bla1() {
         println!("if");
     } else if bla2() {
-        //~^ ERROR: `if` expression with an `else if`, but without a final `else`
+        //~ ERROR else if without else
         println!("else if");
     }
 
@@ -52,7 +52,7 @@ fn main() {
     } else if bla2() {
         println!("else if 1");
     } else if bla3() {
-        //~^ ERROR: `if` expression with an `else if`, but without a final `else`
+        //~ ERROR else if without else
         println!("else if 2");
     }
 }

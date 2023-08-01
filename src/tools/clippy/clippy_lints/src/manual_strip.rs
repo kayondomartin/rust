@@ -1,9 +1,8 @@
 use clippy_utils::consts::{constant, Constant};
 use clippy_utils::diagnostics::{multispan_sugg, span_lint_and_then};
-use clippy_utils::msrvs::{self, Msrv};
 use clippy_utils::source::snippet;
 use clippy_utils::usage::mutated_variables;
-use clippy_utils::{eq_expr_value, higher, match_def_path, paths};
+use clippy_utils::{eq_expr_value, higher, match_def_path, meets_msrv, msrvs, paths};
 use if_chain::if_chain;
 use rustc_ast::ast::LitKind;
 use rustc_hir::def::Res;
@@ -12,6 +11,7 @@ use rustc_hir::BinOpKind;
 use rustc_hir::{BorrowKind, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty;
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Spanned;
 use rustc_span::Span;
@@ -48,12 +48,12 @@ declare_clippy_lint! {
 }
 
 pub struct ManualStrip {
-    msrv: Msrv,
+    msrv: Option<RustcVersion>,
 }
 
 impl ManualStrip {
     #[must_use]
-    pub fn new(msrv: Msrv) -> Self {
+    pub fn new(msrv: Option<RustcVersion>) -> Self {
         Self { msrv }
     }
 }
@@ -68,7 +68,7 @@ enum StripKind {
 
 impl<'tcx> LateLintPass<'tcx> for ManualStrip {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
-        if !self.msrv.meets(msrvs::STR_STRIP_PREFIX) {
+        if !meets_msrv(self.msrv, msrvs::STR_STRIP_PREFIX) {
             return;
         }
 
@@ -109,7 +109,7 @@ impl<'tcx> LateLintPass<'tcx> for ManualStrip {
 
                     let test_span = expr.span.until(then.span);
                     span_lint_and_then(cx, MANUAL_STRIP, strippings[0], &format!("stripping a {kind_word} manually"), |diag| {
-                        diag.span_note(test_span, format!("the {kind_word} was tested here"));
+                        diag.span_note(test_span, &format!("the {kind_word} was tested here"));
                         multispan_sugg(
                             diag,
                             &format!("try using the `strip_{kind_word}` method"),
@@ -144,7 +144,7 @@ fn len_arg<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) -> Option<&'tcx E
 
 // Returns the length of the `expr` if it's a constant string or char.
 fn constant_length(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<u128> {
-    let value = constant(cx, cx.typeck_results(), expr)?;
+    let (value, _) = constant(cx, cx.typeck_results(), expr)?;
     match value {
         Constant::Str(value) => Some(value.len() as u128),
         Constant::Char(value) => Some(value.len_utf8() as u128),
@@ -159,7 +159,7 @@ fn eq_pattern_length<'tcx>(cx: &LateContext<'tcx>, pattern: &Expr<'_>, expr: &'t
         ..
     }) = expr.kind
     {
-        constant_length(cx, pattern).map_or(false, |length| length == *n)
+        constant_length(cx, pattern).map_or(false, |length| length == n)
     } else {
         len_arg(cx, expr).map_or(false, |arg| eq_expr_value(cx, pattern, arg))
     }

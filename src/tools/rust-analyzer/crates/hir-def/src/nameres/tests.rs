@@ -4,9 +4,10 @@ mod macros;
 mod mod_resolution;
 mod primitives;
 
+use std::sync::Arc;
+
 use base_db::{fixture::WithFixture, SourceDatabase};
 use expect_test::{expect, Expect};
-use triomphe::Arc;
 
 use crate::{db::DefDatabase, test_db::TestDB};
 
@@ -57,9 +58,9 @@ extern {
 "#,
         expect![[r#"
             crate
-            E: _
+            E: t
             S: t v
-            V: _
+            V: t v
             foo: t
 
             crate::foo
@@ -306,7 +307,7 @@ pub struct FromLib;
             Bar: t v
 
             crate::foo
-            Bar: _
+            Bar: t v
             FromLib: t v
         "#]],
     );
@@ -475,7 +476,7 @@ pub struct Bar;
 fn no_std_prelude() {
     check(
         r#"
-        //- /main.rs edition:2018 crate:main deps:core,std
+        //- /main.rs crate:main deps:core,std
         #![cfg_attr(not(never), no_std)]
         use Rust;
 
@@ -543,7 +544,7 @@ fn edition_specific_preludes() {
 fn std_prelude_takes_precedence_above_core_prelude() {
     check(
         r#"
-//- /main.rs edition:2018 crate:main deps:core,std
+//- /main.rs crate:main deps:core,std
 use {Foo, Bar};
 
 //- /std.rs crate:std deps:core
@@ -573,7 +574,7 @@ pub mod prelude {
 fn cfg_not_test() {
     check(
         r#"
-//- /main.rs edition:2018 crate:main deps:std
+//- /main.rs crate:main deps:std
 use {Foo, Bar, Baz};
 
 //- /lib.rs crate:std
@@ -601,7 +602,7 @@ pub mod prelude {
 fn cfg_test() {
     check(
         r#"
-//- /main.rs edition:2018 crate:main deps:std
+//- /main.rs crate:main deps:std
 use {Foo, Bar, Baz};
 
 //- /lib.rs crate:std cfg:test,feature=foo,feature=bar,opt=42

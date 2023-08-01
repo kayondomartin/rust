@@ -16,8 +16,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
   gdb \
   patch \
   libssl-dev \
-  pkg-config \
-  && rm -rf /var/lib/apt/lists/*
+  pkg-config
 
 WORKDIR /build/
 
@@ -25,6 +24,7 @@ WORKDIR /build/
 COPY scripts/cmake.sh /scripts/
 RUN /scripts/cmake.sh
 
+COPY scripts/musl-patch-configure.diff /build/
 COPY scripts/musl-toolchain.sh /build/
 # We need to mitigate rust-lang/rust#34978 when compiling musl itself as well
 RUN CFLAGS="-Wa,-mrelax-relocations=no -Wa,--compress-debug-sections=none -Wl,--compress-debug-sections=none" \

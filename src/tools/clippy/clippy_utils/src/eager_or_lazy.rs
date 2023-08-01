@@ -15,8 +15,7 @@ use rustc_hir::def::{DefKind, Res};
 use rustc_hir::intravisit::{walk_expr, Visitor};
 use rustc_hir::{def_id::DefId, Block, Expr, ExprKind, QPath, UnOp};
 use rustc_lint::LateContext;
-use rustc_middle::ty;
-use rustc_middle::ty::adjustment::Adjust;
+use rustc_middle::ty::{self, PredicateKind};
 use rustc_span::{sym, Symbol};
 use std::cmp;
 use std::ops;
@@ -51,7 +50,7 @@ fn fn_eagerness(cx: &LateContext<'_>, fn_id: DefId, name: Symbol, have_one_arg: 
     let name = name.as_str();
 
     let ty = match cx.tcx.impl_of_method(fn_id) {
-        Some(id) => cx.tcx.type_of(id).subst_identity(),
+        Some(id) => cx.tcx.type_of(id),
         None => return Lazy,
     };
 
@@ -72,15 +71,15 @@ fn fn_eagerness(cx: &LateContext<'_>, fn_id: DefId, name: Symbol, have_one_arg: 
             .variants()
             .iter()
             .flat_map(|v| v.fields.iter())
-            .any(|x| matches!(cx.tcx.type_of(x.did).subst_identity().peel_refs().kind(), ty::Param(_)))
+            .any(|x| matches!(cx.tcx.type_of(x.did).peel_refs().kind(), ty::Param(_)))
             && all_predicates_of(cx.tcx, fn_id).all(|(pred, _)| match pred.kind().skip_binder() {
-                ty::ClauseKind::Trait(pred) => cx.tcx.trait_def(pred.trait_ref.def_id).is_marker,
+                PredicateKind::Trait(pred) => cx.tcx.trait_def(pred.trait_ref.def_id).is_marker,
                 _ => true,
             })
             && subs.types().all(|x| matches!(x.peel_refs().kind(), ty::Param(_)))
         {
             // Limit the function to either `(self) -> bool` or `(&self) -> bool`
-            match &**cx.tcx.fn_sig(fn_id).subst_identity().skip_binder().inputs_and_output {
+            match &**cx.tcx.fn_sig(fn_id).skip_binder().inputs_and_output {
                 [arg, res] if !arg.is_mutable_ptr() && arg.peel_refs() == ty && res.is_bool() => NoChange,
                 _ => Lazy,
             }
@@ -89,16 +88,6 @@ fn fn_eagerness(cx: &LateContext<'_>, fn_id: DefId, name: Symbol, have_one_arg: 
         }
     } else {
         Lazy
-    }
-}
-
-fn res_has_significant_drop(res: Res, cx: &LateContext<'_>, e: &Expr<'_>) -> bool {
-    if let Res::Def(DefKind::Ctor(..) | DefKind::Variant, _) | Res::SelfCtor(_) = res {
-        cx.typeck_results()
-            .expr_ty(e)
-            .has_significant_drop(cx.tcx, cx.param_env)
-    } else {
-        false
     }
 }
 
@@ -115,20 +104,6 @@ fn expr_eagerness<'tcx>(cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) -> EagernessS
             if self.eagerness == ForceNoChange {
                 return;
             }
-
-            // Autoderef through a user-defined `Deref` impl can have side-effects,
-            // so don't suggest changing it.
-            if self
-                .cx
-                .typeck_results()
-                .expr_adjustments(e)
-                .iter()
-                .any(|adj| matches!(adj.kind, Adjust::Deref(Some(_))))
-            {
-                self.eagerness |= NoChange;
-                return;
-            }
-
             match e.kind {
                 ExprKind::Call(
                     &Expr {
@@ -138,8 +113,13 @@ fn expr_eagerness<'tcx>(cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) -> EagernessS
                     },
                     args,
                 ) => match self.cx.qpath_res(path, hir_id) {
-                    res @ (Res::Def(DefKind::Ctor(..) | DefKind::Variant, _) | Res::SelfCtor(_)) => {
-                        if res_has_significant_drop(res, self.cx, e) {
+                    Res::Def(DefKind::Ctor(..) | DefKind::Variant, _) | Res::SelfCtor(_) => {
+                        if self
+                            .cx
+                            .typeck_results()
+                            .expr_ty(e)
+                            .has_significant_drop(self.cx.tcx, self.cx.param_env)
+                        {
                             self.eagerness = ForceNoChange;
                             return;
                         }
@@ -167,12 +147,6 @@ fn expr_eagerness<'tcx>(cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) -> EagernessS
                     self.eagerness |= NoChange;
                     return;
                 },
-                ExprKind::Path(ref path) => {
-                    if res_has_significant_drop(self.cx.qpath_res(path, e.hir_id), self.cx, e) {
-                        self.eagerness = ForceNoChange;
-                        return;
-                    }
-                },
                 ExprKind::MethodCall(name, ..) => {
                     self.eagerness |= self
                         .cx
@@ -188,15 +162,11 @@ fn expr_eagerness<'tcx>(cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) -> EagernessS
                         self.eagerness = Lazy;
                     }
                 },
-                // Custom `Deref` impl might have side effects
-                ExprKind::Unary(UnOp::Deref, e)
-                    if self.cx.typeck_results().expr_ty(e).builtin_deref(true).is_none() =>
-                {
-                    self.eagerness |= NoChange;
-                },
+
                 // Dereferences should be cheap, but dereferencing a raw pointer earlier may not be safe.
                 ExprKind::Unary(UnOp::Deref, e) if !self.cx.typeck_results().expr_ty(e).is_unsafe_ptr() => (),
                 ExprKind::Unary(UnOp::Deref, _) => self.eagerness |= NoChange,
+
                 ExprKind::Unary(_, e)
                     if matches!(
                         self.cx.typeck_results().expr_ty(e).kind(),
@@ -210,18 +180,19 @@ fn expr_eagerness<'tcx>(cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) -> EagernessS
                 ExprKind::Break(..)
                 | ExprKind::Continue(_)
                 | ExprKind::Ret(_)
-                | ExprKind::Become(_)
                 | ExprKind::InlineAsm(_)
                 | ExprKind::Yield(..)
-                | ExprKind::Err(_) => {
+                | ExprKind::Err => {
                     self.eagerness = ForceNoChange;
                     return;
                 },
 
                 // Memory allocation, custom operator, loop, or call to an unknown function
-                ExprKind::Unary(..) | ExprKind::Binary(..) | ExprKind::Loop(..) | ExprKind::Call(..) => {
-                    self.eagerness = Lazy;
-                },
+                ExprKind::Box(_)
+                | ExprKind::Unary(..)
+                | ExprKind::Binary(..)
+                | ExprKind::Loop(..)
+                | ExprKind::Call(..) => self.eagerness = Lazy,
 
                 ExprKind::ConstBlock(_)
                 | ExprKind::Array(_)
@@ -235,11 +206,11 @@ fn expr_eagerness<'tcx>(cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) -> EagernessS
                 | ExprKind::Match(..)
                 | ExprKind::Closure { .. }
                 | ExprKind::Field(..)
+                | ExprKind::Path(_)
                 | ExprKind::AddrOf(..)
                 | ExprKind::Struct(..)
                 | ExprKind::Repeat(..)
-                | ExprKind::Block(Block { stmts: [], .. }, _)
-                | ExprKind::OffsetOf(..) => (),
+                | ExprKind::Block(Block { stmts: [], .. }, _) => (),
 
                 // Assignment might be to a local defined earlier, so don't eagerly evaluate.
                 // Blocks with multiple statements might be expensive, so don't eagerly evaluate.

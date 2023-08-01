@@ -78,16 +78,8 @@ xflags::xflags! {
             optional --disable-build-scripts
             /// Don't use expand proc macros.
             optional --disable-proc-macros
-            /// Skip body lowering.
-            optional --skip-lowering
-            /// Skip type inference.
+            /// Only resolve names, don't run type inference.
             optional --skip-inference
-            /// Skip lowering to mir
-            optional --skip-mir-stats
-            /// Skip data layout calculation
-            optional --skip-data-layout
-            /// Skip const evaluation
-            optional --skip-const-eval
         }
 
         cmd diagnostics {
@@ -98,8 +90,6 @@ xflags::xflags! {
             optional --disable-build-scripts
             /// Don't use expand proc macros.
             optional --disable-proc-macros
-            /// Run a custom proc-macro-srv binary.
-            optional --proc-macro-srv path: PathBuf
         }
 
         cmd ssr {
@@ -114,15 +104,14 @@ xflags::xflags! {
             optional --debug snippet: String
         }
 
+        cmd proc-macro {}
+
         cmd lsif {
             required path: PathBuf
         }
 
         cmd scip {
             required path: PathBuf
-
-            /// The output path where the SCIP file will be written to. Defaults to `index.scip`.
-            optional --output path: PathBuf
         }
     }
 }
@@ -150,6 +139,7 @@ pub enum RustAnalyzerCmd {
     Diagnostics(Diagnostics),
     Ssr(Ssr),
     Search(Search),
+    ProcMacro(ProcMacro),
     Lsif(Lsif),
     Scip(Scip),
 }
@@ -182,16 +172,12 @@ pub struct AnalysisStats {
     pub parallel: bool,
     pub memory_usage: bool,
     pub source_stats: bool,
-    pub skip_lowering: bool,
-    pub skip_inference: bool,
-    pub skip_mir_stats: bool,
-    pub skip_data_layout: bool,
-    pub skip_const_eval: bool,
     pub only: Option<String>,
     pub with_deps: bool,
     pub no_sysroot: bool,
     pub disable_build_scripts: bool,
     pub disable_proc_macros: bool,
+    pub skip_inference: bool,
 }
 
 #[derive(Debug)]
@@ -200,7 +186,6 @@ pub struct Diagnostics {
 
     pub disable_build_scripts: bool,
     pub disable_proc_macros: bool,
-    pub proc_macro_srv: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -216,6 +201,9 @@ pub struct Search {
 }
 
 #[derive(Debug)]
+pub struct ProcMacro;
+
+#[derive(Debug)]
 pub struct Lsif {
     pub path: PathBuf,
 }
@@ -223,7 +211,6 @@ pub struct Lsif {
 #[derive(Debug)]
 pub struct Scip {
     pub path: PathBuf,
-    pub output: Option<PathBuf>,
 }
 
 impl RustAnalyzer {
@@ -268,7 +255,7 @@ impl FromStr for OutputFormat {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "csv" => Ok(Self::Csv),
-            _ => Err(format!("unknown output format `{s}`")),
+            _ => Err(format!("unknown output format `{}`", s)),
         }
     }
 }

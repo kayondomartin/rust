@@ -19,8 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   llvm-dev \
   libfreetype6-dev \
   libexpat1-dev \
-  tidy \
-  && rm -rf /var/lib/apt/lists/*
+  tidy
 
 COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh

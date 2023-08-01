@@ -1,5 +1,4 @@
 use crate::config::file_lines::FileLines;
-use crate::config::macro_names::MacroSelectors;
 use crate::config::options::{IgnoreList, WidthHeuristics};
 
 /// Trait for types that can be used in `Config`.
@@ -7,14 +6,6 @@ pub(crate) trait ConfigType: Sized {
     /// Returns hint text for use in `Config::print_docs()`. For enum types, this is a
     /// pipe-separated list of variants; for other types it returns `<type>`.
     fn doc_hint() -> String;
-
-    /// Return `true` if the variant (i.e. value of this type) is stable.
-    ///
-    /// By default, return true for all values. Enums annotated with `#[config_type]`
-    /// are automatically implemented, based on the `#[unstable_variant]` annotation.
-    fn stable_variant(&self) -> bool {
-        true
-    }
 }
 
 impl ConfigType for bool {
@@ -47,12 +38,6 @@ impl ConfigType for FileLines {
     }
 }
 
-impl ConfigType for MacroSelectors {
-    fn doc_hint() -> String {
-        String::from("[<string>, ...]")
-    }
-}
-
 impl ConfigType for WidthHeuristics {
     fn doc_hint() -> String {
         String::new()
@@ -66,13 +51,6 @@ impl ConfigType for IgnoreList {
 }
 
 macro_rules! create_config {
-    // Options passed in to the macro.
-    //
-    // - $i: the ident name of the option
-    // - $ty: the type of the option value
-    // - $def: the default value of the option
-    // - $stb: true if the option is stable
-    // - $dstring: description of the option
     ($($i:ident: $ty:ty, $def:expr, $stb:expr, $( $dstring:expr ),+ );+ $(;)*) => (
         #[cfg(test)]
         use std::collections::HashSet;
@@ -83,12 +61,9 @@ macro_rules! create_config {
         #[derive(Clone)]
         #[allow(unreachable_pub)]
         pub struct Config {
-            // For each config item, we store:
-            //
-            // - 0: true if the value has been access
-            // - 1: true if the option was manually initialized
-            // - 2: the option value
-            // - 3: true if the option is unstable
+            // For each config item, we store a bool indicating whether it has
+            // been accessed and the value, and a bool whether the option was
+            // manually initialised, or taken from the default,
             $($i: (Cell<bool>, bool, $ty, bool)),+
         }
 
@@ -121,14 +96,12 @@ macro_rules! create_config {
                     | "use_small_heuristics"
                     | "fn_call_width"
                     | "single_line_if_else_max_width"
-                    | "single_line_let_else_max_width"
                     | "attr_fn_like_width"
                     | "struct_lit_width"
                     | "struct_variant_width"
                     | "array_width"
                     | "chain_width" => self.0.set_heuristics(),
                     "merge_imports" => self.0.set_merge_imports(),
-                    "fn_args_layout" => self.0.set_fn_args_layout(),
                     &_ => (),
                 }
             }
@@ -170,20 +143,24 @@ macro_rules! create_config {
 
             fn fill_from_parsed_config(mut self, parsed: PartialConfig, dir: &Path) -> Config {
             $(
-                if let Some(option_value) = parsed.$i {
-                    let option_stable = self.$i.3;
-                    if $crate::config::config_type::is_stable_option_and_value(
-                        stringify!($i), option_stable, &option_value
-                    ) {
+                if let Some(val) = parsed.$i {
+                    if self.$i.3 {
                         self.$i.1 = true;
-                        self.$i.2 = option_value;
+                        self.$i.2 = val;
+                    } else {
+                        if crate::is_nightly_channel!() {
+                            self.$i.1 = true;
+                            self.$i.2 = val;
+                        } else {
+                            eprintln!("Warning: can't set `{} = {:?}`, unstable features are only \
+                                       available in nightly channel.", stringify!($i), val);
+                        }
                     }
                 }
             )+
                 self.set_heuristics();
                 self.set_ignore(dir);
                 self.set_merge_imports();
-                self.set_fn_args_layout();
                 self
             }
 
@@ -244,22 +221,12 @@ macro_rules! create_config {
                 match key {
                     $(
                         stringify!($i) => {
-                            let option_value = val.parse::<$ty>()
+                            self.$i.1 = true;
+                            self.$i.2 = val.parse::<$ty>()
                                 .expect(&format!("Failed to parse override for {} (\"{}\") as a {}",
                                                  stringify!($i),
                                                  val,
                                                  stringify!($ty)));
-
-                            // Users are currently allowed to set unstable
-                            // options/variants via the `--config` options override.
-                            //
-                            // There is ongoing discussion about how to move forward here:
-                            // https://github.com/rust-lang/rustfmt/pull/5379
-                            //
-                            // For now, do not validate whether the option or value is stable,
-                            // just always set it.
-                            self.$i.1 = true;
-                            self.$i.2 = option_value;
                         }
                     )+
                     _ => panic!("Unknown config key in override: {}", key)
@@ -270,28 +237,20 @@ macro_rules! create_config {
                     | "use_small_heuristics"
                     | "fn_call_width"
                     | "single_line_if_else_max_width"
-                    | "single_line_let_else_max_width"
                     | "attr_fn_like_width"
                     | "struct_lit_width"
                     | "struct_variant_width"
                     | "array_width"
                     | "chain_width" => self.set_heuristics(),
                     "merge_imports" => self.set_merge_imports(),
-                    "fn_args_layout" => self.set_fn_args_layout(),
                     &_ => (),
                 }
             }
 
             #[allow(unreachable_pub)]
             pub fn is_hidden_option(name: &str) -> bool {
-                const HIDE_OPTIONS: [&str; 6] = [
-                    "verbose",
-                    "verbose_diff",
-                    "file_lines",
-                    "width_heuristics",
-                    "merge_imports",
-                    "fn_args_layout"
-                ];
+                const HIDE_OPTIONS: [&str; 5] =
+                    ["verbose", "verbose_diff", "file_lines", "width_heuristics", "merge_imports"];
                 HIDE_OPTIONS.contains(&name)
             }
 
@@ -409,14 +368,6 @@ macro_rules! create_config {
                     "single_line_if_else_max_width",
                 );
                 self.single_line_if_else_max_width.2 = single_line_if_else_max_width;
-
-                let single_line_let_else_max_width = get_width_value(
-                    self.was_set().single_line_let_else_max_width(),
-                    self.single_line_let_else_max_width.2,
-                    heuristics.single_line_let_else_max_width,
-                    "single_line_let_else_max_width",
-                );
-                self.single_line_let_else_max_width.2 = single_line_let_else_max_width;
             }
 
             fn set_heuristics(&mut self) {
@@ -449,18 +400,6 @@ macro_rules! create_config {
                 }
             }
 
-            fn set_fn_args_layout(&mut self) {
-                if self.was_set().fn_args_layout() {
-                    eprintln!(
-                        "Warning: the `fn_args_layout` option is deprecated. \
-                        Use `fn_params_layout`. instead"
-                    );
-                    if !self.was_set().fn_params_layout() {
-                        self.fn_params_layout.2 = self.fn_args_layout();
-                    }
-                }
-            }
-
             #[allow(unreachable_pub)]
             /// Returns `true` if the config key was explicitly set and is the default value.
             pub fn is_default(&self, key: &str) -> bool {
@@ -484,39 +423,4 @@ macro_rules! create_config {
             }
         }
     )
-}
-
-pub(crate) fn is_stable_option_and_value<T>(
-    option_name: &str,
-    option_stable: bool,
-    option_value: &T,
-) -> bool
-where
-    T: PartialEq + std::fmt::Debug + ConfigType,
-{
-    let nightly = crate::is_nightly_channel!();
-    let variant_stable = option_value.stable_variant();
-    match (nightly, option_stable, variant_stable) {
-        // Stable with an unstable option
-        (false, false, _) => {
-            eprintln!(
-                "Warning: can't set `{} = {:?}`, unstable features are only \
-                       available in nightly channel.",
-                option_name, option_value
-            );
-            false
-        }
-        // Stable with a stable option, but an unstable variant
-        (false, true, false) => {
-            eprintln!(
-                "Warning: can't set `{} = {:?}`, unstable variants are only \
-                       available in nightly channel.",
-                option_name, option_value
-            );
-            false
-        }
-        // Nightly: everything allowed
-        // Stable with stable option and variant: allowed
-        (true, _, _) | (false, true, true) => true,
-    }
 }

@@ -1,4 +1,4 @@
-#![warn(clippy::arithmetic_side_effects, clippy::float_arithmetic)]
+#![warn(clippy::integer_arithmetic, clippy::float_arithmetic)]
 #![allow(
     unused,
     clippy::shadow_reuse,

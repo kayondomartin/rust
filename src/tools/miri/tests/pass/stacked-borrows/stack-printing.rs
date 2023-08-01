@@ -7,7 +7,7 @@ use std::{
 
 extern "Rust" {
     fn miri_get_alloc_id(ptr: *const u8) -> u64;
-    fn miri_print_borrow_state(alloc_id: u64, show_unnamed: bool);
+    fn miri_print_borrow_stacks(alloc_id: u64);
 }
 
 fn get_alloc_id(ptr: *const u8) -> u64 {
@@ -15,9 +15,7 @@ fn get_alloc_id(ptr: *const u8) -> u64 {
 }
 
 fn print_borrow_stacks(alloc_id: u64) {
-    unsafe {
-        miri_print_borrow_state(alloc_id, /* ignored: show_unnamed */ false)
-    }
+    unsafe { miri_print_borrow_stacks(alloc_id) }
 }
 
 fn main() {

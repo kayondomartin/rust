@@ -1,5 +1,11 @@
+#![feature(box_syntax)]
+
 fn make_box() -> Box<(i16, i16)> {
     Box::new((1, 2))
+}
+
+fn make_box_syntax() -> Box<(i16, i16)> {
+    box (1, 2)
 }
 
 fn allocate_reallocate() {
@@ -23,5 +29,6 @@ fn allocate_reallocate() {
 
 fn main() {
     assert_eq!(*make_box(), (1, 2));
+    assert_eq!(*make_box_syntax(), (1, 2));
     allocate_reallocate();
 }

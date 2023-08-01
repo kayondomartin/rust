@@ -2,32 +2,31 @@
 // warn on lints, that are included in `rust-lang/rust`s bootstrap
 #![warn(rust_2018_idioms, unused_lifetimes)]
 
-use clap::{Arg, ArgAction, ArgMatches, Command};
-use clippy_dev::{dogfood, fmt, lint, new_lint, serve, setup, update_lints};
+use clap::{Arg, ArgAction, ArgMatches, Command, PossibleValue};
+use clippy_dev::{bless, dogfood, fmt, lint, new_lint, serve, setup, update_lints};
 use indoc::indoc;
-use std::convert::Infallible;
 
 fn main() {
     let matches = get_clap_config();
 
     match matches.subcommand() {
-        Some(("bless", _)) => {
-            eprintln!("use `cargo bless` to automatically replace `.stderr` and `.fixed` files as tests are being run");
+        Some(("bless", matches)) => {
+            bless::bless(matches.contains_id("ignore-timestamp"));
         },
         Some(("dogfood", matches)) => {
             dogfood::dogfood(
-                matches.get_flag("fix"),
-                matches.get_flag("allow-dirty"),
-                matches.get_flag("allow-staged"),
+                matches.contains_id("fix"),
+                matches.contains_id("allow-dirty"),
+                matches.contains_id("allow-staged"),
             );
         },
         Some(("fmt", matches)) => {
-            fmt::run(matches.get_flag("check"), matches.get_flag("verbose"));
+            fmt::run(matches.contains_id("check"), matches.contains_id("verbose"));
         },
         Some(("update_lints", matches)) => {
-            if matches.get_flag("print-only") {
+            if matches.contains_id("print-only") {
                 update_lints::print_lints();
-            } else if matches.get_flag("check") {
+            } else if matches.contains_id("check") {
                 update_lints::update(update_lints::UpdateMode::Check);
             } else {
                 update_lints::update(update_lints::UpdateMode::Change);
@@ -35,11 +34,11 @@ fn main() {
         },
         Some(("new_lint", matches)) => {
             match new_lint::create(
-                matches.get_one::<String>("pass").unwrap(),
+                matches.get_one::<String>("pass"),
                 matches.get_one::<String>("name"),
                 matches.get_one::<String>("category").map(String::as_str),
                 matches.get_one::<String>("type").map(String::as_str),
-                matches.get_flag("msrv"),
+                matches.contains_id("msrv"),
             ) {
                 Ok(_) => update_lints::update(update_lints::UpdateMode::Change),
                 Err(e) => eprintln!("Unable to create lint: {e}"),
@@ -47,7 +46,7 @@ fn main() {
         },
         Some(("setup", sub_command)) => match sub_command.subcommand() {
             Some(("intellij", matches)) => {
-                if matches.get_flag("remove") {
+                if matches.contains_id("remove") {
                     setup::intellij::remove_rustc_src();
                 } else {
                     setup::intellij::setup_rustc_src(
@@ -58,17 +57,17 @@ fn main() {
                 }
             },
             Some(("git-hook", matches)) => {
-                if matches.get_flag("remove") {
+                if matches.contains_id("remove") {
                     setup::git_hook::remove_hook();
                 } else {
-                    setup::git_hook::install_hook(matches.get_flag("force-override"));
+                    setup::git_hook::install_hook(matches.contains_id("force-override"));
                 }
             },
             Some(("vscode-tasks", matches)) => {
-                if matches.get_flag("remove") {
+                if matches.contains_id("remove") {
                     setup::vscode::remove_tasks();
                 } else {
-                    setup::vscode::install_tasks(matches.get_flag("force-override"));
+                    setup::vscode::install_tasks(matches.contains_id("force-override"));
                 }
             },
             _ => {},
@@ -92,7 +91,7 @@ fn main() {
         Some(("rename_lint", matches)) => {
             let old_name = matches.get_one::<String>("old_name").unwrap();
             let new_name = matches.get_one::<String>("new_name").unwrap_or(old_name);
-            let uplift = matches.get_flag("uplift");
+            let uplift = matches.contains_id("uplift");
             update_lints::rename(old_name, new_name, uplift);
         },
         Some(("deprecate", matches)) => {
@@ -111,37 +110,24 @@ fn get_clap_config() -> ArgMatches {
             Command::new("bless").about("bless the test output changes").arg(
                 Arg::new("ignore-timestamp")
                     .long("ignore-timestamp")
-                    .action(ArgAction::SetTrue)
                     .help("Include files updated before clippy was built"),
             ),
             Command::new("dogfood").about("Runs the dogfood test").args([
-                Arg::new("fix")
-                    .long("fix")
-                    .action(ArgAction::SetTrue)
-                    .help("Apply the suggestions when possible"),
+                Arg::new("fix").long("fix").help("Apply the suggestions when possible"),
                 Arg::new("allow-dirty")
                     .long("allow-dirty")
-                    .action(ArgAction::SetTrue)
                     .help("Fix code even if the working directory has changes")
                     .requires("fix"),
                 Arg::new("allow-staged")
                     .long("allow-staged")
-                    .action(ArgAction::SetTrue)
                     .help("Fix code even if the working directory has staged changes")
                     .requires("fix"),
             ]),
             Command::new("fmt")
                 .about("Run rustfmt on all projects and tests")
                 .args([
-                    Arg::new("check")
-                        .long("check")
-                        .action(ArgAction::SetTrue)
-                        .help("Use the rustfmt --check option"),
-                    Arg::new("verbose")
-                        .short('v')
-                        .long("verbose")
-                        .action(ArgAction::SetTrue)
-                        .help("Echo commands run"),
+                    Arg::new("check").long("check").help("Use the rustfmt --check option"),
+                    Arg::new("verbose").short('v').long("verbose").help("Echo commands run"),
                 ]),
             Command::new("update_lints")
                 .about("Updates lint registration and information from the source code")
@@ -154,17 +140,13 @@ fn get_clap_config() -> ArgMatches {
                     * all lints are registered in the lint store",
                 )
                 .args([
-                    Arg::new("print-only")
-                        .long("print-only")
-                        .action(ArgAction::SetTrue)
-                        .help(
-                            "Print a table of lints to STDOUT. \
-                            This does not include deprecated and internal lints. \
-                            (Does not modify any files)",
-                        ),
+                    Arg::new("print-only").long("print-only").help(
+                        "Print a table of lints to STDOUT. \
+                        This does not include deprecated and internal lints. \
+                        (Does not modify any files)",
+                    ),
                     Arg::new("check")
                         .long("check")
-                        .action(ArgAction::SetTrue)
                         .help("Checks that `cargo dev update_lints` has been run. Used on CI."),
                 ]),
             Command::new("new_lint")
@@ -174,38 +156,41 @@ fn get_clap_config() -> ArgMatches {
                         .short('p')
                         .long("pass")
                         .help("Specify whether the lint runs during the early or late pass")
-                        .value_parser(["early", "late"])
+                        .takes_value(true)
+                        .value_parser([PossibleValue::new("early"), PossibleValue::new("late")])
                         .conflicts_with("type")
-                        .default_value("late"),
+                        .required_unless_present("type"),
                     Arg::new("name")
                         .short('n')
                         .long("name")
                         .help("Name of the new lint in snake case, ex: fn_too_long")
-                        .required(true)
-                        .value_parser(|name: &str| Ok::<_, Infallible>(name.replace('-', "_"))),
+                        .takes_value(true)
+                        .required(true),
                     Arg::new("category")
                         .short('c')
                         .long("category")
                         .help("What category the lint belongs to")
                         .default_value("nursery")
                         .value_parser([
-                            "style",
-                            "correctness",
-                            "suspicious",
-                            "complexity",
-                            "perf",
-                            "pedantic",
-                            "restriction",
-                            "cargo",
-                            "nursery",
-                            "internal",
-                            "internal_warn",
-                        ]),
-                    Arg::new("type").long("type").help("What directory the lint belongs in"),
-                    Arg::new("msrv")
-                        .long("msrv")
-                        .action(ArgAction::SetTrue)
-                        .help("Add MSRV config code to the lint"),
+                            PossibleValue::new("style"),
+                            PossibleValue::new("correctness"),
+                            PossibleValue::new("suspicious"),
+                            PossibleValue::new("complexity"),
+                            PossibleValue::new("perf"),
+                            PossibleValue::new("pedantic"),
+                            PossibleValue::new("restriction"),
+                            PossibleValue::new("cargo"),
+                            PossibleValue::new("nursery"),
+                            PossibleValue::new("internal"),
+                            PossibleValue::new("internal_warn"),
+                        ])
+                        .takes_value(true),
+                    Arg::new("type")
+                        .long("type")
+                        .help("What directory the lint belongs in")
+                        .takes_value(true)
+                        .required(false),
+                    Arg::new("msrv").long("msrv").help("Add MSRV config code to the lint"),
                 ]),
             Command::new("setup")
                 .about("Support for setting up your personal development environment")
@@ -216,12 +201,13 @@ fn get_clap_config() -> ArgMatches {
                         .args([
                             Arg::new("remove")
                                 .long("remove")
-                                .action(ArgAction::SetTrue)
-                                .help("Remove the dependencies added with 'cargo dev setup intellij'"),
+                                .help("Remove the dependencies added with 'cargo dev setup intellij'")
+                                .required(false),
                             Arg::new("rustc-repo-path")
                                 .long("repo-path")
                                 .short('r')
                                 .help("The path to a rustc repo that will be used for setting the dependencies")
+                                .takes_value(true)
                                 .value_name("path")
                                 .conflicts_with("remove")
                                 .required(true),
@@ -231,26 +217,26 @@ fn get_clap_config() -> ArgMatches {
                         .args([
                             Arg::new("remove")
                                 .long("remove")
-                                .action(ArgAction::SetTrue)
-                                .help("Remove the pre-commit hook added with 'cargo dev setup git-hook'"),
+                                .help("Remove the pre-commit hook added with 'cargo dev setup git-hook'")
+                                .required(false),
                             Arg::new("force-override")
                                 .long("force-override")
                                 .short('f')
-                                .action(ArgAction::SetTrue)
-                                .help("Forces the override of an existing git pre-commit hook"),
+                                .help("Forces the override of an existing git pre-commit hook")
+                                .required(false),
                         ]),
                     Command::new("vscode-tasks")
                         .about("Add several tasks to vscode for formatting, validation and testing")
                         .args([
                             Arg::new("remove")
                                 .long("remove")
-                                .action(ArgAction::SetTrue)
-                                .help("Remove the tasks added with 'cargo dev setup vscode-tasks'"),
+                                .help("Remove the tasks added with 'cargo dev setup vscode-tasks'")
+                                .required(false),
                             Arg::new("force-override")
                                 .long("force-override")
                                 .short('f')
-                                .action(ArgAction::SetTrue)
-                                .help("Forces the override of existing vscode tasks"),
+                                .help("Forces the override of existing vscode tasks")
+                                .required(false),
                         ]),
                 ]),
             Command::new("remove")
@@ -309,7 +295,6 @@ fn get_clap_config() -> ArgMatches {
                     .help("The new name of the lint"),
                 Arg::new("uplift")
                     .long("uplift")
-                    .action(ArgAction::SetTrue)
                     .help("This lint will be uplifted into rustc"),
             ]),
             Command::new("deprecate").about("Deprecates the given lint").args([
@@ -320,6 +305,8 @@ fn get_clap_config() -> ArgMatches {
                 Arg::new("reason")
                     .long("reason")
                     .short('r')
+                    .required(false)
+                    .takes_value(true)
                     .help("The reason for deprecation"),
             ]),
         ])

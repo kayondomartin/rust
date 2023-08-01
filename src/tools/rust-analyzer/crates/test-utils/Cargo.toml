@@ -2,11 +2,9 @@
 name = "test-utils"
 version = "0.0.0"
 description = "TBD"
-
-authors.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+edition = "2021"
+rust-version = "1.57"
 
 [lib]
 doctest = false
@@ -14,8 +12,8 @@ doctest = false
 [dependencies]
 # Avoid adding deps here, this crate is widely used in tests it should compile fast!
 dissimilar = "1.0.4"
-text-size.workspace = true
+text-size = "1.1.0"
 rustc-hash = "1.1.0"
 
-stdx.workspace = true
-profile.workspace = true
+stdx = { path = "../stdx", version = "0.0.0" }
+profile = { path = "../profile", version = "0.0.0" }

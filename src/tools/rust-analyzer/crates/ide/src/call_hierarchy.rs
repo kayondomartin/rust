@@ -57,8 +57,7 @@ pub(crate) fn incoming_calls(
         .flat_map(|func| func.usages(sema).all());
 
     for (_, references) in references {
-        let references =
-            references.iter().filter_map(|FileReference { name, .. }| name.as_name_ref());
+        let references = references.into_iter().map(|FileReference { name, .. }| name);
         for name in references {
             // This target is the containing function
             let nav = sema.ancestors_with_macros(name.syntax().clone()).find_map(|node| {
@@ -263,7 +262,7 @@ mod tests {
             expect![["callee Function FileId(0) 0..14 3..9"]],
             expect![[r#"
                 caller1 Function FileId(0) 15..45 18..25 : [34..40]
-                test_caller Function FileId(0) 95..149 110..121 tests : [134..140]"#]],
+                test_caller Function FileId(0) 95..149 110..121 : [134..140]"#]],
             expect![[]],
         );
     }
@@ -283,7 +282,7 @@ fn caller() {
 //- /foo/mod.rs
 pub fn callee() {}
 "#,
-            expect!["callee Function FileId(1) 0..18 7..13 foo"],
+            expect![["callee Function FileId(1) 0..18 7..13"]],
             expect![["caller Function FileId(0) 27..56 30..36 : [45..51]"]],
             expect![[]],
         );
@@ -323,7 +322,7 @@ pub fn callee() {}
 "#,
             expect![["caller Function FileId(0) 27..56 30..36"]],
             expect![[]],
-            expect!["callee Function FileId(1) 0..18 7..13 foo : [45..51]"],
+            expect![["callee Function FileId(1) 0..18 7..13 : [45..51]"]],
         );
     }
 
@@ -455,30 +454,6 @@ fn caller$0() {
             expect![[r#"caller Function FileId(0) 160..194 163..169"#]],
             expect![[]],
             // FIXME
-            expect![[]],
-        );
-    }
-
-    #[test]
-    fn test_trait_method_call_hierarchy() {
-        check_hierarchy(
-            r#"
-trait T1 {
-    fn call$0ee();
-}
-
-struct S1;
-
-impl T1 for S1 {
-    fn callee() {}
-}
-
-fn caller() {
-    S1::callee();
-}
-"#,
-            expect!["callee Function FileId(0) 15..27 18..24 T1"],
-            expect![["caller Function FileId(0) 82..115 85..91 : [104..110]"]],
             expect![[]],
         );
     }

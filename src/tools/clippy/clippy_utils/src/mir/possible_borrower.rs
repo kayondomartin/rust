@@ -1,12 +1,14 @@
-use super::{possible_origin::PossibleOriginVisitor, transitive_relation::TransitiveRelation};
+use super::{
+    maybe_storage_live::MaybeStorageLive, possible_origin::PossibleOriginVisitor,
+    transitive_relation::TransitiveRelation,
+};
 use crate::ty::is_copy;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_index::bit_set::{BitSet, HybridBitSet};
 use rustc_lint::LateContext;
 use rustc_middle::mir::{self, visit::Visitor as _, Mutability};
-use rustc_middle::ty::{self, visit::TypeVisitor, TyCtxt};
-use rustc_mir_dataflow::{impls::MaybeStorageLive, Analysis, ResultsCursor};
-use std::borrow::Cow;
+use rustc_middle::ty::{self, visit::TypeVisitor};
+use rustc_mir_dataflow::{Analysis, ResultsCursor};
 use std::ops::ControlFlow;
 
 /// Collects the possible borrowers of each local.
@@ -37,7 +39,7 @@ impl<'a, 'b, 'tcx> PossibleBorrowerVisitor<'a, 'b, 'tcx> {
     fn into_map(
         self,
         cx: &'a LateContext<'tcx>,
-        maybe_live: ResultsCursor<'b, 'tcx, MaybeStorageLive<'tcx>>,
+        maybe_live: ResultsCursor<'b, 'tcx, MaybeStorageLive>,
     ) -> PossibleBorrowerMap<'b, 'tcx> {
         let mut map = FxHashMap::default();
         for row in (1..self.body.local_decls.len()).map(mir::Local::from_usize) {
@@ -136,11 +138,11 @@ impl<'a, 'b, 'tcx> mir::visit::Visitor<'tcx> for PossibleBorrowerVisitor<'a, 'b,
 
 struct ContainsRegion;
 
-impl TypeVisitor<TyCtxt<'_>> for ContainsRegion {
+impl TypeVisitor<'_> for ContainsRegion {
     type BreakTy = ();
 
     fn visit_region(&mut self, _: ty::Region<'_>) -> ControlFlow<Self::BreakTy> {
-        ControlFlow::Break(())
+        ControlFlow::BREAK
     }
 }
 
@@ -168,7 +170,7 @@ fn rvalue_locals(rvalue: &mir::Rvalue<'_>, mut visit: impl FnMut(mir::Local)) {
 pub struct PossibleBorrowerMap<'b, 'tcx> {
     /// Mapping `Local -> its possible borrowers`
     pub map: FxHashMap<mir::Local, HybridBitSet<mir::Local>>,
-    maybe_live: ResultsCursor<'b, 'tcx, MaybeStorageLive<'tcx>>,
+    maybe_live: ResultsCursor<'b, 'tcx, MaybeStorageLive>,
     // Caches to avoid allocation of `BitSet` on every query
     pub bitset: (BitSet<mir::Local>, BitSet<mir::Local>),
 }
@@ -180,7 +182,7 @@ impl<'a, 'b, 'tcx> PossibleBorrowerMap<'b, 'tcx> {
             vis.visit_body(mir);
             vis.into_map(cx)
         };
-        let maybe_storage_live_result = MaybeStorageLive::new(Cow::Owned(BitSet::new_empty(mir.local_decls.len())))
+        let maybe_storage_live_result = MaybeStorageLive
             .into_engine(cx.tcx, mir)
             .pass_name("redundant_clone")
             .iterate_to_fixpoint()

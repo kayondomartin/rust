@@ -8,6 +8,7 @@ use crate::visit::DocVisitor;
 use rustc_hir as hir;
 use rustc_lint::builtin::MISSING_DOCS;
 use rustc_middle::lint::LintLevelSource;
+use rustc_middle::ty::DefIdTree;
 use rustc_session::lint;
 use rustc_span::FileName;
 use serde::Serialize;
@@ -206,10 +207,22 @@ impl<'a, 'b> DocVisitor for CoverageCalculator<'a, 'b> {
                 let has_docs = !i.attrs.doc_strings.is_empty();
                 let mut tests = Tests { found_tests: 0 };
 
-                find_testable_code(&i.doc_value(), &mut tests, ErrorCodes::No, false, None);
+                find_testable_code(
+                    &i.attrs.collapsed_doc_value().unwrap_or_default(),
+                    &mut tests,
+                    ErrorCodes::No,
+                    false,
+                    None,
+                );
 
                 let has_doc_example = tests.found_tests != 0;
-                let hir_id = DocContext::as_local_hir_id(self.ctx.tcx, i.item_id).unwrap();
+                // The `expect_def_id()` should be okay because `local_def_id_to_hir_id`
+                // would presumably panic if a fake `DefIndex` were passed.
+                let hir_id = self
+                    .ctx
+                    .tcx
+                    .hir()
+                    .local_def_id_to_hir_id(i.item_id.expect_def_id().expect_local());
                 let (level, source) = self.ctx.tcx.lint_level_at_node(MISSING_DOCS, hir_id);
 
                 // In case we have:
@@ -231,10 +244,10 @@ impl<'a, 'b> DocVisitor for CoverageCalculator<'a, 'b> {
                         matches!(
                             node,
                             hir::Node::Variant(hir::Variant {
-                                data: hir::VariantData::Tuple(_, _, _),
+                                data: hir::VariantData::Tuple(_, _),
                                 ..
                             }) | hir::Node::Item(hir::Item {
-                                kind: hir::ItemKind::Struct(hir::VariantData::Tuple(_, _, _), _),
+                                kind: hir::ItemKind::Struct(hir::VariantData::Tuple(_, _), _),
                                 ..
                             })
                         )

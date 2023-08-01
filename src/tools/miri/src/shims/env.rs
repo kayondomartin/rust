@@ -6,7 +6,6 @@ use std::mem;
 use rustc_const_eval::interpret::Pointer;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_middle::ty::layout::LayoutOf;
-use rustc_middle::ty::Ty;
 use rustc_target::abi::Size;
 
 use crate::helpers::target_os_is_unix;
@@ -38,7 +37,7 @@ pub struct EnvVars<'tcx> {
 }
 
 impl VisitTags for EnvVars<'_> {
-    fn visit_tags(&self, visit: &mut dyn FnMut(BorTag)) {
+    fn visit_tags(&self, visit: &mut dyn FnMut(SbTag)) {
         let EnvVars { map, environ } = self;
 
         environ.visit_tags(visit);
@@ -167,13 +166,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 // `buf_size` represents the size in characters.
                 let buf_size = u64::from(this.read_scalar(size_op)?.to_u32()?);
                 Scalar::from_u32(windows_check_buffer_size(
-                    this.write_os_str_to_wide_str(
-                        &var, buf_ptr, buf_size, /*truncate*/ false,
-                    )?,
+                    this.write_os_str_to_wide_str(&var, buf_ptr, buf_size)?,
                 ))
             }
             None => {
-                let envvar_not_found = this.eval_windows("c", "ERROR_ENVVAR_NOT_FOUND");
+                let envvar_not_found = this.eval_windows("c", "ERROR_ENVVAR_NOT_FOUND")?;
                 this.set_last_error(envvar_not_found)?;
                 Scalar::from_u32(0) // return zero upon failure
             }
@@ -243,7 +240,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             Ok(0) // return zero on success
         } else {
             // name argument is a null pointer, points to an empty string, or points to a string containing an '=' character.
-            let einval = this.eval_libc("EINVAL");
+            let einval = this.eval_libc("EINVAL")?;
             this.set_last_error(einval)?;
             Ok(-1)
         }
@@ -277,7 +274,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 this.deallocate_ptr(var, None, MiriMemoryKind::Runtime.into())?;
                 this.update_environ()?;
             }
-            Ok(this.eval_windows("c", "TRUE"))
+            Ok(this.eval_windows("c", "TRUE")?)
         } else {
             let value = this.read_os_str_from_wide_str(value_ptr)?;
             let var_ptr = alloc_env_var_as_wide_str(&name, &value, this)?;
@@ -285,7 +282,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 this.deallocate_ptr(var, None, MiriMemoryKind::Runtime.into())?;
             }
             this.update_environ()?;
-            Ok(this.eval_windows("c", "TRUE"))
+            Ok(this.eval_windows("c", "TRUE")?)
         }
     }
 
@@ -309,7 +306,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             Ok(0)
         } else {
             // name argument is a null pointer, points to an empty string, or points to a string containing an '=' character.
-            let einval = this.eval_libc("EINVAL");
+            let einval = this.eval_libc("EINVAL")?;
             this.set_last_error(einval)?;
             Ok(-1)
         }
@@ -324,7 +321,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         this.assert_target_os_is_unix("getcwd");
 
         let buf = this.read_pointer(buf_op)?;
-        let size = this.read_target_usize(size_op)?;
+        let size = this.read_scalar(size_op)?.to_machine_usize(&*this.tcx)?;
 
         if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
             this.reject_in_isolation("`getcwd`", reject_with)?;
@@ -338,7 +335,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                 if this.write_path_to_c_str(&cwd, buf, size)?.0 {
                     return Ok(buf);
                 }
-                let erange = this.eval_libc("ERANGE");
+                let erange = this.eval_libc("ERANGE")?;
                 this.set_last_error(erange)?;
             }
             Err(e) => this.set_last_error_from_io_error(e.kind())?,
@@ -369,7 +366,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         match env::current_dir() {
             Ok(cwd) =>
                 return Ok(Scalar::from_u32(windows_check_buffer_size(
-                    this.write_path_to_wide_str(&cwd, buf, size, /*truncate*/ false)?,
+                    this.write_path_to_wide_str(&cwd, buf, size)?,
                 ))),
             Err(e) => this.set_last_error_from_io_error(e.kind())?,
         }
@@ -414,14 +411,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             this.reject_in_isolation("`SetCurrentDirectoryW`", reject_with)?;
             this.set_last_error_from_io_error(ErrorKind::PermissionDenied)?;
 
-            return Ok(this.eval_windows("c", "FALSE"));
+            return this.eval_windows("c", "FALSE");
         }
 
         match env::set_current_dir(path) {
-            Ok(()) => Ok(this.eval_windows("c", "TRUE")),
+            Ok(()) => this.eval_windows("c", "TRUE"),
             Err(e) => {
                 this.set_last_error_from_io_error(e.kind())?;
-                Ok(this.eval_windows("c", "FALSE"))
+                this.eval_windows("c", "FALSE")
             }
         }
     }
@@ -449,11 +446,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         vars.push(Pointer::null());
         // Make an array with all these pointers inside Miri.
         let tcx = this.tcx;
-        let vars_layout = this.layout_of(Ty::new_array(
-            tcx.tcx,
-            this.machine.layouts.mut_raw_ptr.ty,
-            u64::try_from(vars.len()).unwrap(),
-        ))?;
+        let vars_layout = this.layout_of(
+            tcx.mk_array(this.machine.layouts.mut_raw_ptr.ty, u64::try_from(vars.len()).unwrap()),
+        )?;
         let vars_place = this.allocate(vars_layout, MiriMemoryKind::Runtime.into())?;
         for (idx, var) in vars.into_iter().enumerate() {
             let place = this.mplace_field(&vars_place, idx)?;

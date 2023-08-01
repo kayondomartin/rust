@@ -67,19 +67,12 @@ fn path_for_qualifier(
     }
 }
 
-const EXPR_PATH_SEGMENT_RECOVERY_SET: TokenSet =
-    items::ITEM_RECOVERY_SET.union(TokenSet::new(&[T![')'], T![,], T![let]]));
-const TYPE_PATH_SEGMENT_RECOVERY_SET: TokenSet = types::TYPE_RECOVERY_SET;
-
 fn path_segment(p: &mut Parser<'_>, mode: Mode, first: bool) {
     let m = p.start();
     // test qual_paths
     // type X = <A as B>::Output;
     // fn foo() { <usize as Default>::default(); }
     if first && p.eat(T![<]) {
-        // test_err angled_path_without_qual
-        // type X = <()>;
-        // type Y = <A as B>;
         types::type_(p);
         if p.eat(T![as]) {
             if is_use_path_start(p) {
@@ -89,16 +82,12 @@ fn path_segment(p: &mut Parser<'_>, mode: Mode, first: bool) {
             }
         }
         p.expect(T![>]);
-        if !p.at(T![::]) {
-            p.error("expected `::`");
-        }
     } else {
-        let empty = if first {
+        let mut empty = true;
+        if first {
             p.eat(T![::]);
-            false
-        } else {
-            true
-        };
+            empty = false;
+        }
         match p.current() {
             IDENT => {
                 name_ref(p);
@@ -112,12 +101,7 @@ fn path_segment(p: &mut Parser<'_>, mode: Mode, first: bool) {
                 m.complete(p, NAME_REF);
             }
             _ => {
-                let recover_set = match mode {
-                    Mode::Use => items::ITEM_RECOVERY_SET,
-                    Mode::Type => TYPE_PATH_SEGMENT_RECOVERY_SET,
-                    Mode::Expr => EXPR_PATH_SEGMENT_RECOVERY_SET,
-                };
-                p.err_recover("expected identifier", recover_set);
+                p.err_recover("expected identifier", items::ITEM_RECOVERY_SET);
                 if empty {
                     // test_err empty_segment
                     // use crate::;
@@ -136,7 +120,6 @@ fn opt_path_type_args(p: &mut Parser<'_>, mode: Mode) {
         Mode::Type => {
             // test typepathfn_with_coloncolon
             // type F = Start::(Middle) -> (Middle)::End;
-            // type GenericArg = S<Start(Middle)::End>;
             if p.at(T![::]) && p.nth_at(2, T!['(']) {
                 p.bump(T![::]);
             }

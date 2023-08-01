@@ -161,14 +161,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             // Querying system information
             "pthread_get_stackaddr_np" => {
                 let [thread] = this.check_shim(abi, Abi::C { unwind: false }, link_name, args)?;
-                this.read_target_usize(thread)?;
-                let stack_addr = Scalar::from_uint(this.machine.stack_addr, this.pointer_size());
+                this.read_scalar(thread)?.to_machine_usize(this)?;
+                let stack_addr = Scalar::from_uint(STACK_ADDR, this.pointer_size());
                 this.write_scalar(stack_addr, dest)?;
             }
             "pthread_get_stacksize_np" => {
                 let [thread] = this.check_shim(abi, Abi::C { unwind: false }, link_name, args)?;
-                this.read_target_usize(thread)?;
-                let stack_size = Scalar::from_uint(this.machine.stack_size, this.pointer_size());
+                this.read_scalar(thread)?.to_machine_usize(this)?;
+                let stack_size = Scalar::from_uint(STACK_SIZE, this.pointer_size());
                 this.write_scalar(stack_size, dest)?;
             }
 
@@ -176,7 +176,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
             "pthread_setname_np" => {
                 let [name] = this.check_shim(abi, Abi::C { unwind: false }, link_name, args)?;
                 let thread = this.pthread_self()?;
-                let max_len = this.eval_libc("MAXTHREADNAMESIZE").to_target_usize(this)?;
+                let max_len = this.eval_libc("MAXTHREADNAMESIZE")?.to_machine_usize(this)?;
                 let res = this.pthread_setname_np(
                     thread,
                     this.read_scalar(name)?,
@@ -195,6 +195,16 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
                     this.read_scalar(len)?,
                 )?;
                 this.write_scalar(res, dest)?;
+            }
+
+            // Incomplete shims that we "stub out" just to get pre-main initialization code to work.
+            // These shims are enabled only when the caller is in the standard library.
+            "mmap" if this.frame_in_std() => {
+                // This is a horrible hack, but since the guard page mechanism calls mmap and expects a particular return value, we just give it that value.
+                let [addr, _, _, _, _, _] =
+                    this.check_shim(abi, Abi::C { unwind: false }, link_name, args)?;
+                let addr = this.read_scalar(addr)?;
+                this.write_scalar(addr, dest)?;
             }
 
             _ => return Ok(EmulateByNameResult::NotSupported),

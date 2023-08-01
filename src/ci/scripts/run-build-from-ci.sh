@@ -10,8 +10,6 @@ source "$(cd "$(dirname "$0")" && pwd)/../shared.sh"
 export CI="true"
 export SRC=.
 
-echo "::add-matcher::src/ci/github-actions/problem_matchers.json"
-
 # Remove any preexisting rustup installation since it can interfere
 # with the cargotest step and its auto-detection of things like Clippy in
 # the environment

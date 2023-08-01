@@ -1,12 +1,7 @@
-//@run-rustfix
+// run-rustfix
 
-#![allow(
-    clippy::deref_addrof,
-    dead_code,
-    unused,
-    clippy::no_effect,
-    clippy::unnecessary_struct_initialization
-)]
+#![feature(box_syntax)]
+#![allow(clippy::deref_addrof, dead_code, unused, clippy::no_effect)]
 #![warn(clippy::unnecessary_operation)]
 
 struct Tuple(i32);
@@ -62,6 +57,7 @@ fn main() {
     *&get_number();
     &get_number();
     (5, 6, get_number());
+    box get_number();
     get_number()..;
     ..get_number();
     5..get_number();
@@ -84,13 +80,4 @@ fn main() {
     DropStruct { ..get_drop_struct() };
     DropEnum::Tuple(get_number());
     DropEnum::Struct { field: get_number() };
-
-    // Issue #9954
-    fn one() -> i8 {
-        1
-    }
-    macro_rules! use_expr {
-        ($($e:expr),*) => {{ $($e;)* }}
-    }
-    use_expr!(isize::MIN / -(one() as isize), i8::MIN / -one());
 }

@@ -1,6 +1,7 @@
 use crate::rustc_lint::LintContext;
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::source::snippet_with_context;
+use clippy_utils::source::snippet_with_macro_callsite;
+use clippy_utils::sugg;
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{Block, ExprKind};
@@ -43,8 +44,7 @@ impl<'tcx> LateLintPass<'tcx> for SemicolonIfNothingReturned {
             if let Some(expr) = block.expr;
             let t_expr = cx.typeck_results().expr_ty(expr);
             if t_expr.is_unit();
-            let mut app = Applicability::MaybeIncorrect;
-            if let snippet = snippet_with_context(cx, expr.span, block.span.ctxt(), "}", &mut app).0;
+            if let snippet = snippet_with_macro_callsite(cx, expr.span, "}");
             if !snippet.ends_with('}') && !snippet.ends_with(';');
             if cx.sess().source_map().is_multiline(block.span);
             then {
@@ -52,14 +52,17 @@ impl<'tcx> LateLintPass<'tcx> for SemicolonIfNothingReturned {
                 if let ExprKind::DropTemps(..) = &expr.kind {
                     return;
                 }
+
+                let sugg = sugg::Sugg::hir_with_macro_callsite(cx, expr, "..");
+                let suggestion = format!("{sugg};");
                 span_lint_and_sugg(
                     cx,
                     SEMICOLON_IF_NOTHING_RETURNED,
                     expr.span.source_callsite(),
                     "consider adding a `;` to the last statement for consistent formatting",
                     "add a `;` here",
-                    format!("{snippet};"),
-                    app,
+                    suggestion,
+                    Applicability::MaybeIncorrect,
                 );
             }
         }

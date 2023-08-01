@@ -12,9 +12,9 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::intravisit::FnKind;
-use rustc_hir::{BindingAnnotation, Body, FnDecl, Impl, ItemKind, MutTy, Mutability, Node, PatKind};
+use rustc_hir::{BindingAnnotation, Body, FnDecl, HirId, Impl, ItemKind, MutTy, Mutability, Node, PatKind};
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::ty::adjustment::{Adjust, PointerCoercion};
+use rustc_middle::ty::adjustment::{Adjust, PointerCast};
 use rustc_middle::ty::layout::LayoutOf;
 use rustc_middle::ty::{self, RegionKind};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
@@ -143,7 +143,7 @@ impl<'tcx> PassByRefOrValue {
             return;
         }
 
-        let fn_sig = cx.tcx.fn_sig(def_id).subst_identity();
+        let fn_sig = cx.tcx.fn_sig(def_id);
         let fn_body = cx.enclosing_body.map(|id| cx.tcx.hir().body(id));
 
         // Gather all the lifetimes found in the output type which may affect whether
@@ -184,18 +184,18 @@ impl<'tcx> PassByRefOrValue {
                     if is_copy(cx, ty)
                         && let Some(size) = cx.layout_of(ty).ok().map(|l| l.size.bytes())
                         && size <= self.ref_min_size
-                        && let hir::TyKind::Ref(_, MutTy { ty: decl_ty, .. }) = input.kind
+                        && let hir::TyKind::Rptr(_, MutTy { ty: decl_ty, .. }) = input.kind
                     {
                         if let Some(typeck) = cx.maybe_typeck_results() {
                             // Don't lint if an unsafe pointer is created.
                             // TODO: Limit the check only to unsafe pointers to the argument (or part of the argument)
                             //       which escape the current function.
-                            if typeck.node_types().items().any(|(_, &ty)| ty.is_unsafe_ptr())
+                            if typeck.node_types().iter().any(|(_, &ty)| ty.is_unsafe_ptr())
                                 || typeck
                                     .adjustments()
-                                    .items()
+                                    .iter()
                                     .flat_map(|(_, a)| a)
-                                    .any(|a| matches!(a.kind, Adjust::Pointer(PointerCoercion::UnsafeFnPointer)))
+                                    .any(|a| matches!(a.kind, Adjust::Pointer(PointerCast::UnsafeFnPointer)))
                             {
                                 continue;
                             }
@@ -272,13 +272,12 @@ impl<'tcx> LateLintPass<'tcx> for PassByRefOrValue {
         decl: &'tcx FnDecl<'_>,
         _body: &'tcx Body<'_>,
         span: Span,
-        def_id: LocalDefId,
+        hir_id: HirId,
     ) {
         if span.from_expansion() {
             return;
         }
 
-        let hir_id = cx.tcx.hir().local_def_id_to_hir_id(def_id);
         match kind {
             FnKind::ItemFn(.., header) => {
                 if header.abi != Abi::Rust {
@@ -300,7 +299,7 @@ impl<'tcx> LateLintPass<'tcx> for PassByRefOrValue {
         }
 
         // Exclude non-inherent impls
-        if let Some(Node::Item(item)) = cx.tcx.hir().find_parent(hir_id) {
+        if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
             if matches!(
                 item.kind,
                 ItemKind::Impl(Impl { of_trait: Some(_), .. }) | ItemKind::Trait(..)
@@ -309,6 +308,6 @@ impl<'tcx> LateLintPass<'tcx> for PassByRefOrValue {
             }
         }
 
-        self.check_poly_fn(cx, def_id, decl, Some(span));
+        self.check_poly_fn(cx, cx.tcx.hir().local_def_id(hir_id), decl, Some(span));
     }
 }

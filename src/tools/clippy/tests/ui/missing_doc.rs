@@ -1,5 +1,5 @@
-//@needs-asm-support
-//@aux-build: proc_macros.rs:proc-macro
+// needs-asm-support
+// aux-build: proc_macro_with_span.rs
 
 #![warn(clippy::missing_docs_in_private_items)]
 // When denying at the crate level, be sure to not get random warnings from the
@@ -8,9 +8,9 @@
 //! Some garbage docs for the crate here
 #![doc = "More garbage"]
 
-extern crate proc_macros;
+extern crate proc_macro_with_span;
 
-use proc_macros::with_span;
+use proc_macro_with_span::with_span;
 use std::arch::global_asm;
 
 type Typedef = String;

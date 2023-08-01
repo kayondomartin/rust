@@ -37,7 +37,7 @@ use ide_db::{
     traits::get_missing_assoc_items, SymbolKind,
 };
 use syntax::{
-    ast::{self, edit_in_place::AttrsOwnerEdit, HasTypeBounds},
+    ast::{self, edit_in_place::AttrsOwnerEdit},
     AstNode, SyntaxElement, SyntaxKind, TextRange, T,
 };
 use text_edit::TextEdit;
@@ -150,24 +150,21 @@ fn complete_trait_impl(
     impl_def: &ast::Impl,
 ) {
     if let Some(hir_impl) = ctx.sema.to_def(impl_def) {
-        get_missing_assoc_items(&ctx.sema, impl_def)
-            .into_iter()
-            .filter(|item| ctx.check_stability(Some(&item.attrs(ctx.db))))
-            .for_each(|item| {
-                use self::ImplCompletionKind::*;
-                match (item, kind) {
-                    (hir::AssocItem::Function(func), All | Fn) => {
-                        add_function_impl(acc, ctx, replacement_range, func, hir_impl)
-                    }
-                    (hir::AssocItem::TypeAlias(type_alias), All | TypeAlias) => {
-                        add_type_alias_impl(acc, ctx, replacement_range, type_alias, hir_impl)
-                    }
-                    (hir::AssocItem::Const(const_), All | Const) => {
-                        add_const_impl(acc, ctx, replacement_range, const_, hir_impl)
-                    }
-                    _ => {}
+        get_missing_assoc_items(&ctx.sema, impl_def).into_iter().for_each(|item| {
+            use self::ImplCompletionKind::*;
+            match (item, kind) {
+                (hir::AssocItem::Function(func), All | Fn) => {
+                    add_function_impl(acc, ctx, replacement_range, func, hir_impl)
                 }
-            });
+                (hir::AssocItem::TypeAlias(type_alias), All | TypeAlias) => {
+                    add_type_alias_impl(acc, ctx, replacement_range, type_alias)
+                }
+                (hir::AssocItem::Const(const_), All | Const) => {
+                    add_const_impl(acc, ctx, replacement_range, const_, hir_impl)
+                }
+                _ => {}
+            }
+        });
     }
 }
 
@@ -182,7 +179,7 @@ fn add_function_impl(
 
     let label = format!(
         "fn {}({})",
-        fn_name.display(ctx.db),
+        fn_name,
         if func.assoc_fn_params(ctx.db).is_empty() { "" } else { ".." }
     );
 
@@ -193,7 +190,7 @@ fn add_function_impl(
     };
 
     let mut item = CompletionItem::new(completion_kind, replacement_range, label);
-    item.lookup_by(format!("fn {}", fn_name.display(ctx.db)))
+    item.lookup_by(format!("fn {}", fn_name))
         .set_documentation(func.docs(ctx.db))
         .set_relevance(CompletionRelevance { is_item_from_trait: true, ..Default::default() });
 
@@ -208,15 +205,15 @@ fn add_function_impl(
             let function_decl = function_declaration(&transformed_fn, source.file_id.is_macro());
             match ctx.config.snippet_cap {
                 Some(cap) => {
-                    let snippet = format!("{function_decl} {{\n    $0\n}}");
+                    let snippet = format!("{} {{\n    $0\n}}", function_decl);
                     item.snippet_edit(cap, TextEdit::replace(replacement_range, snippet));
                 }
                 None => {
-                    let header = format!("{function_decl} {{");
+                    let header = format!("{} {{", function_decl);
                     item.text_edit(TextEdit::replace(replacement_range, header));
                 }
             };
-            item.add_to(acc, ctx.db);
+            item.add_to(acc);
         }
     }
 }
@@ -227,8 +224,9 @@ fn get_transformed_assoc_item(
     assoc_item: ast::AssocItem,
     impl_def: hir::Impl,
 ) -> Option<ast::AssocItem> {
+    let assoc_item = assoc_item.clone_for_update();
     let trait_ = impl_def.trait_(ctx.db)?;
-    let source_scope = &ctx.sema.scope(assoc_item.syntax())?;
+    let source_scope = &ctx.sema.scope_for_def(trait_);
     let target_scope = &ctx.sema.scope(ctx.sema.source(impl_def)?.syntax().value)?;
     let transform = PathTransform::trait_impl(
         target_scope,
@@ -237,11 +235,10 @@ fn get_transformed_assoc_item(
         ctx.sema.source(impl_def)?.value,
     );
 
-    let assoc_item = assoc_item.clone_for_update();
-    // FIXME: Paths in nested macros are not handled well. See
-    // `macro_generated_assoc_item2` test.
     transform.apply(assoc_item.syntax());
-    assoc_item.remove_attrs_and_docs();
+    if let ast::AssocItem::Fn(func) = &assoc_item {
+        func.remove_attrs_and_docs();
+    }
     Some(assoc_item)
 }
 
@@ -250,61 +247,24 @@ fn add_type_alias_impl(
     ctx: &CompletionContext<'_>,
     replacement_range: TextRange,
     type_alias: hir::TypeAlias,
-    impl_def: hir::Impl,
 ) {
-    let alias_name = type_alias.name(ctx.db).unescaped().to_smol_str();
+    let alias_name = type_alias.name(ctx.db);
+    let (alias_name, escaped_name) =
+        (alias_name.unescaped().to_smol_str(), alias_name.to_smol_str());
 
-    let label = format!("type {alias_name} =");
+    let label = format!("type {} =", alias_name);
+    let replacement = format!("type {} = ", escaped_name);
 
     let mut item = CompletionItem::new(SymbolKind::TypeAlias, replacement_range, label);
-    item.lookup_by(format!("type {alias_name}"))
+    item.lookup_by(format!("type {}", alias_name))
         .set_documentation(type_alias.docs(ctx.db))
         .set_relevance(CompletionRelevance { is_item_from_trait: true, ..Default::default() });
-
-    if let Some(source) = ctx.sema.source(type_alias) {
-        let assoc_item = ast::AssocItem::TypeAlias(source.value);
-        if let Some(transformed_item) = get_transformed_assoc_item(ctx, assoc_item, impl_def) {
-            let transformed_ty = match transformed_item {
-                ast::AssocItem::TypeAlias(ty) => ty,
-                _ => unreachable!(),
-            };
-
-            let start = transformed_ty.syntax().text_range().start();
-
-            let end = if let Some(end) =
-                transformed_ty.colon_token().map(|tok| tok.text_range().start())
-            {
-                end
-            } else if let Some(end) = transformed_ty.eq_token().map(|tok| tok.text_range().start())
-            {
-                end
-            } else if let Some(end) =
-                transformed_ty.semicolon_token().map(|tok| tok.text_range().start())
-            {
-                end
-            } else {
-                return;
-            };
-
-            let len = end - start;
-            let mut decl = transformed_ty.syntax().text().slice(..len).to_string();
-            if !decl.ends_with(' ') {
-                decl.push(' ');
-            }
-            decl.push_str("= ");
-
-            match ctx.config.snippet_cap {
-                Some(cap) => {
-                    let snippet = format!("{decl}$0;");
-                    item.snippet_edit(cap, TextEdit::replace(replacement_range, snippet));
-                }
-                None => {
-                    item.text_edit(TextEdit::replace(replacement_range, decl));
-                }
-            };
-            item.add_to(acc, ctx.db);
-        }
-    }
+    match ctx.config.snippet_cap {
+        Some(cap) => item
+            .snippet_edit(cap, TextEdit::replace(replacement_range, format!("{}$0;", replacement))),
+        None => item.text_edit(TextEdit::replace(replacement_range, replacement)),
+    };
+    item.add_to(acc);
 }
 
 fn add_const_impl(
@@ -326,10 +286,10 @@ fn add_const_impl(
                 };
 
                 let label = make_const_compl_syntax(&transformed_const, source.file_id.is_macro());
-                let replacement = format!("{label} ");
+                let replacement = format!("{} ", label);
 
                 let mut item = CompletionItem::new(SymbolKind::Const, replacement_range, label);
-                item.lookup_by(format!("const {const_name}"))
+                item.lookup_by(format!("const {}", const_name))
                     .set_documentation(const_.docs(ctx.db))
                     .set_relevance(CompletionRelevance {
                         is_item_from_trait: true,
@@ -338,17 +298,18 @@ fn add_const_impl(
                 match ctx.config.snippet_cap {
                     Some(cap) => item.snippet_edit(
                         cap,
-                        TextEdit::replace(replacement_range, format!("{replacement}$0;")),
+                        TextEdit::replace(replacement_range, format!("{}$0;", replacement)),
                     ),
                     None => item.text_edit(TextEdit::replace(replacement_range, replacement)),
                 };
-                item.add_to(acc, ctx.db);
+                item.add_to(acc);
             }
         }
     }
 }
 
 fn make_const_compl_syntax(const_: &ast::Const, needs_whitespace: bool) -> String {
+    const_.remove_attrs_and_docs();
     let const_ = if needs_whitespace {
         insert_whitespace_into_node::insert_ws_into(const_.syntax().clone())
     } else {
@@ -372,6 +333,8 @@ fn make_const_compl_syntax(const_: &ast::Const, needs_whitespace: bool) -> Strin
 }
 
 fn function_declaration(node: &ast::Fn, needs_whitespace: bool) -> String {
+    node.remove_attrs_and_docs();
+
     let node = if needs_whitespace {
         insert_whitespace_into_node::insert_ws_into(node.syntax().clone())
     } else {
@@ -387,7 +350,9 @@ fn function_declaration(node: &ast::Fn, needs_whitespace: bool) -> String {
         .map_or(end, |f| f.text_range().start());
 
     let len = end - start;
-    let syntax = node.text().slice(..len).to_string();
+    let range = TextRange::new(0.into(), len);
+
+    let syntax = node.text().slice(range).to_string();
 
     syntax.trim_end().to_owned()
 }
@@ -836,33 +801,6 @@ impl Test for () {
     }
 
     #[test]
-    fn fn_with_lifetimes() {
-        check_edit(
-            "fn foo",
-            r#"
-trait Test<'a, 'b, T> {
-    fn foo(&self, a: &'a T, b: &'b T) -> &'a T;
-}
-
-impl<'x, 'y, A> Test<'x, 'y, A> for () {
-    t$0
-}
-"#,
-            r#"
-trait Test<'a, 'b, T> {
-    fn foo(&self, a: &'a T, b: &'b T) -> &'a T;
-}
-
-impl<'x, 'y, A> Test<'x, 'y, A> for () {
-    fn foo(&self, a: &'x A, b: &'y A) -> &'x A {
-    $0
-}
-}
-"#,
-        );
-    }
-
-    #[test]
     fn complete_without_name() {
         let test = |completion: &str, hint: &str, completed: &str, next_sibling: &str| {
             check_edit(
@@ -877,10 +815,11 @@ trait Test {{
 struct T;
 
 impl Test for T {{
-    {hint}
-    {next_sibling}
+    {}
+    {}
 }}
-"#
+"#,
+                    hint, next_sibling
                 ),
                 &format!(
                     r#"
@@ -892,16 +831,17 @@ trait Test {{
 struct T;
 
 impl Test for T {{
-    {completed}
-    {next_sibling}
+    {}
+    {}
 }}
-"#
+"#,
+                    completed, next_sibling
                 ),
             )
         };
 
         // Enumerate some possible next siblings.
-        for next_sibling in [
+        for next_sibling in &[
             "",
             "fn other_fn() {}", // `const $0 fn` -> `const fn`
             "type OtherType = i32;",
@@ -935,9 +875,10 @@ struct T;
 impl Foo for T {{
     // Comment
     #[bar]
-    {hint}
+    {}
 }}
-"#
+"#,
+                    hint
                 ),
                 &format!(
                     r#"
@@ -951,9 +892,10 @@ struct T;
 impl Foo for T {{
     // Comment
     #[bar]
-    {completed}
+    {}
 }}
-"#
+"#,
+                    completed
                 ),
             )
         };
@@ -1217,181 +1159,6 @@ impl Foo for Test {
     fn foo(&mut self,bar:i64,baz: &mut u32) -> Result<(),u32> {
     $0
 }
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn macro_generated_assoc_item() {
-        check_edit(
-            "fn method",
-            r#"
-macro_rules! ty { () => { i32 } }
-trait SomeTrait { type Output; }
-impl SomeTrait for i32 { type Output = i64; }
-macro_rules! define_method {
-    () => {
-        fn method(&mut self, params: <ty!() as SomeTrait>::Output);
-    };
-}
-trait AnotherTrait { define_method!(); }
-impl AnotherTrait for () {
-    $0
-}
-"#,
-            r#"
-macro_rules! ty { () => { i32 } }
-trait SomeTrait { type Output; }
-impl SomeTrait for i32 { type Output = i64; }
-macro_rules! define_method {
-    () => {
-        fn method(&mut self, params: <ty!() as SomeTrait>::Output);
-    };
-}
-trait AnotherTrait { define_method!(); }
-impl AnotherTrait for () {
-    fn method(&mut self,params: <ty!()as SomeTrait>::Output) {
-    $0
-}
-}
-"#,
-        );
-    }
-
-    // FIXME: `T` in `ty!(T)` should be replaced by `PathTransform`.
-    #[test]
-    fn macro_generated_assoc_item2() {
-        check_edit(
-            "fn method",
-            r#"
-macro_rules! ty { ($me:ty) => { $me } }
-trait SomeTrait { type Output; }
-impl SomeTrait for i32 { type Output = i64; }
-macro_rules! define_method {
-    ($t:ty) => {
-        fn method(&mut self, params: <ty!($t) as SomeTrait>::Output);
-    };
-}
-trait AnotherTrait<T: SomeTrait> { define_method!(T); }
-impl AnotherTrait<i32> for () {
-    $0
-}
-"#,
-            r#"
-macro_rules! ty { ($me:ty) => { $me } }
-trait SomeTrait { type Output; }
-impl SomeTrait for i32 { type Output = i64; }
-macro_rules! define_method {
-    ($t:ty) => {
-        fn method(&mut self, params: <ty!($t) as SomeTrait>::Output);
-    };
-}
-trait AnotherTrait<T: SomeTrait> { define_method!(T); }
-impl AnotherTrait<i32> for () {
-    fn method(&mut self,params: <ty!(T)as SomeTrait>::Output) {
-    $0
-}
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn includes_gat_generics() {
-        check_edit(
-            "type Ty",
-            r#"
-trait Tr<'b> {
-    type Ty<'a: 'b, T: Copy, const C: usize>;
-}
-
-impl<'b> Tr<'b> for () {
-    $0
-}
-"#,
-            r#"
-trait Tr<'b> {
-    type Ty<'a: 'b, T: Copy, const C: usize>;
-}
-
-impl<'b> Tr<'b> for () {
-    type Ty<'a: 'b, T: Copy, const C: usize> = $0;
-}
-"#,
-        );
-    }
-
-    #[test]
-    fn strips_comments() {
-        check_edit(
-            "fn func",
-            r#"
-trait Tr {
-    /// docs
-    #[attr]
-    fn func();
-}
-impl Tr for () {
-    $0
-}
-"#,
-            r#"
-trait Tr {
-    /// docs
-    #[attr]
-    fn func();
-}
-impl Tr for () {
-    fn func() {
-    $0
-}
-}
-"#,
-        );
-        check_edit(
-            "const C",
-            r#"
-trait Tr {
-    /// docs
-    #[attr]
-    const C: usize;
-}
-impl Tr for () {
-    $0
-}
-"#,
-            r#"
-trait Tr {
-    /// docs
-    #[attr]
-    const C: usize;
-}
-impl Tr for () {
-    const C: usize = $0;
-}
-"#,
-        );
-        check_edit(
-            "type Item",
-            r#"
-trait Tr {
-    /// docs
-    #[attr]
-    type Item;
-}
-impl Tr for () {
-    $0
-}
-"#,
-            r#"
-trait Tr {
-    /// docs
-    #[attr]
-    type Item;
-}
-impl Tr for () {
-    type Item = $0;
 }
 "#,
         );

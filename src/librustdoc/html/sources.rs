@@ -1,24 +1,20 @@
 use crate::clean;
 use crate::docfs::PathError;
 use crate::error::Error;
-use crate::html::format;
+use crate::html::format::Buffer;
 use crate::html::highlight;
 use crate::html::layout;
-use crate::html::render::Context;
+use crate::html::render::{Context, BASIC_KEYWORDS};
 use crate::visit::DocVisitor;
 
-use askama::Template;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::Session;
 use rustc_span::source_map::FileName;
 
-use std::cell::RefCell;
 use std::ffi::OsStr;
-use std::fmt;
 use std::fs;
-use std::ops::RangeInclusive;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
@@ -76,22 +72,12 @@ impl LocalSourcesCollector<'_, '_> {
             return;
         }
 
-        let href = RefCell::new(PathBuf::new());
-        clean_path(
-            &self.src_root,
-            &p,
-            |component| {
-                href.borrow_mut().push(component);
-            },
-            || {
-                href.borrow_mut().pop();
-            },
-        );
-
-        let mut href = href.into_inner().to_string_lossy().into_owned();
-        if let Some(c) = href.as_bytes().last() && *c != b'/' {
+        let mut href = String::new();
+        clean_path(self.src_root, &p, false, |component| {
+            href.push_str(&component.to_string_lossy());
             href.push('/');
-        }
+        });
+
         let mut src_fname = p.file_name().expect("source has no filename").to_os_string();
         src_fname.push(".html");
         href.push_str(&src_fname.to_string_lossy());
@@ -145,7 +131,7 @@ impl DocVisitor for SourceCollector<'_, '_> {
                 Err(e) => {
                     self.cx.shared.tcx.sess.span_err(
                         span,
-                        format!(
+                        &format!(
                             "failed to render source code for `{}`: {}",
                             filename.prefer_local(),
                             e,
@@ -194,28 +180,13 @@ impl SourceCollector<'_, '_> {
 
         let shared = Rc::clone(&self.cx.shared);
         // Create the intermediate directories
-        let cur = RefCell::new(PathBuf::new());
-        let root_path = RefCell::new(PathBuf::new());
+        let mut cur = self.dst.clone();
+        let mut root_path = String::from("../../");
+        clean_path(&shared.src_root, &p, false, |component| {
+            cur.push(component);
+            root_path.push_str("../");
+        });
 
-        clean_path(
-            &shared.src_root,
-            &p,
-            |component| {
-                cur.borrow_mut().push(component);
-                root_path.borrow_mut().push("..");
-            },
-            || {
-                cur.borrow_mut().pop();
-                root_path.borrow_mut().pop();
-            },
-        );
-
-        let root_path = PathBuf::from("../../").join(root_path.into_inner());
-        let mut root_path = root_path.to_string_lossy();
-        if let Some(c) = root_path.as_bytes().last() && *c != b'/' {
-            root_path += "/";
-        }
-        let mut cur = self.dst.join(cur.into_inner());
         shared.ensure_dir(&cur)?;
 
         let src_fname = p.file_name().expect("source has no filename").to_os_string();
@@ -231,6 +202,7 @@ impl SourceCollector<'_, '_> {
             root_path: &root_path,
             static_root_path: shared.static_root_path.as_deref(),
             description: &desc,
+            keywords: BASIC_KEYWORDS,
             resource_suffix: &shared.resource_suffix,
         };
         let v = layout::render(
@@ -260,13 +232,11 @@ impl SourceCollector<'_, '_> {
 /// Takes a path to a source file and cleans the path to it. This canonicalizes
 /// things like ".." to components which preserve the "top down" hierarchy of a
 /// static HTML tree. Each component in the cleaned path will be passed as an
-/// argument to `f`. The very last component of the path (ie the file name) is ignored.
-/// If a `..` is encountered, the `parent` closure will be called to allow the callee to
-/// handle it.
-pub(crate) fn clean_path<F, P>(src_root: &Path, p: &Path, mut f: F, mut parent: P)
+/// argument to `f`. The very last component of the path (ie the file name) will
+/// be passed to `f` if `keep_filename` is true, and ignored otherwise.
+pub(crate) fn clean_path<F>(src_root: &Path, p: &Path, keep_filename: bool, mut f: F)
 where
     F: FnMut(&OsStr),
-    P: FnMut(),
 {
     // make it relative, if possible
     let p = p.strip_prefix(src_root).unwrap_or(p);
@@ -274,12 +244,12 @@ where
     let mut iter = p.components().peekable();
 
     while let Some(c) = iter.next() {
-        if iter.peek().is_none() {
+        if !keep_filename && iter.peek().is_none() {
             break;
         }
 
         match c {
-            Component::ParentDir => parent(),
+            Component::ParentDir => f("up".as_ref()),
             Component::Normal(c) => f(c),
             _ => continue,
         }
@@ -294,7 +264,7 @@ pub(crate) enum SourceContext {
 /// Wrapper struct to render the source code of a file. This will do things like
 /// adding line numbers to the left-hand side.
 pub(crate) fn print_src(
-    mut writer: impl fmt::Write,
+    buf: &mut Buffer,
     s: &str,
     file_span: rustc_span::Span,
     context: &Context<'_>,
@@ -302,32 +272,35 @@ pub(crate) fn print_src(
     decoration_info: highlight::DecorationInfo,
     source_context: SourceContext,
 ) {
-    #[derive(Template)]
-    #[template(path = "source.html")]
-    struct Source<Code: std::fmt::Display> {
-        embedded: bool,
-        needs_expansion: bool,
-        lines: RangeInclusive<usize>,
-        code_html: Code,
-    }
     let lines = s.lines().count();
-    let (embedded, needs_expansion, lines) = match source_context {
-        SourceContext::Standalone => (false, false, 1..=lines),
-        SourceContext::Embedded { offset, needs_expansion } => {
-            (true, needs_expansion, (1 + offset)..=(lines + offset))
+    let mut line_numbers = Buffer::empty_from(buf);
+    let extra;
+    line_numbers.write_str("<pre class=\"src-line-numbers\">");
+    match source_context {
+        SourceContext::Standalone => {
+            extra = None;
+            for line in 1..=lines {
+                writeln!(line_numbers, "<span id=\"{0}\">{0}</span>", line)
+            }
         }
-    };
-    let current_href = context
+        SourceContext::Embedded { offset, needs_expansion } => {
+            extra =
+                if needs_expansion { Some(r#"<span class="expand">&varr;</span>"#) } else { None };
+            for line in 1..=lines {
+                writeln!(line_numbers, "<span>{0}</span>", line + offset)
+            }
+        }
+    }
+    line_numbers.write_str("</pre>");
+    let current_href = &context
         .href_from_span(clean::Span::new(file_span), false)
         .expect("only local crates should have sources emitted");
-    let code = format::display_fn(move |fmt| {
-        highlight::write_code(
-            fmt,
-            s,
-            Some(highlight::HrefContext { context, file_span, root_path, current_href }),
-            Some(decoration_info),
-        );
-        Ok(())
-    });
-    Source { embedded, needs_expansion, lines, code_html: code }.render_into(&mut writer).unwrap();
+    highlight::render_source_with_highlighting(
+        s,
+        buf,
+        line_numbers,
+        highlight::HrefContext { context, file_span, root_path, current_href },
+        decoration_info,
+        extra,
+    );
 }

@@ -6,21 +6,20 @@
 #![feature(array_methods)]
 #![feature(assert_matches)]
 #![feature(box_patterns)]
-#![feature(impl_trait_in_assoc_type)]
-#![feature(iter_intersperse)]
-#![feature(lazy_cell)]
+#![feature(control_flow_enum)]
+#![feature(drain_filter)]
 #![feature(let_chains)]
-#![feature(never_type)]
-#![feature(round_char_boundary)]
 #![feature(test)]
-#![feature(type_alias_impl_trait)]
+#![feature(never_type)]
+#![feature(once_cell)]
 #![feature(type_ascription)]
+#![feature(iter_intersperse)]
+#![feature(type_alias_impl_trait)]
 #![recursion_limit = "256"]
 #![warn(rustc::internal)]
 #![allow(clippy::collapsible_if, clippy::collapsible_else_if)]
 #![allow(rustc::potential_query_instability)]
 
-extern crate thin_vec;
 #[macro_use]
 extern crate tracing;
 
@@ -32,8 +31,6 @@ extern crate tracing;
 //
 // Dependencies listed in Cargo.toml do not need `extern crate`.
 
-extern crate pulldown_cmark;
-extern crate rustc_abi;
 extern crate rustc_ast;
 extern crate rustc_ast_pretty;
 extern crate rustc_attr;
@@ -70,8 +67,9 @@ extern crate test;
 #[cfg(feature = "jemalloc")]
 extern crate jemalloc_sys;
 
+use std::default::Default;
 use std::env::{self, VarError};
-use std::io::{self, IsTerminal};
+use std::io;
 use std::process;
 
 use rustc_driver::abort_on_err;
@@ -79,9 +77,11 @@ use rustc_errors::ErrorGuaranteed;
 use rustc_interface::interface;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::{make_crate_type_option, ErrorOutputType, RustcOptGroup};
-use rustc_session::{getopts, EarlyErrorHandler};
+use rustc_session::getopts;
+use rustc_session::{early_error, early_warn};
 
 use crate::clean::utils::DOC_RUST_LANG_ORG_CHANNEL;
+use crate::passes::collect_intra_doc_links;
 
 /// A macro to create a FxHashMap.
 ///
@@ -154,51 +154,43 @@ pub fn main() {
         }
     }
 
-    let mut handler = EarlyErrorHandler::new(ErrorOutputType::default());
+    rustc_driver::install_ice_hook();
 
-    rustc_driver::install_ice_hook(
-        "https://github.com/rust-lang/rust/issues/new\
-    ?labels=C-bug%2C+I-ICE%2C+T-rustdoc&template=ice.md",
-        |_| (),
-    );
-
-    // When using CI artifacts with `download-rustc`, tracing is unconditionally built
+    // When using CI artifacts (with `download_stage1 = true`), tracing is unconditionally built
     // with `--features=static_max_level_info`, which disables almost all rustdoc logging. To avoid
     // this, compile our own version of `tracing` that logs all levels.
     // NOTE: this compiles both versions of tracing unconditionally, because
     // - The compile time hit is not that bad, especially compared to rustdoc's incremental times, and
-    // - Otherwise, there's no warning that logging is being ignored when `download-rustc` is enabled
-    // NOTE: The reason this doesn't show double logging when `download-rustc = false` and
+    // - Otherwise, there's no warning that logging is being ignored when `download_stage1 = true`.
+    // NOTE: The reason this doesn't show double logging when `download_stage1 = false` and
     // `debug_logging = true` is because all rustc logging goes to its version of tracing (the one
     // in the sysroot), and all of rustdoc's logging goes to its version (the one in Cargo.toml).
+    init_logging();
+    rustc_driver::init_env_logger("RUSTDOC_LOG");
 
-    init_logging(&handler);
-    rustc_driver::init_env_logger(&handler, "RUSTDOC_LOG");
-
-    let exit_code = rustc_driver::catch_with_exit_code(|| match get_args(&handler) {
-        Some(args) => main_args(&mut handler, &args),
-        _ =>
-        {
-            #[allow(deprecated)]
-            Err(ErrorGuaranteed::unchecked_claim_error_was_emitted())
-        }
+    let exit_code = rustc_driver::catch_with_exit_code(|| match get_args() {
+        Some(args) => main_args(&args),
+        _ => Err(ErrorGuaranteed::unchecked_claim_error_was_emitted()),
     });
     process::exit(exit_code);
 }
 
-fn init_logging(handler: &EarlyErrorHandler) {
+fn init_logging() {
     let color_logs = match std::env::var("RUSTDOC_LOG_COLOR").as_deref() {
         Ok("always") => true,
         Ok("never") => false,
-        Ok("auto") | Err(VarError::NotPresent) => io::stdout().is_terminal(),
-        Ok(value) => handler.early_error(format!(
-            "invalid log color value '{}': expected one of always, never, or auto",
-            value
-        )),
-        Err(VarError::NotUnicode(value)) => handler.early_error(format!(
-            "invalid log color value '{}': expected one of always, never, or auto",
-            value.to_string_lossy()
-        )),
+        Ok("auto") | Err(VarError::NotPresent) => atty::is(atty::Stream::Stdout),
+        Ok(value) => early_error(
+            ErrorOutputType::default(),
+            &format!("invalid log color value '{}': expected one of always, never, or auto", value),
+        ),
+        Err(VarError::NotUnicode(value)) => early_error(
+            ErrorOutputType::default(),
+            &format!(
+                "invalid log color value '{}': expected one of always, never, or auto",
+                value.to_string_lossy()
+            ),
+        ),
     };
     let filter = tracing_subscriber::EnvFilter::from_env("RUSTDOC_LOG");
     let layer = tracing_tree::HierarchicalLayer::default()
@@ -210,7 +202,7 @@ fn init_logging(handler: &EarlyErrorHandler) {
         .with_verbose_exit(true)
         .with_verbose_entry(true)
         .with_indent_amount(2);
-    #[cfg(all(parallel_compiler, debug_assertions))]
+    #[cfg(parallel_compiler)]
     let layer = layer.with_thread_ids(true).with_thread_names(true);
 
     use tracing_subscriber::layer::SubscriberExt;
@@ -218,13 +210,16 @@ fn init_logging(handler: &EarlyErrorHandler) {
     tracing::subscriber::set_global_default(subscriber).unwrap();
 }
 
-fn get_args(handler: &EarlyErrorHandler) -> Option<Vec<String>> {
+fn get_args() -> Option<Vec<String>> {
     env::args_os()
         .enumerate()
         .map(|(i, arg)| {
             arg.into_string()
                 .map_err(|arg| {
-                    handler.early_warn(format!("Argument {} is not valid Unicode: {:?}", i, arg));
+                    early_warn(
+                        ErrorOutputType::default(),
+                        &format!("Argument {} is not valid Unicode: {:?}", i, arg),
+                    );
                 })
                 .ok()
         })
@@ -288,7 +283,7 @@ fn opts() -> Vec<RustcOptGroup> {
         stable("test-args", |o| {
             o.optmulti("", "test-args", "arguments to pass to the test runner", "ARGS")
         }),
-        stable("test-run-directory", |o| {
+        unstable("test-run-directory", |o| {
             o.optopt(
                 "",
                 "test-run-directory",
@@ -678,9 +673,9 @@ type MainResult = Result<(), ErrorGuaranteed>;
 
 fn wrap_return(diag: &rustc_errors::Handler, res: Result<(), String>) -> MainResult {
     match res {
-        Ok(()) => diag.has_errors().map_or(Ok(()), Err),
+        Ok(()) => Ok(()),
         Err(err) => {
-            let reported = diag.struct_err(err).emit();
+            let reported = diag.struct_err(&err).emit();
             Err(reported)
         }
     }
@@ -693,59 +688,45 @@ fn run_renderer<'tcx, T: formats::FormatRenderer<'tcx>>(
     tcx: TyCtxt<'tcx>,
 ) -> MainResult {
     match formats::run_format::<T>(krate, renderopts, cache, tcx) {
-        Ok(_) => tcx.sess.has_errors().map_or(Ok(()), Err),
+        Ok(_) => Ok(()),
         Err(e) => {
             let mut msg =
-                tcx.sess.struct_err(format!("couldn't generate documentation: {}", e.error));
+                tcx.sess.struct_err(&format!("couldn't generate documentation: {}", e.error));
             let file = e.file.display().to_string();
             if !file.is_empty() {
-                msg.note(format!("failed to create or modify \"{}\"", file));
+                msg.note(&format!("failed to create or modify \"{}\"", file));
             }
             Err(msg.emit())
         }
     }
 }
 
-fn main_args(handler: &mut EarlyErrorHandler, at_args: &[String]) -> MainResult {
-    // Throw away the first argument, the name of the binary.
-    // In case of at_args being empty, as might be the case by
-    // passing empty argument array to execve under some platforms,
-    // just use an empty slice.
-    //
-    // This situation was possible before due to arg_expand_all being
-    // called before removing the argument, enabling a crash by calling
-    // the compiler with @empty_file as argv[0] and no more arguments.
-    let at_args = at_args.get(1..).unwrap_or_default();
-
-    let args = rustc_driver::args::arg_expand_all(handler, at_args);
+fn main_args(at_args: &[String]) -> MainResult {
+    let args = rustc_driver::args::arg_expand_all(at_args);
 
     let mut options = getopts::Options::new();
     for option in opts() {
         (option.apply)(&mut options);
     }
-    let matches = match options.parse(&args) {
+    let matches = match options.parse(&args[1..]) {
         Ok(m) => m,
         Err(err) => {
-            handler.early_error(err.to_string());
+            early_error(ErrorOutputType::default(), &err.to_string());
         }
     };
 
     // Note that we discard any distinction between different non-zero exit
     // codes from `from_matches` here.
-    let (options, render_options) = match config::Options::from_matches(handler, &matches, args) {
+    let (options, render_options) = match config::Options::from_matches(&matches, args) {
         Ok(opts) => opts,
         Err(code) => {
             return if code == 0 {
                 Ok(())
             } else {
-                #[allow(deprecated)]
                 Err(ErrorGuaranteed::unchecked_claim_error_was_emitted())
             };
         }
     };
-
-    // Set parallel mode before error handler creation, which will create `Lock`s.
-    interface::set_thread_safe_mode(&options.unstable_opts);
 
     let diag = core::new_handler(
         options.error_format,
@@ -760,7 +741,7 @@ fn main_args(handler: &mut EarlyErrorHandler, at_args: &[String]) -> MainResult 
         (false, true) => {
             let input = options.input.clone();
             let edition = options.edition;
-            let config = core::create_config(handler, options, &render_options);
+            let config = core::create_config(options);
 
             // `markdown::render` can invoke `doctest::make_test`, which
             // requires session globals and a thread pool, so we use
@@ -790,16 +771,19 @@ fn main_args(handler: &mut EarlyErrorHandler, at_args: &[String]) -> MainResult 
     let crate_version = options.crate_version.clone();
 
     let output_format = options.output_format;
+    let externs = options.externs.clone();
     let scrape_examples_options = options.scrape_examples_options.clone();
-    let bin_crate = options.bin_crate;
 
-    let config = core::create_config(handler, options, &render_options);
+    let config = core::create_config(options);
 
     interface::run_compiler(config, |compiler| {
         let sess = compiler.session();
 
         if sess.opts.describe_lints {
-            let mut lint_store = rustc_lint::new_lint_store(sess.enable_internal_lints());
+            let mut lint_store = rustc_lint::new_lint_store(
+                sess.opts.unstable_opts.no_interleave_lints,
+                sess.enable_internal_lints(),
+            );
             let registered_lints = if let Some(register_lints) = compiler.register_lints() {
                 register_lints(sess, &mut lint_store);
                 true
@@ -811,26 +795,46 @@ fn main_args(handler: &mut EarlyErrorHandler, at_args: &[String]) -> MainResult 
         }
 
         compiler.enter(|queries| {
-            let mut gcx = abort_on_err(queries.global_ctxt(), sess);
+            // We need to hold on to the complete resolver, so we cause everything to be
+            // cloned for the analysis passes to use. Suboptimal, but necessary in the
+            // current architecture.
+            // FIXME(#83761): Resolver cloning can lead to inconsistencies between data in the
+            // two copies because one of the copies can be modified after `TyCtxt` construction.
+            let (resolver, resolver_caches) = {
+                let (krate, resolver, _) = &*abort_on_err(queries.expansion(), sess).peek();
+                let resolver_caches = resolver.borrow_mut().access(|resolver| {
+                    collect_intra_doc_links::early_resolve_intra_doc_links(
+                        resolver,
+                        sess,
+                        krate,
+                        externs,
+                        render_options.document_private,
+                    )
+                });
+                (resolver.clone(), resolver_caches)
+            };
+
             if sess.diagnostic().has_errors_or_lint_errors().is_some() {
                 sess.fatal("Compilation failed, aborting rustdoc");
             }
 
-            gcx.enter(|tcx| {
+            let mut global_ctxt = abort_on_err(queries.global_ctxt(), sess).peek_mut();
+
+            global_ctxt.enter(|tcx| {
                 let (krate, render_opts, mut cache) = sess.time("run_global_ctxt", || {
-                    core::run_global_ctxt(tcx, show_coverage, render_options, output_format)
+                    core::run_global_ctxt(
+                        tcx,
+                        resolver,
+                        resolver_caches,
+                        show_coverage,
+                        render_options,
+                        output_format,
+                    )
                 });
                 info!("finished with rustc");
 
                 if let Some(options) = scrape_examples_options {
-                    return scrape_examples::run(
-                        krate,
-                        render_opts,
-                        cache,
-                        tcx,
-                        options,
-                        bin_crate,
-                    );
+                    return scrape_examples::run(krate, render_opts, cache, tcx, options);
                 }
 
                 cache.crate_version = crate_version;

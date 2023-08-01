@@ -1,5 +1,6 @@
 use crate::fmt_list;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::convert::TryFrom;
 use std::fmt::{self, Write};
 use std::ops::Range;
 

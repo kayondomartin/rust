@@ -1,5 +1,3 @@
-//@revisions: stack tree
-//@[tree]compile-flags: -Zmiri-tree-borrows
 #![allow(incomplete_features)] // for trait upcasting
 #![feature(allocator_api, trait_upcasting)]
 

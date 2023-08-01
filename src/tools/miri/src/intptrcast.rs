@@ -45,18 +45,18 @@ pub struct GlobalStateInner {
 }
 
 impl VisitTags for GlobalStateInner {
-    fn visit_tags(&self, _visit: &mut dyn FnMut(BorTag)) {
+    fn visit_tags(&self, _visit: &mut dyn FnMut(SbTag)) {
         // Nothing to visit here.
     }
 }
 
 impl GlobalStateInner {
-    pub fn new(config: &MiriConfig, stack_addr: u64) -> Self {
+    pub fn new(config: &MiriConfig) -> Self {
         GlobalStateInner {
             int_to_ptr_map: Vec::default(),
             base_addr: FxHashMap::default(),
             exposed: FxHashSet::default(),
-            next_base_addr: stack_addr,
+            next_base_addr: STACK_ADDR,
             provenance_mode: config.provenance_mode,
         }
     }
@@ -77,7 +77,7 @@ impl<'mir, 'tcx> GlobalStateInner {
             Ok(pos) => Some(global_state.int_to_ptr_map[pos].1),
             Err(0) => None,
             Err(pos) => {
-                // This is the largest of the addresses smaller than `int`,
+                // This is the largest of the adresses smaller than `int`,
                 // i.e. the greatest lower bound (glb)
                 let (glb, alloc_id) = global_state.int_to_ptr_map[pos - 1];
                 // This never overflows because `addr >= glb`
@@ -105,15 +105,15 @@ impl<'mir, 'tcx> GlobalStateInner {
     pub fn expose_ptr(
         ecx: &mut MiriInterpCx<'mir, 'tcx>,
         alloc_id: AllocId,
-        tag: BorTag,
+        sb: SbTag,
     ) -> InterpResult<'tcx> {
         let global_state = ecx.machine.intptrcast.get_mut();
         // In strict mode, we don't need this, so we can save some cycles by not tracking it.
         if global_state.provenance_mode != ProvenanceMode::Strict {
             trace!("Exposing allocation id {alloc_id:?}");
             global_state.exposed.insert(alloc_id);
-            if ecx.machine.borrow_tracker.is_some() {
-                ecx.expose_tag(alloc_id, tag)?;
+            if ecx.machine.stacked_borrows.is_some() {
+                ecx.expose_tag(alloc_id, sb)?;
             }
         }
         Ok(())
@@ -162,14 +162,11 @@ impl<'mir, 'tcx> GlobalStateInner {
         Ok(Pointer::new(Some(Provenance::Wildcard), Size::from_bytes(addr)))
     }
 
-    fn alloc_base_addr(
-        ecx: &MiriInterpCx<'mir, 'tcx>,
-        alloc_id: AllocId,
-    ) -> InterpResult<'tcx, u64> {
+    fn alloc_base_addr(ecx: &MiriInterpCx<'mir, 'tcx>, alloc_id: AllocId) -> u64 {
         let mut global_state = ecx.machine.intptrcast.borrow_mut();
         let global_state = &mut *global_state;
 
-        Ok(match global_state.base_addr.entry(alloc_id) {
+        match global_state.base_addr.entry(alloc_id) {
             Entry::Occupied(entry) => *entry.get(),
             Entry::Vacant(entry) => {
                 // There is nothing wrong with a raw pointer being cast to an integer only after
@@ -184,10 +181,7 @@ impl<'mir, 'tcx> GlobalStateInner {
                     rng.gen_range(0..16)
                 };
                 // From next_base_addr + slack, round up to adjust for alignment.
-                let base_addr = global_state
-                    .next_base_addr
-                    .checked_add(slack)
-                    .ok_or_else(|| err_exhaust!(AddressSpaceFull))?;
+                let base_addr = global_state.next_base_addr.checked_add(slack).unwrap();
                 let base_addr = Self::align_addr(base_addr, align.bytes());
                 entry.insert(base_addr);
                 trace!(
@@ -203,33 +197,24 @@ impl<'mir, 'tcx> GlobalStateInner {
                 // of at least 1 to avoid two allocations having the same base address.
                 // (The logic in `alloc_id_from_addr` assumes unique addresses, and different
                 // function/vtable pointers need to be distinguishable!)
-                global_state.next_base_addr = base_addr
-                    .checked_add(max(size.bytes(), 1))
-                    .ok_or_else(|| err_exhaust!(AddressSpaceFull))?;
-                // Even if `Size` didn't overflow, we might still have filled up the address space.
-                if global_state.next_base_addr > ecx.target_usize_max() {
-                    throw_exhaust!(AddressSpaceFull);
-                }
+                global_state.next_base_addr = base_addr.checked_add(max(size.bytes(), 1)).unwrap();
                 // Given that `next_base_addr` increases in each allocation, pushing the
                 // corresponding tuple keeps `int_to_ptr_map` sorted
                 global_state.int_to_ptr_map.push((base_addr, alloc_id));
 
                 base_addr
             }
-        })
+        }
     }
 
     /// Convert a relative (tcx) pointer to an absolute address.
-    pub fn rel_ptr_to_addr(
-        ecx: &MiriInterpCx<'mir, 'tcx>,
-        ptr: Pointer<AllocId>,
-    ) -> InterpResult<'tcx, u64> {
+    pub fn rel_ptr_to_addr(ecx: &MiriInterpCx<'mir, 'tcx>, ptr: Pointer<AllocId>) -> u64 {
         let (alloc_id, offset) = ptr.into_parts(); // offset is relative (AllocId provenance)
-        let base_addr = GlobalStateInner::alloc_base_addr(ecx, alloc_id)?;
+        let base_addr = GlobalStateInner::alloc_base_addr(ecx, alloc_id);
 
         // Add offset with the right kind of pointer-overflowing arithmetic.
         let dl = ecx.data_layout();
-        Ok(dl.overflowing_offset(base_addr, offset.bytes()).0)
+        dl.overflowing_offset(base_addr, offset.bytes()).0
     }
 
     /// When a pointer is used for a memory access, this computes where in which allocation the
@@ -247,9 +232,7 @@ impl<'mir, 'tcx> GlobalStateInner {
             GlobalStateInner::alloc_id_from_addr(ecx, addr.bytes())?
         };
 
-        // This cannot fail: since we already have a pointer with that provenance, rel_ptr_to_addr
-        // must have been called in the past.
-        let base_addr = GlobalStateInner::alloc_base_addr(ecx, alloc_id).unwrap();
+        let base_addr = GlobalStateInner::alloc_base_addr(ecx, alloc_id);
 
         // Wrapping "addr - base_addr"
         let dl = ecx.data_layout();

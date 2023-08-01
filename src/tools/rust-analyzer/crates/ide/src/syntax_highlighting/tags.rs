@@ -49,7 +49,7 @@ pub enum HlMod {
     Associated = 0,
     /// Used with keywords like `async` and `await`.
     Async,
-    /// Used to differentiate individual elements within attribute calls.
+    /// Used to differentiate individual elements within attributes.
     Attribute,
     /// Callable item or value.
     Callable,
@@ -72,8 +72,6 @@ pub enum HlMod {
     IntraDocLink,
     /// Used for items from other crates.
     Library,
-    /// Used to differentiate individual elements within macro calls.
-    Macro,
     /// Mutable binding.
     Mutable,
     /// Used for public items.
@@ -152,7 +150,6 @@ impl HlTag {
                 SymbolKind::Struct => "struct",
                 SymbolKind::ToolModule => "tool_module",
                 SymbolKind::Trait => "trait",
-                SymbolKind::TraitAlias => "trait_alias",
                 SymbolKind::TypeAlias => "type_alias",
                 SymbolKind::TypeParam => "type_param",
                 SymbolKind::Union => "union",
@@ -202,7 +199,7 @@ impl fmt::Display for HlTag {
 }
 
 impl HlMod {
-    const ALL: &'static [HlMod; HlMod::Unsafe as usize + 1] = &[
+    const ALL: &'static [HlMod; 19] = &[
         HlMod::Associated,
         HlMod::Async,
         HlMod::Attribute,
@@ -216,7 +213,6 @@ impl HlMod {
         HlMod::Injected,
         HlMod::IntraDocLink,
         HlMod::Library,
-        HlMod::Macro,
         HlMod::Mutable,
         HlMod::Public,
         HlMod::Reference,
@@ -240,7 +236,6 @@ impl HlMod {
             HlMod::Injected => "injected",
             HlMod::IntraDocLink => "intra_doc_link",
             HlMod::Library => "library",
-            HlMod::Macro => "macro",
             HlMod::Mutable => "mutable",
             HlMod::Public => "public",
             HlMod::Reference => "reference",

@@ -1,26 +1,26 @@
 use clippy_utils::diagnostics::{span_lint_and_help, span_lint_and_then};
 use clippy_utils::source::snippet_with_applicability;
-use clippy_utils::{def_path_def_ids, is_lint_allowed, match_any_def_paths, peel_hir_expr_refs};
+use clippy_utils::{def_path_res, is_lint_allowed, match_any_def_paths, peel_hir_expr_refs};
 use if_chain::if_chain;
 use rustc_ast::ast::LitKind;
-use rustc_data_structures::fx::{FxHashSet, FxIndexSet};
+use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
-use rustc_hir::def::{DefKind, Res};
+use rustc_hir::def::{DefKind, Namespace, Res};
 use rustc_hir::def_id::DefId;
 use rustc_hir::{Expr, ExprKind, Local, Mutability, Node};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::mir::interpret::{Allocation, ConstValue, GlobalAlloc};
-use rustc_middle::ty::{self, Ty};
+use rustc_middle::ty::{self, AssocKind, DefIdTree, Ty};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
-use rustc_span::symbol::Symbol;
+use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::Span;
 
 use std::str;
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of def paths when a diagnostic item or a `LangItem` could be used.
+    /// Checks for usages of def paths when a diagnostic item or a `LangItem` could be used.
     ///
     /// ### Why is this bad?
     /// The path for an item is subject to change and is less efficient to look up than a
@@ -44,7 +44,7 @@ impl_lint_pass!(UnnecessaryDefPath => [UNNECESSARY_DEF_PATH]);
 
 #[derive(Default)]
 pub struct UnnecessaryDefPath {
-    array_def_ids: FxIndexSet<(DefId, Span)>,
+    array_def_ids: FxHashSet<(DefId, Span)>,
     linted_def_ids: FxHashSet<DefId>,
 }
 
@@ -91,7 +91,7 @@ impl UnnecessaryDefPath {
     #[allow(clippy::too_many_lines)]
     fn check_call(&mut self, cx: &LateContext<'_>, func: &Expr<'_>, args: &[Expr<'_>], span: Span) {
         enum Item {
-            LangItem(&'static str),
+            LangItem(Symbol),
             DiagnosticItem(Symbol),
         }
         static PATHS: &[&[&str]] = &[
@@ -110,7 +110,7 @@ impl UnnecessaryDefPath {
             // Extract the path to the matched type
             if let Some(segments) = path_to_matched_type(cx, item_arg);
             let segments: Vec<&str> = segments.iter().map(|sym| &**sym).collect();
-            if let Some(def_id) = def_path_def_ids(cx, &segments[..]).next();
+            if let Some(def_id) = inherent_def_path_res(cx, &segments[..]);
             then {
                 // Check if the target item is a diagnostic item or LangItem.
                 #[rustfmt::skip]
@@ -133,11 +133,11 @@ impl UnnecessaryDefPath {
                 let has_ctor = match cx.tcx.def_kind(def_id) {
                     DefKind::Struct => {
                         let variant = cx.tcx.adt_def(def_id).non_enum_variant();
-                        variant.ctor.is_some() && variant.fields.iter().all(|f| f.vis.is_public())
+                        variant.ctor_def_id.is_some() && variant.fields.iter().all(|f| f.vis.is_public())
                     },
                     DefKind::Variant => {
                         let variant = cx.tcx.adt_def(cx.tcx.parent(def_id)).variant_with_id(def_id);
-                        variant.ctor.is_some() && variant.fields.iter().all(|f| f.vis.is_public())
+                        variant.ctor_def_id.is_some() && variant.fields.iter().all(|f| f.vis.is_public())
                     },
                     _ => false,
                 };
@@ -209,7 +209,7 @@ impl UnnecessaryDefPath {
     fn check_array(&mut self, cx: &LateContext<'_>, elements: &[Expr<'_>], span: Span) {
         let Some(path) = path_from_array(elements) else { return };
 
-        for def_id in def_path_def_ids(cx, &path.iter().map(AsRef::as_ref).collect::<Vec<_>>()) {
+        if let Some(def_id) = inherent_def_path_res(cx, &path.iter().map(AsRef::as_ref).collect::<Vec<_>>()) {
             self.array_def_ids.insert((def_id, span));
         }
     }
@@ -219,7 +219,7 @@ fn path_to_matched_type(cx: &LateContext<'_>, expr: &hir::Expr<'_>) -> Option<Ve
     match peel_hir_expr_refs(expr).0.kind {
         ExprKind::Path(ref qpath) => match cx.qpath_res(qpath, expr.hir_id) {
             Res::Local(hir_id) => {
-                let parent_id = cx.tcx.hir().parent_id(hir_id);
+                let parent_id = cx.tcx.hir().get_parent_node(hir_id);
                 if let Some(Node::Local(Local { init: Some(init), .. })) = cx.tcx.hir().find(parent_id) {
                     path_to_matched_type(cx, init)
                 } else {
@@ -229,11 +229,11 @@ fn path_to_matched_type(cx: &LateContext<'_>, expr: &hir::Expr<'_>) -> Option<Ve
             Res::Def(DefKind::Static(_), def_id) => read_mir_alloc_def_path(
                 cx,
                 cx.tcx.eval_static_initializer(def_id).ok()?.inner(),
-                cx.tcx.type_of(def_id).subst_identity(),
+                cx.tcx.type_of(def_id),
             ),
             Res::Def(DefKind::Const, def_id) => match cx.tcx.const_eval_poly(def_id).ok()? {
                 ConstValue::ByRef { alloc, offset } if offset.bytes() == 0 => {
-                    read_mir_alloc_def_path(cx, alloc.inner(), cx.tcx.type_of(def_id).subst_identity())
+                    read_mir_alloc_def_path(cx, alloc.inner(), cx.tcx.type_of(def_id))
                 },
                 _ => None,
             },
@@ -246,7 +246,7 @@ fn path_to_matched_type(cx: &LateContext<'_>, expr: &hir::Expr<'_>) -> Option<Ve
 
 fn read_mir_alloc_def_path<'tcx>(cx: &LateContext<'tcx>, alloc: &'tcx Allocation, ty: Ty<'_>) -> Option<Vec<String>> {
     let (alloc, ty) = if let ty::Ref(_, ty, Mutability::Not) = *ty.kind() {
-        let &alloc = alloc.provenance().ptrs().values().next()?;
+        let &alloc = alloc.provenance().values().next()?;
         if let GlobalAlloc::Memory(alloc) = cx.tcx.global_alloc(alloc) {
             (alloc.inner(), ty)
         } else {
@@ -262,7 +262,6 @@ fn read_mir_alloc_def_path<'tcx>(cx: &LateContext<'tcx>, alloc: &'tcx Allocation
     {
         alloc
             .provenance()
-            .ptrs()
             .values()
             .map(|&alloc| {
                 if let GlobalAlloc::Memory(alloc) = cx.tcx.global_alloc(alloc) {
@@ -294,9 +293,50 @@ fn path_from_array(exprs: &[Expr<'_>]) -> Option<Vec<String>> {
         .collect()
 }
 
-fn get_lang_item_name(cx: &LateContext<'_>, def_id: DefId) -> Option<&'static str> {
-    if let Some((lang_item, _)) = cx.tcx.lang_items().iter().find(|(_, id)| *id == def_id) {
-        Some(lang_item.variant_name())
+// def_path_res will match field names before anything else, but for this we want to match
+// inherent functions first.
+fn inherent_def_path_res(cx: &LateContext<'_>, segments: &[&str]) -> Option<DefId> {
+    def_path_res(cx, segments, None).opt_def_id().map(|def_id| {
+        if cx.tcx.def_kind(def_id) == DefKind::Field {
+            let method_name = *segments.last().unwrap();
+            cx.tcx
+                .def_key(def_id)
+                .parent
+                .and_then(|parent_idx| {
+                    cx.tcx
+                        .inherent_impls(DefId {
+                            index: parent_idx,
+                            krate: def_id.krate,
+                        })
+                        .iter()
+                        .find_map(|impl_id| {
+                            cx.tcx.associated_items(*impl_id).find_by_name_and_kind(
+                                cx.tcx,
+                                Ident::from_str(method_name),
+                                AssocKind::Fn,
+                                *impl_id,
+                            )
+                        })
+                })
+                .map_or(def_id, |item| item.def_id)
+        } else {
+            def_id
+        }
+    })
+}
+
+fn get_lang_item_name(cx: &LateContext<'_>, def_id: DefId) -> Option<Symbol> {
+    if let Some(lang_item) = cx.tcx.lang_items().items().iter().position(|id| *id == Some(def_id)) {
+        let lang_items = def_path_res(cx, &["rustc_hir", "lang_items", "LangItem"], Some(Namespace::TypeNS)).def_id();
+        let item_name = cx
+            .tcx
+            .adt_def(lang_items)
+            .variants()
+            .iter()
+            .nth(lang_item)
+            .unwrap()
+            .name;
+        Some(item_name)
     } else {
         None
     }

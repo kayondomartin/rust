@@ -1,5 +1,4 @@
 set "RUSTFLAGS=-D warnings"
-set "RUSTFMT_CI=1"
 
 :: Print version information
 rustc -Vv || exit /b 1

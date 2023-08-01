@@ -2,23 +2,18 @@
 name = "parser"
 version = "0.0.0"
 description = "TBD"
-
-authors.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+edition = "2021"
+rust-version = "1.57"
 
 [lib]
 doctest = false
 
 [dependencies]
 drop_bomb = "0.1.5"
-rustc_lexer.workspace = true
-
-limit.workspace = true
+rustc_lexer = { version = "725.0.0", package = "rustc-ap-rustc_lexer" }
+limit = { path = "../limit", version = "0.0.0" }
 
 [dev-dependencies]
 expect-test = "1.4.0"
-
-stdx.workspace = true
-sourcegen.workspace = true
+sourcegen = { path = "../sourcegen" }

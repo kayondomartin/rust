@@ -1,10 +1,6 @@
 #![feature(lint_reasons)]
 #![deny(clippy::panicking_unwrap, clippy::unnecessary_unwrap)]
-#![allow(
-    clippy::if_same_then_else,
-    clippy::branches_sharing_code,
-    clippy::unnecessary_literal_unwrap
-)]
+#![allow(clippy::if_same_then_else, clippy::branches_sharing_code)]
 
 macro_rules! m {
     ($a:expr) => {

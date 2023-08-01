@@ -5,7 +5,6 @@ use clippy_utils::source::snippet_opt;
 use clippy_utils::ty::expr_sig;
 use clippy_utils::visitors::contains_unsafe_block;
 use clippy_utils::{get_expr_use_or_unification_node, is_lint_allowed, path_def_id, path_to_local, paths};
-use hir::LifetimeName;
 use if_chain::if_chain;
 use rustc_errors::{Applicability, MultiSpan};
 use rustc_hir::def_id::DefId;
@@ -13,15 +12,14 @@ use rustc_hir::hir_id::HirIdMap;
 use rustc_hir::intravisit::{walk_expr, Visitor};
 use rustc_hir::{
     self as hir, AnonConst, BinOpKind, BindingAnnotation, Body, Expr, ExprKind, FnRetTy, FnSig, GenericArg,
-    ImplItemKind, ItemKind, Lifetime, Mutability, Node, Param, PatKind, QPath, TraitFn, TraitItem, TraitItemKind,
-    TyKind, Unsafety,
+    ImplItemKind, ItemKind, Lifetime, LifetimeName, Mutability, Node, Param, ParamName, PatKind, QPath, TraitFn,
+    TraitItem, TraitItemKind, TyKind, Unsafety,
 };
-use rustc_hir_analysis::hir_ty_to_ty;
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_infer::traits::{Obligation, ObligationCause};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::hir::nested_filter;
-use rustc_middle::ty::{self, Binder, ClauseKind, ExistentialPredicate, List, PredicateKind, Ty};
+use rustc_middle::ty::{self, Binder, ExistentialPredicate, List, PredicateKind, Ty};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 use rustc_span::sym;
@@ -166,9 +164,8 @@ impl<'tcx> LateLintPass<'tcx> for Ptr {
             check_mut_from_ref(cx, sig, None);
             for arg in check_fn_args(
                 cx,
-                cx.tcx.fn_sig(item.owner_id).subst_identity().skip_binder().inputs(),
+                cx.tcx.fn_sig(item.owner_id).skip_binder().inputs(),
                 sig.decl.inputs,
-                &sig.decl.output,
                 &[],
             )
             .filter(|arg| arg.mutability() == Mutability::Not)
@@ -220,8 +217,8 @@ impl<'tcx> LateLintPass<'tcx> for Ptr {
 
         check_mut_from_ref(cx, sig, Some(body));
         let decl = sig.decl;
-        let sig = cx.tcx.fn_sig(item_id).subst_identity().skip_binder();
-        let lint_args: Vec<_> = check_fn_args(cx, sig.inputs(), decl.inputs, &decl.output, body.params)
+        let sig = cx.tcx.fn_sig(item_id).skip_binder();
+        let lint_args: Vec<_> = check_fn_args(cx, sig.inputs(), decl.inputs, body.params)
             .filter(|arg| !is_trait_item || arg.mutability() == Mutability::Not)
             .collect();
         let results = check_ptr_arg_usage(cx, body, &lint_args);
@@ -346,16 +343,21 @@ impl PtrArg<'_> {
 }
 
 struct RefPrefix {
-    lt: Lifetime,
+    lt: LifetimeName,
     mutability: Mutability,
 }
 impl fmt::Display for RefPrefix {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use fmt::Write;
         f.write_char('&')?;
-        if !self.lt.is_anonymous() {
-            self.lt.ident.fmt(f)?;
-            f.write_char(' ')?;
+        match self.lt {
+            LifetimeName::Param(_, ParamName::Plain(name)) => {
+                name.fmt(f)?;
+                f.write_char(' ')?;
+            },
+            LifetimeName::Infer => f.write_str("'_ ")?,
+            LifetimeName::Static => f.write_str("'static ")?,
+            _ => (),
         }
         f.write_str(self.mutability.prefix_str())
     }
@@ -389,11 +391,11 @@ impl<'tcx> DerefTy<'tcx> {
     fn ty(&self, cx: &LateContext<'tcx>) -> Ty<'tcx> {
         match *self {
             Self::Str => cx.tcx.types.str_,
-            Self::Path => Ty::new_adt(cx.tcx,
+            Self::Path => cx.tcx.mk_adt(
                 cx.tcx.adt_def(cx.tcx.get_diagnostic_item(sym::Path).unwrap()),
                 List::empty(),
             ),
-            Self::Slice(_, ty) => Ty::new_slice(cx.tcx,ty),
+            Self::Slice(_, ty) => cx.tcx.mk_slice(ty),
         }
     }
 
@@ -410,27 +412,29 @@ impl<'tcx> DerefTy<'tcx> {
     }
 }
 
-#[expect(clippy::too_many_lines)]
 fn check_fn_args<'cx, 'tcx: 'cx>(
     cx: &'cx LateContext<'tcx>,
     tys: &'tcx [Ty<'tcx>],
     hir_tys: &'tcx [hir::Ty<'tcx>],
-    ret_ty: &'tcx FnRetTy<'tcx>,
     params: &'tcx [Param<'tcx>],
 ) -> impl Iterator<Item = PtrArg<'tcx>> + 'cx {
     tys.iter()
         .zip(hir_tys.iter())
         .enumerate()
-        .filter_map(move |(i, (ty, hir_ty))| {
-            if let ty::Ref(_, ty, mutability) = *ty.kind()
-                && let  ty::Adt(adt, substs) = *ty.kind()
-                && let TyKind::Ref(lt, ref ty) = hir_ty.kind
-                && let TyKind::Path(QPath::Resolved(None, path)) = ty.ty.kind
+        .filter_map(|(i, (ty, hir_ty))| {
+            if_chain! {
+                if let ty::Ref(_, ty, mutability) = *ty.kind();
+                if let ty::Adt(adt, substs) = *ty.kind();
+
+                if let TyKind::Rptr(lt, ref ty) = hir_ty.kind;
+                if let TyKind::Path(QPath::Resolved(None, path)) = ty.ty.kind;
+
                 // Check that the name as typed matches the actual name of the type.
                 // e.g. `fn foo(_: &Foo)` shouldn't trigger the lint when `Foo` is an alias for `Vec`
-                && let [.., name] = path.segments
-                && cx.tcx.item_name(adt.did()) == name.ident.name
-            {
+                if let [.., name] = path.segments;
+                if cx.tcx.item_name(adt.did()) == name.ident.name;
+
+                then {
                     let emission_id = params.get(i).map_or(hir_ty.hir_id, |param| param.hir_id);
                     let (method_renames, deref_ty) = match cx.tcx.get_diagnostic_name(adt.did()) {
                         Some(sym::Vec) => (
@@ -446,7 +450,7 @@ fn check_fn_args<'cx, 'tcx: 'cx>(
                                 substs.type_at(0),
                             ),
                         ),
-                        _ if Some(adt.did()) == cx.tcx.lang_items().string() => (
+                        Some(sym::String) => (
                             [("clone", ".to_owned()"), ("as_str", "")].as_slice(),
                             DerefTy::Str,
                         ),
@@ -455,65 +459,30 @@ fn check_fn_args<'cx, 'tcx: 'cx>(
                             DerefTy::Path,
                         ),
                         Some(sym::Cow) if mutability == Mutability::Not => {
-                            if let Some((lifetime, ty)) = name.args
+                            let ty_name = name.args
                                 .and_then(|args| {
-                                    if let [GenericArg::Lifetime(lifetime), ty] = args.args {
-                                        return Some((lifetime, ty));
-                                    }
-                                    None
+                                    args.args.iter().find_map(|a| match a {
+                                        GenericArg::Type(x) => Some(x),
+                                        _ => None,
+                                    })
                                 })
-                            {
-                                if !lifetime.is_anonymous()
-                                    && let FnRetTy::Return(ret_ty) = ret_ty
-                                    && let ret_ty = hir_ty_to_ty(cx.tcx, ret_ty)
-                                    && ret_ty
-                                        .walk()
-                                        .filter_map(|arg| {
-                                            arg.as_region().and_then(|lifetime| {
-                                                match lifetime.kind() {
-                                                    ty::ReEarlyBound(r) => Some(r.def_id),
-                                                    ty::ReLateBound(_, r) => r.kind.get_id(),
-                                                    ty::ReFree(r) => r.bound_region.get_id(),
-                                                    ty::ReStatic
-                                                    | ty::ReVar(_)
-                                                    | ty::RePlaceholder(_)
-                                                    | ty::ReErased
-                                                    | ty::ReError(_) => None,
-                                                }
-                                            })
-                                        })
-                                        .any(|def_id| {
-                                            matches!(
-                                                lifetime.res,
-                                                LifetimeName::Param(param_def_id) if def_id
-                                                    .as_local()
-                                                    .is_some_and(|def_id| def_id == param_def_id),
-                                            )
-                                        })
-                                {
-                                    // `&Cow<'a, T>` when the return type uses 'a is okay
-                                    return None;
+                                .and_then(|arg| snippet_opt(cx, arg.span))
+                                .unwrap_or_else(|| substs.type_at(1).to_string());
+                            span_lint_hir_and_then(
+                                cx,
+                                PTR_ARG,
+                                emission_id,
+                                hir_ty.span,
+                                "using a reference to `Cow` is not recommended",
+                                |diag| {
+                                    diag.span_suggestion(
+                                        hir_ty.span,
+                                        "change this to",
+                                        format!("&{}{ty_name}", mutability.prefix_str()),
+                                        Applicability::Unspecified,
+                                    );
                                 }
-
-                                let ty_name =
-                                    snippet_opt(cx, ty.span()).unwrap_or_else(|| substs.type_at(1).to_string());
-
-                                span_lint_hir_and_then(
-                                    cx,
-                                    PTR_ARG,
-                                    emission_id,
-                                    hir_ty.span,
-                                    "using a reference to `Cow` is not recommended",
-                                    |diag| {
-                                        diag.span_suggestion(
-                                            hir_ty.span,
-                                            "change this to",
-                                            format!("&{}{ty_name}", mutability.prefix_str()),
-                                            Applicability::Unspecified,
-                                        );
-                                    }
-                                );
-                            }
+                            );
                             return None;
                         },
                         _ => return None,
@@ -526,11 +495,12 @@ fn check_fn_args<'cx, 'tcx: 'cx>(
                         ty_name: name.ident.name,
                         method_renames,
                         ref_prefix: RefPrefix {
-                            lt: *lt,
+                            lt: lt.name,
                             mutability,
                         },
                         deref_ty,
                     });
+                }
             }
             None
         })
@@ -538,15 +508,15 @@ fn check_fn_args<'cx, 'tcx: 'cx>(
 
 fn check_mut_from_ref<'tcx>(cx: &LateContext<'tcx>, sig: &FnSig<'_>, body: Option<&'tcx Body<'_>>) {
     if let FnRetTy::Return(ty) = sig.decl.output
-        && let Some((out, Mutability::Mut, _)) = get_ref_lm(ty)
+        && let Some((out, Mutability::Mut, _)) = get_rptr_lm(ty)
     {
-        let out_region = cx.tcx.named_bound_var(out.hir_id);
+        let out_region = cx.tcx.named_region(out.hir_id);
         let args: Option<Vec<_>> = sig
             .decl
             .inputs
             .iter()
-            .filter_map(get_ref_lm)
-            .filter(|&(lt, _, _)| cx.tcx.named_bound_var(lt.hir_id) == out_region)
+            .filter_map(get_rptr_lm)
+            .filter(|&(lt, _, _)| cx.tcx.named_region(lt.hir_id) == out_region)
             .map(|(_, mutability, span)| (mutability == Mutability::Not).then_some(span))
             .collect();
         if let Some(args) = args
@@ -659,10 +629,7 @@ fn check_ptr_arg_usage<'tcx>(cx: &LateContext<'tcx>, body: &'tcx Body<'_>, args:
                             return;
                         };
 
-                        match *self.cx.tcx.fn_sig(id).subst_identity().skip_binder().inputs()[i]
-                            .peel_refs()
-                            .kind()
-                        {
+                        match *self.cx.tcx.fn_sig(id).skip_binder().inputs()[i].peel_refs().kind() {
                             ty::Dynamic(preds, _, _) if !matches_preds(self.cx, args.deref_ty.ty(self.cx), preds) => {
                                 set_skip_flag();
                             },
@@ -720,30 +687,29 @@ fn check_ptr_arg_usage<'tcx>(cx: &LateContext<'tcx>, body: &'tcx Body<'_>, args:
 fn matches_preds<'tcx>(
     cx: &LateContext<'tcx>,
     ty: Ty<'tcx>,
-    preds: &'tcx [ty::PolyExistentialPredicate<'tcx>],
+    preds: &'tcx [Binder<'tcx, ExistentialPredicate<'tcx>>],
 ) -> bool {
     let infcx = cx.tcx.infer_ctxt().build();
     preds.iter().all(|&p| match cx.tcx.erase_late_bound_regions(p) {
         ExistentialPredicate::Trait(p) => infcx
-            .type_implements_trait(p.def_id, [ty.into()].into_iter().chain(p.substs.iter()), cx.param_env)
+            .type_implements_trait(p.def_id, ty, p.substs, cx.param_env)
             .must_apply_modulo_regions(),
         ExistentialPredicate::Projection(p) => infcx.predicate_must_hold_modulo_regions(&Obligation::new(
-            cx.tcx,
             ObligationCause::dummy(),
             cx.param_env,
-            cx.tcx
-                .mk_predicate(Binder::dummy(PredicateKind::Clause(ClauseKind::Projection(
-                    p.with_self_ty(cx.tcx, ty),
-                )))),
+            cx.tcx.mk_predicate(Binder::bind_with_vars(
+                PredicateKind::Projection(p.with_self_ty(cx.tcx, ty)),
+                List::empty(),
+            )),
         )),
         ExistentialPredicate::AutoTrait(p) => infcx
-            .type_implements_trait(p, [ty], cx.param_env)
+            .type_implements_trait(p, ty, List::empty(), cx.param_env)
             .must_apply_modulo_regions(),
     })
 }
 
-fn get_ref_lm<'tcx>(ty: &'tcx hir::Ty<'tcx>) -> Option<(&'tcx Lifetime, Mutability, Span)> {
-    if let TyKind::Ref(lt, ref m) = ty.kind {
+fn get_rptr_lm<'tcx>(ty: &'tcx hir::Ty<'tcx>) -> Option<(&'tcx Lifetime, Mutability, Span)> {
+    if let TyKind::Rptr(lt, ref m) = ty.kind {
         Some((lt, m.mutbl, ty.span))
     } else {
         None

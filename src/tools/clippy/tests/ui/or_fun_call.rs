@@ -1,13 +1,7 @@
-//@run-rustfix
+// run-rustfix
 #![warn(clippy::or_fun_call)]
 #![allow(dead_code)]
-#![allow(
-    clippy::borrow_as_ptr,
-    clippy::uninlined_format_args,
-    clippy::unnecessary_wraps,
-    clippy::unnecessary_literal_unwrap,
-    clippy::useless_vec
-)]
+#![allow(clippy::borrow_as_ptr, clippy::uninlined_format_args, clippy::unnecessary_wraps)]
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -239,22 +233,6 @@ mod issue9608 {
         }
 
         let _ = None.unwrap_or(X::Y(0));
-    }
-}
-
-mod issue8993 {
-    fn g() -> i32 {
-        3
-    }
-
-    fn f(n: i32) -> i32 {
-        n
-    }
-
-    fn test_map_or() {
-        let _ = Some(4).map_or(g(), |v| v);
-        let _ = Some(4).map_or(g(), f);
-        let _ = Some(4).map_or(0, f);
     }
 }
 

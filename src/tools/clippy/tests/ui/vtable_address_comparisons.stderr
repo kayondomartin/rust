@@ -63,5 +63,21 @@ LL |     ptr::eq(a, b);
    |
    = help: consider extracting and comparing data pointers only
 
-error: aborting due to 8 previous errors
+error: comparing trait object pointers compares a non-unique vtable address
+  --> $DIR/vtable_address_comparisons.rs:27:5
+   |
+LL |     Rc::ptr_eq(&a, &a);
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider extracting and comparing data pointers only
+
+error: comparing trait object pointers compares a non-unique vtable address
+  --> $DIR/vtable_address_comparisons.rs:30:5
+   |
+LL |     Arc::ptr_eq(&a, &a);
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider extracting and comparing data pointers only
+
+error: aborting due to 10 previous errors
 

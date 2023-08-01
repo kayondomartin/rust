@@ -10,6 +10,8 @@
 //! in release mode in VS Code. There's however "rust-analyzer: Copy Run Command Line"
 //! which you can use to paste the command in terminal and add `--release` manually.
 
+use std::sync::Arc;
+
 use ide::{CallableSnippets, Change, CompletionConfig, FilePosition, TextSize};
 use ide_db::{
     imports::insert_use::{ImportGranularity, InsertUseConfig},
@@ -17,10 +19,9 @@ use ide_db::{
 };
 use project_model::CargoConfig;
 use test_utils::project_root;
-use triomphe::Arc;
 use vfs::{AbsPathBuf, VfsPath};
 
-use crate::cli::load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice};
+use crate::cli::load_cargo::{load_workspace_at, LoadCargoConfig};
 
 #[test]
 fn integrated_highlighting_benchmark() {
@@ -35,7 +36,7 @@ fn integrated_highlighting_benchmark() {
     let cargo_config = CargoConfig::default();
     let load_cargo_config = LoadCargoConfig {
         load_out_dirs_from_check: true,
-        with_proc_macro_server: ProcMacroServerChoice::None,
+        with_proc_macro: false,
         prefill_caches: false,
     };
 
@@ -47,7 +48,7 @@ fn integrated_highlighting_benchmark() {
     let file_id = {
         let file = workspace_to_load.join(file);
         let path = VfsPath::from(AbsPathBuf::assert(file));
-        vfs.file_id(&path).unwrap_or_else(|| panic!("can't find virtual file for {path}"))
+        vfs.file_id(&path).unwrap_or_else(|| panic!("can't find virtual file for {}", path))
     };
 
     {
@@ -64,7 +65,7 @@ fn integrated_highlighting_benchmark() {
         let mut text = host.analysis().file_text(file_id).unwrap().to_string();
         text.push_str("\npub fn _dummy() {}\n");
         let mut change = Change::new();
-        change.change_file(file_id, Some(Arc::from(text)));
+        change.change_file(file_id, Some(Arc::new(text)));
         host.apply_change(change);
     }
 
@@ -89,7 +90,7 @@ fn integrated_completion_benchmark() {
     let cargo_config = CargoConfig::default();
     let load_cargo_config = LoadCargoConfig {
         load_out_dirs_from_check: true,
-        with_proc_macro_server: ProcMacroServerChoice::None,
+        with_proc_macro: false,
         prefill_caches: true,
     };
 
@@ -101,7 +102,7 @@ fn integrated_completion_benchmark() {
     let file_id = {
         let file = workspace_to_load.join(file);
         let path = VfsPath::from(AbsPathBuf::assert(file));
-        vfs.file_id(&path).unwrap_or_else(|| panic!("can't find virtual file for {path}"))
+        vfs.file_id(&path).unwrap_or_else(|| panic!("can't find virtual file for {}", path))
     };
 
     {
@@ -120,7 +121,7 @@ fn integrated_completion_benchmark() {
             patch(&mut text, "db.struct_data(self.id)", "sel;\ndb.struct_data(self.id)")
                 + "sel".len();
         let mut change = Change::new();
-        change.change_file(file_id, Some(Arc::from(text)));
+        change.change_file(file_id, Some(Arc::new(text)));
         host.apply_change(change);
         completion_offset
     };
@@ -145,7 +146,6 @@ fn integrated_completion_benchmark() {
             },
             snippets: Vec::new(),
             prefer_no_std: false,
-            limit: None,
         };
         let position =
             FilePosition { file_id, offset: TextSize::try_from(completion_offset).unwrap() };
@@ -159,7 +159,7 @@ fn integrated_completion_benchmark() {
             patch(&mut text, "sel;\ndb.struct_data(self.id)", "self.;\ndb.struct_data(self.id)")
                 + "self.".len();
         let mut change = Change::new();
-        change.change_file(file_id, Some(Arc::from(text)));
+        change.change_file(file_id, Some(Arc::new(text)));
         host.apply_change(change);
         completion_offset
     };
@@ -184,7 +184,6 @@ fn integrated_completion_benchmark() {
             },
             snippets: Vec::new(),
             prefer_no_std: false,
-            limit: None,
         };
         let position =
             FilePosition { file_id, offset: TextSize::try_from(completion_offset).unwrap() };

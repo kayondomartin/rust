@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use rustc_ast::token::{BinOpToken, Delimiter, Token, TokenKind};
-use rustc_ast::tokenstream::{TokenStream, TokenTree, TokenTreeCursor};
+use rustc_ast::tokenstream::{Cursor, TokenStream, TokenTree};
 use rustc_ast::{ast, ptr};
 use rustc_ast_pretty::pprust;
 use rustc_span::{
@@ -35,8 +35,8 @@ use crate::shape::{Indent, Shape};
 use crate::source_map::SpanUtils;
 use crate::spanned::Spanned;
 use crate::utils::{
-    filtered_str_fits, format_visibility, indent_next_line, is_empty_line, mk_sp,
-    remove_trailing_white_spaces, rewrite_ident, trim_left_preserve_layout, NodeIdExt,
+    format_visibility, indent_next_line, is_empty_line, mk_sp, remove_trailing_white_spaces,
+    rewrite_ident, trim_left_preserve_layout, wrap_str, NodeIdExt,
 };
 use crate::visitor::FmtVisitor;
 
@@ -157,8 +157,7 @@ pub(crate) fn rewrite_macro(
 ) -> Option<String> {
     let should_skip = context
         .skip_context
-        .macros
-        .skip(context.snippet(mac.path.span));
+        .skip_macro(context.snippet(mac.path.span));
     if should_skip {
         None
     } else {
@@ -209,7 +208,7 @@ fn rewrite_macro_inner(
         original_style
     };
 
-    let ts = mac.args.tokens.clone();
+    let ts = mac.args.inner_tokens();
     let has_comment = contains_comment(context.snippet(mac.span()));
     if ts.is_empty() && !has_comment {
         return match style {
@@ -393,7 +392,7 @@ pub(crate) fn rewrite_macro_def(
         return snippet;
     }
 
-    let ts = def.body.tokens.clone();
+    let ts = def.body.inner_tokens();
     let mut parser = MacroParser::new(ts.into_trees());
     let parsed_def = match parser.parse() {
         Some(def) => def,
@@ -736,7 +735,7 @@ impl MacroArgParser {
         self.buf.clear();
     }
 
-    fn add_meta_variable(&mut self, iter: &mut TokenTreeCursor) -> Option<()> {
+    fn add_meta_variable(&mut self, iter: &mut Cursor) -> Option<()> {
         match iter.next() {
             Some(TokenTree::Token(
                 Token {
@@ -768,7 +767,7 @@ impl MacroArgParser {
         &mut self,
         inner: Vec<ParsedMacroArg>,
         delim: Delimiter,
-        iter: &mut TokenTreeCursor,
+        iter: &mut Cursor,
     ) -> Option<()> {
         let mut buffer = String::new();
         let mut first = true;
@@ -1088,7 +1087,7 @@ pub(crate) fn convert_try_mac(
 ) -> Option<ast::Expr> {
     let path = &pprust::path_to_string(&mac.path);
     if path == "try" || path == "r#try" {
-        let ts = mac.args.tokens.clone();
+        let ts = mac.args.inner_tokens();
 
         Some(ast::Expr {
             id: ast::NodeId::root(), // dummy value
@@ -1119,15 +1118,12 @@ pub(crate) fn macro_style(mac: &ast::MacCall, context: &RewriteContext<'_>) -> D
 
 // A very simple parser that just parses a macros 2.0 definition into its branches.
 // Currently we do not attempt to parse any further than that.
+#[derive(new)]
 struct MacroParser {
-    toks: TokenTreeCursor,
+    toks: Cursor,
 }
 
 impl MacroParser {
-    const fn new(toks: TokenTreeCursor) -> Self {
-        Self { toks }
-    }
-
     // (`(` ... `)` `=>` `{` ... `}`)*
     fn parse(&mut self) -> Option<Macro> {
         let mut branches = vec![];
@@ -1269,14 +1265,15 @@ impl MacroBranch {
                 }
             }
         };
-
-        if !filtered_str_fits(&new_body_snippet.snippet, config.max_width(), shape) {
-            return None;
-        }
+        let new_body = wrap_str(
+            new_body_snippet.snippet.to_string(),
+            config.max_width(),
+            shape,
+        )?;
 
         // Indent the body since it is in a block.
         let indent_str = body_indent.to_string(&config);
-        let mut new_body = LineClasses::new(new_body_snippet.snippet.trim_end())
+        let mut new_body = LineClasses::new(new_body.trim_end())
             .enumerate()
             .fold(
                 (String::new(), true),

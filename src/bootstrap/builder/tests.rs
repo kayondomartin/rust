@@ -1,6 +1,5 @@
 use super::*;
-use crate::config::{Config, DryRun, TargetSelection};
-use crate::doc::DocumentationFormat;
+use crate::config::{Config, TargetSelection};
 use std::thread;
 
 fn configure(cmd: &str, host: &[&str], target: &[&str]) -> Config {
@@ -11,7 +10,7 @@ fn configure_with_args(cmd: &[String], host: &[&str], target: &[&str]) -> Config
     let mut config = Config::parse(cmd);
     // don't save toolstates
     config.save_toolstates = None;
-    config.dry_run = DryRun::SelfCheck;
+    config.dry_run = true;
 
     // Ignore most submodules, since we don't need them for a dry run.
     // But make sure to check out the `doc` and `rust-analyzer` submodules, since some steps need them
@@ -67,16 +66,6 @@ macro_rules! std {
     };
 }
 
-macro_rules! doc_std {
-    ($host:ident => $target:ident, stage = $stage:literal) => {
-        doc::Std::new(
-            $stage,
-            TargetSelection::from_user(stringify!($target)),
-            DocumentationFormat::HTML,
-        )
-    };
-}
-
 macro_rules! rustc {
     ($host:ident => $target:ident, stage = $stage:literal) => {
         compile::Rustc::new(
@@ -89,7 +78,7 @@ macro_rules! rustc {
 #[test]
 fn test_valid() {
     // make sure multi suite paths are accepted
-    check_cli(["test", "tests/ui/attr-start.rs", "tests/ui/attr-shebang.rs"]);
+    check_cli(["test", "src/test/ui/attr-start.rs", "src/test/ui/attr-shebang.rs"]);
 }
 
 #[test]
@@ -101,21 +90,23 @@ fn test_invalid() {
 
 #[test]
 fn test_intersection() {
-    let set = |paths: &[&str]| {
-        PathSet::Set(paths.into_iter().map(|p| TaskPath { path: p.into(), kind: None }).collect())
-    };
-    let library_set = set(&["library/core", "library/alloc", "library/std"]);
+    let set = PathSet::Set(
+        ["library/core", "library/alloc", "library/std"].into_iter().map(TaskPath::parse).collect(),
+    );
     let mut command_paths =
         vec![Path::new("library/core"), Path::new("library/alloc"), Path::new("library/stdarch")];
-    let subset = library_set.intersection_removing_matches(&mut command_paths, Kind::Build);
-    assert_eq!(subset, set(&["library/core", "library/alloc"]),);
+    let subset = set.intersection_removing_matches(&mut command_paths, None);
+    assert_eq!(
+        subset,
+        PathSet::Set(["library/core", "library/alloc"].into_iter().map(TaskPath::parse).collect())
+    );
     assert_eq!(command_paths, vec![Path::new("library/stdarch")]);
 }
 
 #[test]
 fn test_exclude() {
     let mut config = configure("test", &["A"], &["A"]);
-    config.exclude = vec!["src/tools/tidy".into()];
+    config.exclude = vec![TaskPath::parse("src/tools/tidy")];
     let cache = run_build(&[], config);
 
     // Ensure we have really excluded tidy
@@ -127,16 +118,21 @@ fn test_exclude() {
 
 #[test]
 fn test_exclude_kind() {
-    let path = PathBuf::from("compiler/rustc_data_structures");
+    let path = PathBuf::from("src/tools/cargotest");
+    let exclude = TaskPath::parse("test::src/tools/cargotest");
+    assert_eq!(exclude, TaskPath { kind: Some(Kind::Test), path: path.clone() });
 
     let mut config = configure("test", &["A"], &["A"]);
-    // Ensure our test is valid, and `test::Rustc` would be run without the exclude.
-    assert!(run_build(&[], config.clone()).contains::<test::CrateLibrustc>());
-    // Ensure tests for rustc are skipped.
-    config.exclude = vec![path.clone()];
-    assert!(!run_build(&[], config.clone()).contains::<test::CrateLibrustc>());
-    // Ensure builds for rustc are not skipped.
-    assert!(run_build(&[], config).contains::<compile::Rustc>());
+    // Ensure our test is valid, and `test::Cargotest` would be run without the exclude.
+    assert!(run_build(&[path.clone()], config.clone()).contains::<test::Cargotest>());
+    // Ensure tests for cargotest are skipped.
+    config.exclude = vec![exclude.clone()];
+    assert!(!run_build(&[path.clone()], config).contains::<test::Cargotest>());
+
+    // Ensure builds for cargotest are not skipped.
+    let mut config = configure("build", &["A"], &["A"]);
+    config.exclude = vec![exclude];
+    assert!(run_build(&[path], config).contains::<tool::CargoTest>());
 }
 
 /// Ensure that if someone passes both a single crate and `library`, all library crates get built.
@@ -148,25 +144,6 @@ fn alias_and_path_for_library() {
         first(cache.all::<compile::Std>()),
         &[std!(A => A, stage = 0), std!(A => A, stage = 1)]
     );
-
-    let mut cache = run_build(&["library".into(), "core".into()], configure("doc", &["A"], &["A"]));
-    assert_eq!(first(cache.all::<doc::Std>()), &[doc_std!(A => A, stage = 0)]);
-}
-
-#[test]
-fn test_beta_rev_parsing() {
-    use crate::extract_beta_rev;
-
-    // single digit revision
-    assert_eq!(extract_beta_rev("1.99.9-beta.7 (xxxxxx)"), Some("7".to_string()));
-    // multiple digits
-    assert_eq!(extract_beta_rev("1.99.9-beta.777 (xxxxxx)"), Some("777".to_string()));
-    // nightly channel (no beta revision)
-    assert_eq!(extract_beta_rev("1.99.9-nightly (xxxxxx)"), None);
-    // stable channel (no beta revision)
-    assert_eq!(extract_beta_rev("1.99.9 (xxxxxxx)"), None);
-    // invalid string
-    assert_eq!(extract_beta_rev("invalid"), None);
 }
 
 mod defaults {
@@ -259,7 +236,7 @@ mod defaults {
     fn doc_default() {
         let mut config = configure("doc", &["A"], &["A"]);
         config.compiler_docs = true;
-        config.cmd = Subcommand::Doc { open: false, json: false };
+        config.cmd = Subcommand::Doc { paths: Vec::new(), open: false, json: false };
         let mut cache = run_build(&[], config);
         let a = TargetSelection::from_user("A");
 
@@ -568,21 +545,18 @@ mod dist {
     fn test_with_no_doc_stage0() {
         let mut config = configure(&["A"], &["A"]);
         config.stage = 0;
-        config.paths = vec!["library/std".into()];
         config.cmd = Subcommand::Test {
+            paths: vec!["library/std".into()],
             test_args: vec![],
             rustc_args: vec![],
-            no_fail_fast: false,
-            no_doc: true,
-            doc: false,
+            fail_fast: true,
+            doc_tests: DocTests::No,
             bless: false,
             force_rerun: false,
             compare_mode: None,
             rustfix_coverage: false,
             pass: None,
             run: None,
-            only_modified: false,
-            skip: vec![],
         };
 
         let build = Build::new(config);
@@ -603,6 +577,7 @@ mod dist {
                 compiler: Compiler { host, stage: 0 },
                 target: host,
                 mode: Mode::Std,
+                test_kind: test::TestKind::Test,
                 crates: vec![INTERNER.intern_str("std")],
             },]
         );
@@ -612,7 +587,7 @@ mod dist {
     fn doc_ci() {
         let mut config = configure(&["A"], &["A"]);
         config.compiler_docs = true;
-        config.cmd = Subcommand::Doc { open: false, json: false };
+        config.cmd = Subcommand::Doc { paths: Vec::new(), open: false, json: false };
         let build = Build::new(config);
         let mut builder = Builder::new(&build);
         builder.run_step_descriptions(&Builder::get_step_descriptions(Kind::Doc), &[]);
@@ -641,19 +616,17 @@ mod dist {
         // Behavior of `x.py test` doing various documentation tests.
         let mut config = configure(&["A"], &["A"]);
         config.cmd = Subcommand::Test {
+            paths: vec![],
             test_args: vec![],
             rustc_args: vec![],
-            no_fail_fast: false,
-            doc: true,
-            no_doc: false,
-            skip: vec![],
+            fail_fast: true,
+            doc_tests: DocTests::Yes,
             bless: false,
             force_rerun: false,
             compare_mode: None,
             rustfix_coverage: false,
             pass: None,
             run: None,
-            only_modified: false,
         };
         // Make sure rustfmt binary not being found isn't an error.
         config.channel = "beta".to_string();

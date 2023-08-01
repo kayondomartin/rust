@@ -1,27 +1,33 @@
-//@aux-build:proc_macros.rs:proc-macro
+// aux-build:macro_rules.rs
 
 #![warn(clippy::toplevel_ref_arg)]
 #![allow(unused)]
 
-extern crate proc_macros;
-use proc_macros::{external, inline_macros};
+#[macro_use]
+extern crate macro_rules;
 
 fn the_answer(ref mut x: u8) {
     *x = 42;
 }
 
-#[inline_macros]
+macro_rules! gen_function {
+    () => {
+        fn fun_example(ref _x: usize) {}
+    };
+}
+
 fn main() {
     let mut x = 0;
     the_answer(x);
 
     // lint in macro
-    inline! {
-        fn fun_example(ref _x: usize) {}
+    #[allow(unused)]
+    {
+        gen_function!();
     }
 
     // do not lint in external macro
-    external! {
-        fn fun_example2(ref _x: usize) {}
+    {
+        ref_arg_function!();
     }
 }

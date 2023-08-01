@@ -3,7 +3,7 @@
 //! This is a small stub that replaces RLS to alert the user that RLS is no
 //! longer available.
 
-use serde_json::Value;
+use serde::Deserialize;
 use std::error::Error;
 use std::io::BufRead;
 use std::io::Write;
@@ -21,6 +21,7 @@ fn main() {
     }
 }
 
+#[derive(Deserialize)]
 struct Message {
     method: Option<String>,
 }
@@ -87,10 +88,8 @@ fn read_message_raw<R: BufRead>(reader: &mut R) -> Result<String, Box<dyn Error>
 
 fn read_message<R: BufRead>(reader: &mut R) -> Result<Message, Box<dyn Error>> {
     let m = read_message_raw(reader)?;
-    match serde_json::from_str::<Value>(&m) {
-        Ok(message) => Ok(Message {
-            method: message.get("method").and_then(|value| value.as_str().map(String::from)),
-        }),
+    match serde_json::from_str(&m) {
+        Ok(m) => Ok(m),
         Err(e) => Err(format!("failed to parse message {m}\n{e}").into()),
     }
 }

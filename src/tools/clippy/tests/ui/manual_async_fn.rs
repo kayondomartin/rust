@@ -1,6 +1,6 @@
-//@run-rustfix
+// run-rustfix
 #![warn(clippy::manual_async_fn)]
-#![allow(clippy::needless_pub_self, unused)]
+#![allow(unused)]
 
 use std::future::Future;
 
@@ -125,18 +125,6 @@ mod issue_5765 {
             a.f()
         };
     }
-}
-
-pub fn issue_10450() -> impl Future<Output = i32> {
-    async { 42 }
-}
-
-pub(crate) fn issue_10450_2() -> impl Future<Output = i32> {
-    async { 42 }
-}
-
-pub(self) fn issue_10450_3() -> impl Future<Output = i32> {
-    async { 42 }
 }
 
 fn main() {}
